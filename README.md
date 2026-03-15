@@ -1,4 +1,5 @@
-# zkLLM Entropy: Zero Knowledge Proof of Conditional Entropy
+# Zero Knowledge Conditional Entropy Bounds for LLM Inference Verification
+## With Probabilistic Tolerance for Hardware Non-Determinism
 
 This repository forks [zkLLM](https://arxiv.org/abs/2404.16109) and adds a zero knowledge proof of conditional entropy for LLM inference outputs.
 
