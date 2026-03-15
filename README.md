@@ -29,10 +29,10 @@ Existing work (e.g. zkLLM, zkML, [this paper](https://arxiv.org/pdf/2511.02620),
 - Reframed the problem as bounding conditional entropy in the output (a quantity, not a classification)
 - Showed that arbitrary approximations of token probability provide a strict upper bound on conditional entropy (Gibbs' inequality)
 - Developed a simple formula for token probabilities that accounts for hardware noise: normal distribution with difference in logits between the token and the max token
-- Prototyped these modifications by forking zkLLM and adding a zero knowledge proof of conditional entropy: https://github.com/JamesPetrie/zkllm-entropy
+- Prototyped these modifications by forking zkLLM and adding a zero knowledge proof of conditional entropy
 
 ## Conclusion
 
-- Prototyped a zero knowledge proof of conditional entropy: https://github.com/JamesPetrie/zkllm-entropy
+- Prototyped a zero knowledge proof of conditional entropy
 - Demonstrated feasibility of zero knowledge inference verification without reducing floating point inference efficiency
 - (~1000x slower to generate the proof than to do inference, but this can be done on a small random sample to amortize the cost)
