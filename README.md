@@ -32,6 +32,49 @@ Existing work (e.g. zkLLM, zkML, [this paper](https://arxiv.org/pdf/2511.02620),
 - Developed a simple formula for token probabilities that accounts for hardware noise: normal distribution with difference in logits between the token and the max token
 - Prototyped these modifications by forking zkLLM and adding a zero knowledge proof of conditional entropy
 
+## Quickstart
+
+Requires a CUDA-capable GPU and conda.
+
+**1. Build**
+```bash
+conda activate zkllm-env
+cd zkllm-ccs2024
+make -j16 all
+```
+
+**2. Generate public parameters for the lm_head logit vectors (once)**
+```bash
+srun --gpus=1 --pty bash
+./ppgen 32768 ./zkllm-workdir/Llama-2-7b/lm_head-pp.bin
+```
+
+**3. Run the existing zkLLM layer proofs, then generate logit tensors**
+```bash
+python run_proofs.py --model_size 7 --seq_len 1024 --num_layers 32
+python gen_logits.py --model_size 7 --seq_len 1024 \
+    --generators ./zkllm-workdir/Llama-2-7b/lm_head-pp.bin \
+    --output_dir ./zkllm-workdir/Llama-2-7b/logits
+```
+
+**4. Run the entropy prover**
+```bash
+./zkllm_entropy \
+    ./zkllm-workdir/Llama-2-7b/logits \
+    ./zkllm-workdir/Llama-2-7b/logits/tokens.txt \
+    proof.bin \
+    3277 \
+    --generators ./zkllm-workdir/Llama-2-7b/lm_head-pp.bin \
+    --commits    ./zkllm-workdir/Llama-2-7b/logits
+```
+
+The output is a conditional entropy bound in scaled fixed-point units and a proof file. The `sigma_eff` parameter (3277 ≈ 0.05 × 65536) should be calibrated empirically by running inference twice on the same input and fitting the token match rate.
+
+**5. Run tests**
+```bash
+./test_zkargmax && ./test_zklog && ./test_zknormalcdf && ./test_zkentropy
+```
+
 ## Conclusion
 
 - Prototyped a zero knowledge proof of conditional entropy
