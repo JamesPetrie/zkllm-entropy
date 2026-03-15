@@ -22,13 +22,13 @@ SEQ_LEN=1024   # minimum for zkSoftmax proof (seq_len^2 must be >= 2^20)
 NUM_LAYERS=32  # Llama-2-7b has 32 layers
 WORKDIR=./zkllm-workdir/Llama-2-${MODEL_SIZE}b
 
-# Initial input: must be provided before running this script.
-# Generate it from the embedding layer output for your chosen input tokens,
-# or copy an existing layer_input.bin into $WORKDIR/layer-0-input.bin.
 INITIAL_INPUT=${WORKDIR}/layer-0-input.bin
+EXPECTED_BYTES=$(( SEQ_LEN * 4096 * 4 ))  # seq_len * embed_dim * sizeof(int32)
 
-if [ ! -f "$INITIAL_INPUT" ]; then
-    echo "=== Generating initial input (embedding layer output) ==="
+# Regenerate if missing or wrong size (e.g. from a previous run with different seq_len)
+ACTUAL_BYTES=$(stat -c%s "$INITIAL_INPUT" 2>/dev/null || echo 0)
+if [ "$ACTUAL_BYTES" -ne "$EXPECTED_BYTES" ]; then
+    echo "=== Generating initial input (embedding layer output, seq_len=$SEQ_LEN) ==="
     python gen_initial_input.py $SEQ_LEN
 fi
 

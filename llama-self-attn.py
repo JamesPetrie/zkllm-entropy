@@ -72,7 +72,7 @@ if __name__ == '__main__':
     attn_output = attn_output.transpose(0, 1).contiguous()
     attn_output = attn_output.view(args.seq_len, embed_dim)
     attn_output = attn_output.transpose(0, 1).reshape(args.seq_len, embed_dim)
-    save_int(attn_output, 1 << 16, 'temp_attn_out.bin') 
+    save_int(attn_output, 1 << 16, args.output_file)
     os.system(f'./self-attn attn {args.input_file} {args.seq_len} {embed_dim} {workdir} {layer_prefix} {args.output_file}')
     os.system('rm ./temp*.bin')
 
