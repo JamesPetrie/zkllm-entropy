@@ -12,11 +12,13 @@ ARCH := sm_100
 NVCC_FLAGS := -arch=$(ARCH) -std=c++17
 
 # Source and object files
-CU_SRCS := bls12-381.cu ioutils.cu commitment.cu fr-tensor.cu g1-tensor.cu proof.cu zkrelu.cu zkfc.cu tlookup.cu polynomial.cu zksoftmax.cu rescaling.cu
+CU_SRCS := bls12-381.cu ioutils.cu commitment.cu fr-tensor.cu g1-tensor.cu proof.cu zkrelu.cu zkfc.cu tlookup.cu polynomial.cu zksoftmax.cu rescaling.cu \
+           zkargmax.cu zklog.cu zknormalcdf.cu zkentropy.cu
 CU_OBJS := $(CU_SRCS:.cu=.o)
 CPP_SRCS := $(wildcard *.cpp)
 CPP_OBJS := $(CPP_SRCS:.cpp=.o)
-TARGETS := main ppgen commit-param self-attn ffn rmsnorm skip-connection
+TARGETS := main ppgen commit-param self-attn ffn rmsnorm skip-connection \
+           zkllm_entropy test_zkargmax test_zklog test_zknormalcdf test_zkentropy
 TARGET_OBJS := $(TARGETS:=.o)
 
 # Pattern rule for CUDA source files
