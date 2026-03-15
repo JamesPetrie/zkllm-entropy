@@ -8,4 +8,4 @@
 !Makefile
 !.gitignore
 !CMakeLists.txt
-!README.md
+!README.md!*.sh

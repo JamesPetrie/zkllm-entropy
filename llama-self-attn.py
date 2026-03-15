@@ -41,14 +41,16 @@ if __name__ == '__main__':
 
     Q, K, V = load_int('temp_Q.bin').reshape(args.seq_len, embed_dim) / (1 << 16), load_int('temp_K.bin').reshape(args.seq_len, embed_dim) / (1 << 16), load_int('temp_V.bin').reshape(args.seq_len, embed_dim) / (1 << 16)
 
-    Q = Q.view(args.seq_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
-    K = K.view(args.seq_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
-    V = V.view(args.seq_len, layer.self_attn.num_heads, layer.self_attn.head_dim).transpose(0, 1)
+    num_heads = model.config.num_attention_heads
+    Q = Q.view(args.seq_len, num_heads, layer.self_attn.head_dim).transpose(0, 1)
+    K = K.view(args.seq_len, num_heads, layer.self_attn.head_dim).transpose(0, 1)
+    V = V.view(args.seq_len, num_heads, layer.self_attn.head_dim).transpose(0, 1)
 
-    layer.self_attn.rotary_emb.to(0)
-    cos, sin = layer.self_attn.rotary_emb(torch.randn(1, args.seq_len, embed_dim, device = 0), torch.arange(args.seq_len, device = 0).unsqueeze(0))
+    model.model.rotary_emb.to(0)
+    cos, sin = model.model.rotary_emb(torch.randn(1, args.seq_len, embed_dim, device = 0), torch.arange(args.seq_len, device = 0).unsqueeze(0))
 
-    Q, K = Q * cos + rotate_half(Q) * sin, K * cos + rotate_half(K) * sin
+    Q, K = layer.self_attn.rotary_fn(Q, K, cos, sin)
+    Q, K = Q.squeeze(0), K.squeeze(0)  # remove batch dim added by rotary_fn
     Q, K = Q.to(torch.float64), K.to(torch.float64)
     
     A_ = Q @ K.transpose(-2, -1)
