@@ -8,122 +8,89 @@
 | `test_zklog` | **All 5 tests PASS** (job 1898) |
 | `test_zknormalcdf` | **All 5 tests PASS** (job 1898) |
 | `test_zkentropy` | **All 6 tests PASS** (job 1898) |
-| `zkllm_entropy` | **Built** |
-| `commit_logits` | **Built** |
+| `zkllm_entropy` | Built (needs rebuild after architecture change) |
 
-## New files added
+## Files
 
 | File | Description |
 |---|---|
 | `zkargmax.cuh/cu` | ZK argmax via bit-decomposition range proofs |
 | `zklog.cuh/cu` | ZK −log₂ via tLookupRangeMapping |
 | `zknormalcdf.cuh/cu` | ZK normal CDF via tLookupRangeMapping |
-| `zkentropy.cuh/cu` | Full conditional entropy pipeline (compute + prove) |
-| `zkllm_entropy.cu` | Standalone binary: loads saved logit tensors, runs prover |
-| `commit_logits.cu` | Utility: commits a logit FrTensor using ppgen generators |
+| `zkentropy.cuh/cu` | Conditional entropy pipeline (compute + prove); logit linkage delegated to caller |
+| `zkllm_entropy.cu` | Main prover: proves final RMSNorm + lm_head via committed weights, then entropy |
+| `commit_final_layers.py` | Quantise and commit lm_head + final norm weights (run once) |
+| `gen_entropy_inputs.py` | Generate final_norm-rms_inv.bin + tokens.txt from layer-31-output.bin |
+| `verify_entropy.py` | CPU-only verifier: checks all arithmetic claims in a proof file |
+| `calibrate_sigma.py` | Find sigma_eff from empirical token match rate or a target rate |
 | `test_zkargmax.cu` | Unit tests for zkArgmax |
 | `test_zklog.cu` | Unit tests for zkLog |
 | `test_zknormalcdf.cu` | Unit tests for zkNormalCDF |
 | `test_zkentropy.cu` | Integration tests for zkConditionalEntropy |
-| `gen_logits.py` | Python script: applies lm_head to final hidden state, saves logit tensors + commitments |
-| `run_ppgen_logits.sh` | SLURM batch job: runs ppgen then gen_logits.py (job 2046) |
-| `verify_entropy.py` | Python verifier: checks all arithmetic claims in a proof file (no GPU needed) |
-| `calibrate_sigma.py` | Python calibration: finds sigma_eff from empirical token match rate or target rate |
 
-## Architecture summary
+## Architecture
 
 ```
-zkllm_entropy.cu
-  └─ zkentropy.cuh/cu (zkConditionalEntropy)
-       ├─ zkargmax.cuh/cu   — argmax + bit-decomp range proof
-       ├─ zknormalcdf.cuh/cu — Phi(d/sigma) lookup (single element, no D%N constraint)
-       └─ zklog.cuh/cu       — −log2(q) lookup (single element)
+committed W_norm  committed W_lm           public sigma_eff
+     |                  |                        |
+zkRMSNorm(hidden, W_norm) → normed_hidden        |
+     |                                           |
+zkFC(normed_hidden, W_lm) → logits              |
+     |                                           |
+zkConditionalEntropy(logits, tokens, sigma_eff) → entropy bound H
 ```
 
-### Per-position pipeline
+The hidden state (`layer-31-output.bin`) comes from the existing zkLLM layer
+proofs.  No separate logit commitment is needed: the logits are proven to
+derive from committed weights via `zkFC + verifyWeightClaim`.
 
-CDF is computed for all vocab tokens; the actual sum of win probabilities
-is used as the normalisation denominator (tighter bound than the earlier
-`vocab_size × cdf_scale` approximation).
+### Per-position entropy pipeline (inside zkConditionalEntropy)
 
-1. `zkArgmax::compute` + `prove` — find greedy token t_star, produce range proof
-2. `Commitment::me_open(logits, generators, e_actual)` — prove `logits[actual_token]`
-   is bound to the committed logit tensor; produces G1 proof elements
-3. GPU: `diffs[i] = v_star − logits[i]` for all i; `win_probs[i] = (1 − Φ(diff_i/σ)) × cdf_scale`
-4. CPU: `total_win = sum(win_probs)`; `q_idx = floor(win_prob[actual] × 2^log_precision / total_win)`
-5. `zkLog::compute` on 1 element — `surprise = −log₂(q_idx / 2^log_precision) × log_scale`
-6. Return surprise; accumulate over sequence
-
-### Prove path output
-
-- `vector<Polynomial>& proof` — argmax range proof polynomials + claimed scalar values
-- `vector<G1Jacobian_t>& g1_proof` — G1 curve points from `Commitment::me_open`
-  (one set of log2(vocab_size) triplets per position)
+1. `zkArgmax::prove` — bit-decomposition range proof that t_star is the argmax
+2. GPU: `diffs[i] = v_star − logits[i]`; `win_probs[i] = (1 − Φ(diff_i/σ)) × cdf_scale`
+3. CPU: `total_win = sum(win_probs)`; `q_idx = floor(win_prob[actual] × 2^log_precision / total_win)`
+4. `zkLog::compute` — `surprise = −log₂(q_idx / 2^log_precision) × log_scale`
+5. Accumulate over sequence → total entropy bound H
 
 ## Remaining TODOs
 
-1. **Logit generators + logit tensors**: SLURM job 2046 (`run_ppgen_logits.sh`)
-   submitted; runs `ppgen 32768` then `gen_logits.py --generators` sequentially.
-   Output goes to `zkllm-workdir/Llama-2-7b/lm_head-pp.bin` and
-   `zkllm-workdir/Llama-2-7b/logits/`.
+1. **Rebuild**: recompile `zkllm_entropy` after the architecture change.
 
-2. **Verifier**: `verify_entropy.py` written — checks all scalar arithmetic claims
-   (win_prob vs CDF table, q_fr normalisation, surprise vs log table, entropy sum)
-   without a GPU.  Run after job 2046 completes:
+2. **Commit final weights** (once per model):
+   ```bash
+   srun --gpus=1 --pty bash
+   cd /mnt/sharefs/user50/zk/zkllm-ccs2024
+   source /mnt/sharefs/user50/miniconda3/etc/profile.d/conda.sh && conda activate zkllm-env
+   # lm_head-pp.bin already exists from ppgen (job 2046)
+   python commit_final_layers.py --model-size 7
    ```
+
+3. **Generate entropy inputs** (once per inference run):
+   ```bash
+   python gen_entropy_inputs.py --model-size 7 --seq-len 1024
+   ```
+
+4. **Run entropy prover**:
+   ```bash
+   ./zkllm_entropy ./zkllm-workdir/Llama-2-7b tokens.txt proof.bin 3277
+   ```
+
+5. **Verify**:
+   ```bash
    python verify_entropy.py proof.bin
    ```
 
-3. **Calibration**: `calibrate_sigma.py` written — binary-searches for sigma_eff
-   given an empirical token match rate (from two inference runs) and the logit gap
-   distribution.  Run after logit tensors are available:
+6. **Calibrate sigma** (requires two inference runs):
+   ```bash
+   python calibrate_sigma.py \
+       --logits-dir ./zkllm-workdir/Llama-2-7b \
+       --tokens1 tokens_run1.txt --tokens2 tokens_run2.txt
    ```
-   python calibrate_sigma.py --logits-dir zkllm-workdir/Llama-2-7b/logits \
-       --tokens1 .../tokens_run1.txt --tokens2 .../tokens_run2.txt
-   ```
-   Or with a target match rate if only one run is available:
-   ```
-   python calibrate_sigma.py --logits-dir zkllm-workdir/Llama-2-7b/logits \
+   Or with a target match rate:
+   ```bash
+   python calibrate_sigma.py \
+       --logits-dir ./zkllm-workdir/Llama-2-7b \
        --target-match-rate 0.97
    ```
-
-4. **Strong-proof G1 verification**: `verify_entropy.py` currently checks only the
-   scalar arithmetic claims.  Full verification of the `me_open` G1 proof elements
-   requires BLS12-381 pairing (not yet implemented).
-
-## How to run (end-to-end)
-
-### 1. Generate public parameters for logit vectors (once)
-```bash
-srun --gpus=1 --pty bash
-cd /mnt/sharefs/user50/zk/zkllm-ccs2024
-./ppgen 32768 ./zkllm-workdir/Llama-2-7b/lm_head-pp.bin
-```
-
-### 2. Run zkLLM layer proofs + generate logit tensors
-```bash
-# Run existing layer proofs
-python run_proofs.py --model_size 7 --seq_len 1024 --num_layers 32
-# Apply lm_head, save logit tensors + commitments
-python gen_logits.py --model_size 7 --seq_len 1024 \
-    --generators ./zkllm-workdir/Llama-2-7b/lm_head-pp.bin \
-    --output_dir ./zkllm-workdir/Llama-2-7b/logits
-```
-
-### 3. Run entropy prover
-```bash
-./zkllm_entropy \
-    ./zkllm-workdir/Llama-2-7b/logits \   # logits_N.bin files
-    tokens.txt \                            # one token id per line
-    proof.bin \                             # output
-    3277 \                                  # sigma_eff (0.05 * 65536)
-    --generators ./zkllm-workdir/Llama-2-7b/lm_head-pp.bin \
-    --commits    ./zkllm-workdir/Llama-2-7b/logits  # logits_N-commitment.bin
-```
-
-### 4. Run tests
-```bash
-srun --gpus=1 --pty bash
-cd /mnt/sharefs/user50/zk/zkllm-ccs2024
-./test_zkargmax && ./test_zklog && ./test_zknormalcdf && ./test_zkentropy
-```
+   Note: `calibrate_sigma.py` reads logit gap distributions from `logits_N.bin` files.
+   These should be generated separately (e.g. by `gen_logits.py` without commitment).

@@ -4,25 +4,20 @@
 #include "zkargmax.cuh"
 #include "zknormalcdf.cuh"
 #include "zklog.cuh"
-#include "commitment.cuh"
 #include "fr-tensor.cuh"
 #include "proof.cuh"
 #include "polynomial.cuh"
 
 // Zero-knowledge conditional entropy calculator.
 //
-// For each output token position, computes surprise = -log2(q[actual_token])
-// where q is a conservative probability: win_prob[actual] / (vocab_size * cdf_scale),
-// with win_prob = Phi(diff_actual / sigma_eff) * cdf_scale.
+// For each output token position, proves surprise = -log2(q[actual_token])
+// where q[actual] = win_prob[actual] / total_win_prob, with:
+//   win_prob[i] = (1 - Phi((v_star - logits[i]) / sigma_eff)) * cdf_scale
 //
-// Prove path (strong, when logit_generators provided):
-//   1. zkArgmax::prove  — bit-decomp range proof that t_star is the argmax
-//   2. Commitment::me_open — G1 proof that logits[actual_token] is bound to the
-//      committed logit tensor; diff_actual = v_star - logits[actual_token]
-//   3. CDF/Log values recorded as constant polynomials (public table, verifier re-checks)
-//
-// Prove path (weak, no generators):
-//   Steps 1 + 3 only; logits[actual_token] is self-reported.
+// The logit tensor is an ephemeral value passed in from the caller, which is
+// responsible for proving it derives from committed model weights (e.g. via
+// zkFC on the final hidden state).  This class proves only the argmax and
+// entropy calculation on top of whatever logits are provided.
 //
 // Parameters:
 //   vocab_size    : number of tokens (e.g. 32000 for LLaMA)
@@ -31,7 +26,7 @@
 //   log_precision : bits for log table input range [1, 2^log_precision]
 //   cdf_scale     : fixed-point output scale for CDF values (e.g. 1<<16)
 //   log_scale     : fixed-point output scale for log values (e.g. 1<<16)
-//   sigma_eff     : Gaussian noise std dev in field integer units (sigma_real * logit_scale)
+//   sigma_eff     : Gaussian noise std dev in field integer units
 class zkConditionalEntropy {
 public:
     uint vocab_size;
@@ -62,20 +57,11 @@ public:
     // Compute total conditional entropy for a sequence (sum of per-position surprises).
     Fr_t compute(const vector<FrTensor>& logits_seq, const vector<uint>& tokens);
 
-    // Weak prove: logits[actual_token] is self-reported (no commitment).
+    // Prove the entropy computation.  The logits are taken as given; the caller
+    // is responsible for linking them to committed weights via zkFC.
+    // Returns the sum of argmax MLE claims on the logit tensors (for chaining).
     Fr_t prove(const vector<FrTensor>& logits_seq, const vector<uint>& tokens,
                Fr_t claimed_entropy, vector<Polynomial>& proof);
-
-    // Strong prove: logits[actual_token] is bound to the committed logit tensor via
-    // Commitment::me_open.  logit_generators must have size == 2^ceilLog2(vocab_size).
-    // logit_commits[pos] is the G1TensorJacobian commitment to logits_seq[pos].
-    // G1 proof elements (log2(vocab_size) triplets per position) go into g1_proof.
-    Fr_t prove(const vector<FrTensor>& logits_seq, const vector<uint>& tokens,
-               Fr_t claimed_entropy,
-               const Commitment& logit_generators,
-               const vector<G1TensorJacobian>& logit_commits,
-               vector<Polynomial>& proof,
-               vector<G1Jacobian_t>& g1_proof);
 };
 
 #endif
