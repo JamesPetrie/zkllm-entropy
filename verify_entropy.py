@@ -78,7 +78,6 @@ def main():
         vocab_size,  = struct.unpack('<I', f.read(4))
         sigma_eff,   = struct.unpack('<d', f.read(8))
         log_scale,   = struct.unpack('<I', f.read(4))
-        strong_prove,= struct.unpack('<B', f.read(1))
         n_polys,     = struct.unpack('<I', f.read(4))
 
         if magic != MAGIC:
@@ -86,8 +85,7 @@ def main():
             sys.exit(1)
 
         print(f"Proof: T={T}, vocab_size={vocab_size}, sigma_eff={sigma_eff:.4f}")
-        print(f"       log_scale={log_scale}, strong_prove={bool(strong_prove)}")
-        print(f"       n_polys={n_polys}")
+        print(f"       log_scale={log_scale}, n_polys={n_polys}")
         print(f"Params: cdf_precision={args.cdf_precision}, cdf_scale={args.cdf_scale}, "
               f"log_precision={args.log_precision}")
         print()
@@ -104,9 +102,6 @@ def main():
             # Constant polynomial (degree 0): one coefficient = the value.
             # The prover evaluates at x=0..n_coeffs-1; for a constant poly value==coeffs[0].
             poly_values.append(coeffs[0] if coeffs else (0,)*8)
-
-        n_g1, = struct.unpack('<I', f.read(4))
-        print(f"G1 elements: {n_g1}")
 
         # ── Expected polynomials per position: 6 constants ────────────────────
         # 0: logit_act   — MLE of logits at one-hot(actual_token)
