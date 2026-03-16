@@ -26,6 +26,9 @@
 | `test_zknormalcdf.cu` | Unit tests for zkNormalCDF |
 | `test_zkentropy.cu` | Integration tests for zkConditionalEntropy |
 | `gen_logits.py` | Python script: applies lm_head to final hidden state, saves logit tensors + commitments |
+| `run_ppgen_logits.sh` | SLURM batch job: runs ppgen then gen_logits.py (job 2046) |
+| `verify_entropy.py` | Python verifier: checks all arithmetic claims in a proof file (no GPU needed) |
+| `calibrate_sigma.py` | Python calibration: finds sigma_eff from empirical token match rate or target rate |
 
 ## Architecture summary
 
@@ -59,17 +62,34 @@ is used as the normalisation denominator (tighter bound than the earlier
 
 ## Remaining TODOs
 
-1. **Logit generators**: Run `./ppgen 32768 ./zkllm-workdir/Llama-2-7b/lm_head-pp.bin`
-   before calling `zkllm_entropy --generators`.
+1. **Logit generators + logit tensors**: SLURM job 2046 (`run_ppgen_logits.sh`)
+   submitted; runs `ppgen 32768` then `gen_logits.py --generators` sequentially.
+   Output goes to `zkllm-workdir/Llama-2-7b/lm_head-pp.bin` and
+   `zkllm-workdir/Llama-2-7b/logits/`.
 
-2. **Logit tensor generation**: Run `gen_logits.py` to apply lm_head to the final
-   hidden state and save per-position logit tensors + commitments to disk.
+2. **Verifier**: `verify_entropy.py` written — checks all scalar arithmetic claims
+   (win_prob vs CDF table, q_fr normalisation, surprise vs log table, entropy sum)
+   without a GPU.  Run after job 2046 completes:
+   ```
+   python verify_entropy.py proof.bin
+   ```
 
-3. **Verifier not yet written**: A verifier would load the G1 proof elements and
-   check each `me_open` proof against the stored logit commitment.
+3. **Calibration**: `calibrate_sigma.py` written — binary-searches for sigma_eff
+   given an empirical token match rate (from two inference runs) and the logit gap
+   distribution.  Run after logit tensors are available:
+   ```
+   python calibrate_sigma.py --logits-dir zkllm-workdir/Llama-2-7b/logits \
+       --tokens1 .../tokens_run1.txt --tokens2 .../tokens_run2.txt
+   ```
+   Or with a target match rate if only one run is available:
+   ```
+   python calibrate_sigma.py --logits-dir zkllm-workdir/Llama-2-7b/logits \
+       --target-match-rate 0.97
+   ```
 
-4. **Calibration not done**: `sigma_eff` is user-provided; empirical calibration
-   (two runs, measure token match rate) has not been performed.
+4. **Strong-proof G1 verification**: `verify_entropy.py` currently checks only the
+   scalar arithmetic claims.  Full verification of the `me_open` G1 proof elements
+   requires BLS12-381 pairing (not yet implemented).
 
 ## How to run (end-to-end)
 
