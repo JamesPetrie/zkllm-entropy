@@ -135,22 +135,6 @@ int main(int argc, char* argv[]) {
     FrTensor normed     = g_inv_rms_ * hidden; // Hadamard
     FrTensor normed_    = rs_norm2(normed);
 
-    // ── Diagnostic: check normed_ values (should be small integers) ──────────
-    {
-        const uint n_print = 4;
-        Fr_t* cpu_n = new Fr_t[n_print];
-        cudaMemcpy(cpu_n, normed_.gpu_data, n_print * sizeof(Fr_t), cudaMemcpyDeviceToHost);
-        cerr << "[diag] normed_[0..3]:" << endl;
-        for (uint i = 0; i < n_print; i++) {
-            bool hi = cpu_n[i].val[2]||cpu_n[i].val[3]||cpu_n[i].val[4]||cpu_n[i].val[5]||cpu_n[i].val[6]||cpu_n[i].val[7];
-            long long sv = ((long long)(int)cpu_n[i].val[1] << 32) | cpu_n[i].val[0];
-            cerr << "  [" << i << "] val[0..3]=" << cpu_n[i].val[0] << "," << cpu_n[i].val[1]
-                 << "," << cpu_n[i].val[2] << "," << cpu_n[i].val[3]
-                 << (hi ? " GARBAGE_HI" : "") << "  sv=" << sv << endl;
-        }
-        delete[] cpu_n;
-    }
-
     // ── Step 2: lm_head ───────────────────────────────────────────────────────
     cout << "Computing lm_head..." << endl;
     Rescaling rs_lm(1u << 16);
@@ -158,38 +142,6 @@ int main(int argc, char* argv[]) {
     zkFC lm_fc(hidden_size, vocab_size, lm_head_w.weight);
     FrTensor logits_batch  = lm_fc(normed_);   // seq_len * vocab_size
     FrTensor logits_batch_ = rs_lm(logits_batch);
-
-    // ── Diagnostic: check logits_batch BEFORE rescaling ──────────────────────
-    {
-        const uint n_print = 4;
-        Fr_t* cpu_pre = new Fr_t[n_print];
-        cudaMemcpy(cpu_pre, logits_batch.gpu_data, n_print * sizeof(Fr_t), cudaMemcpyDeviceToHost);
-        cerr << "[diag] logits_batch (pre-rescale)[0..3]:" << endl;
-        for (uint i = 0; i < n_print; i++) {
-            bool hi = cpu_pre[i].val[2]||cpu_pre[i].val[3]||cpu_pre[i].val[4]||cpu_pre[i].val[5]||cpu_pre[i].val[6]||cpu_pre[i].val[7];
-            cerr << "  [" << i << "] val[0..3]=" << cpu_pre[i].val[0] << "," << cpu_pre[i].val[1]
-                 << "," << cpu_pre[i].val[2] << "," << cpu_pre[i].val[3]
-                 << (hi ? " GARBAGE_HI" : "") << endl;
-        }
-        delete[] cpu_pre;
-    }
-
-    // ── Diagnostic: check first few logit values ──────────────────────────────
-    {
-        const uint n_print = 8;
-        uint n = std::min(n_print, logits_batch_.size);
-        Fr_t* cpu_lb = new Fr_t[n];
-        cudaMemcpy(cpu_lb, logits_batch_.gpu_data, n * sizeof(Fr_t), cudaMemcpyDeviceToHost);
-        cerr << "[diag] logits_batch_[0.." << n-1 << "] (should be small integers):" << endl;
-        for (uint i = 0; i < n; i++) {
-            bool hi = cpu_lb[i].val[2]||cpu_lb[i].val[3]||cpu_lb[i].val[4]||cpu_lb[i].val[5]||cpu_lb[i].val[6]||cpu_lb[i].val[7];
-            long long sv = ((long long)cpu_lb[i].val[1] << 32) | cpu_lb[i].val[0];
-            cerr << "  [" << i << "] val[0..3]=" << cpu_lb[i].val[0] << "," << cpu_lb[i].val[1]
-                 << "," << cpu_lb[i].val[2] << "," << cpu_lb[i].val[3]
-                 << (hi ? " GARBAGE_HI" : "") << "  sv=" << sv << endl;
-        }
-        delete[] cpu_lb;
-    }
 
     // ── Step 3: Split into per-position logit tensors ─────────────────────────
     cout << "Splitting logits by position..." << endl;
@@ -202,22 +154,6 @@ int main(int argc, char* argv[]) {
     vector<uint> tokens = load_token_sequence(tokens_file);
     if (tokens.size() != seq_len)
         throw std::runtime_error("token count != seq_len");
-
-    // ── Diagnostic: check logits_seq[0] after split ───────────────────────────
-    {
-        const uint n_print = 4;
-        uint n = std::min(n_print, vocab_size);
-        Fr_t* cpu_s0 = new Fr_t[n];
-        cudaMemcpy(cpu_s0, logits_seq[0].gpu_data, n * sizeof(Fr_t), cudaMemcpyDeviceToHost);
-        cerr << "[diag] logits_seq[0][0.." << n-1 << "] after split:" << endl;
-        for (uint i = 0; i < n; i++) {
-            bool hi = cpu_s0[i].val[2]||cpu_s0[i].val[3]||cpu_s0[i].val[4]||cpu_s0[i].val[5]||cpu_s0[i].val[6]||cpu_s0[i].val[7];
-            cerr << "  [" << i << "] val[0..3]=" << cpu_s0[i].val[0] << "," << cpu_s0[i].val[1]
-                 << "," << cpu_s0[i].val[2] << "," << cpu_s0[i].val[3]
-                 << (hi ? " GARBAGE_HI" : "") << endl;
-        }
-        delete[] cpu_s0;
-    }
 
     cout << "Building entropy lookup tables..." << endl;
     zkConditionalEntropy entropy_prover(

@@ -74,7 +74,13 @@ The Bug 2 fix added `is_neg` check that maps all negative field elements (val[2.
 
 Key insight: `Scalar_sub(p−k, p−(-32768)) = 32768 − k` (standard field arithmetic), which is the correct table index. The upper-bound clamp `(raw < table_bound) ? raw : (table_bound−1)` handles out-of-range large values without an `is_neg` check.
 
-**Fix**: Removed the `is_neg` branch; kept only the upper-bound clamp. Submitted as job 2142.
+**Fix**: Removed the `is_neg` branch; kept only the upper-bound clamp.
+
+**Job 2142 SUCCESS: full end-to-end PASSED.**
+- Entropy bound: 34.2947 bits total, 0.0335 bits/token over 1024 tokens
+- 6144 polynomials written to entropy-proof.bin
+- All 1024 positions verified: 1024 OK, 0 FAIL
+- `VERIFICATION PASSED`
 
 ## Remaining TODOs
 
