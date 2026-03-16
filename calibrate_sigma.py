@@ -1,166 +1,184 @@
 #!/usr/bin/env python3
 """
-calibrate_sigma.py — calibrate the Gaussian noise model sigma_eff for zkEntropy.
+calibrate_sigma.py — calibrate sigma_eff for the zkEntropy noise model.
 
-Method:
-  1. Run gen_logits.py twice (or any two identical-input inference passes) to get
-     two token sequences.  Compare them to measure the empirical token match rate.
-  2. Given the logit tensors, compute the argmax gap (v_star - v_second) per position.
-  3. Under the Gaussian noise model with per-logit std sigma, the probability that the
-     greedy winner matches between two runs is:
-         P_match(pos) = Phi(gap_pos / (sigma * sqrt(2)))
-     (Two independent noise draws on each logit; difference of two is N(0, sigma*sqrt(2)).)
-  4. Find the sigma_eff = sigma * logit_scale that minimises:
-         (mean(P_match) - empirical_match_rate)^2
+Runs Llama-2 greedy inference twice on the same prompt and measures how
+often the output tokens agree between runs.  Any disagreement is due to
+GPU floating-point non-determinism — the same noise source that
+zkConditionalEntropy models as Gaussian on logit differences.
+
+Given the empirical match rate r and the per-position logit gap
+  gap[t] = logits[t_star] - logits[t_second]
+the noise model predicts:
+  P_match(t) = Phi(gap[t] / (sigma * sqrt(2)))
+where sigma is the per-logit noise std dev.  We binary-search for the
+sigma that satisfies mean(P_match) == r.
+
+The output is sigma_eff = sigma * logit_scale (integer units), which is
+passed directly to ./zkllm_entropy.
 
 Usage:
-    # Compare two token files and known logit dir:
-    python calibrate_sigma.py \\
-        --tokens1 ./zkllm-workdir/Llama-2-7b/logits/tokens.txt \\
-        --tokens2 ./zkllm-workdir/Llama-2-7b/logits/tokens_run2.txt \\
-        --logits-dir ./zkllm-workdir/Llama-2-7b/logits \\
-        --logit-scale 65536
-
-    # If you only have one run, estimate from logit gap distribution:
-    python calibrate_sigma.py \\
-        --logits-dir ./zkllm-workdir/Llama-2-7b/logits \\
-        --target-match-rate 0.97 \\
-        --logit-scale 65536
+    # GPU required (noise is GPU hardware non-determinism)
+    python calibrate_sigma.py [--model-size 7] [--seq-len 256]
+        [--prompt "Once upon a time"]
+        [--logit-scale 65536] [--n-runs 2] [--verbose]
 """
 
-import argparse, math, struct, os, sys
+import argparse, math, sys
+import torch
 import numpy as np
 
-FR_T_SIZE = 32  # bytes per Fr_t
-
-
-def phi(x):
+def phi(x: float) -> float:
     return 0.5 * math.erfc(-x / math.sqrt(2.0))
 
+def expected_match_rate(sigma: float, gaps: np.ndarray) -> float:
+    return float(np.mean([phi(g / (sigma * math.sqrt(2.0))) for g in gaps]))
 
-def load_tokens(path):
-    with open(path) as f:
-        return [int(line.strip()) for line in f if line.strip()]
-
-
-def load_logit_row(path):
-    """Load a logits_N.bin file as a numpy array of float64 (from Fr_t int32 representation)."""
-    data = np.fromfile(path, dtype=np.uint32)
-    n_fr = len(data) // 8
-    data = data.reshape(n_fr, 8)
-    # word0 holds the int32 value (bit-reinterpreted as uint32)
-    word0 = data[:, 0].view(np.int32).astype(np.float64)
-    return word0
-
-
-def match_rate(tokens1, tokens2):
-    assert len(tokens1) == len(tokens2), "Token sequences differ in length"
-    matches = sum(a == b for a, b in zip(tokens1, tokens2))
-    return matches / len(tokens1)
-
-
-def argmax_gap(logit_row):
-    """Return (v_star - v_second) for a single position's logit array."""
-    sorted_vals = np.sort(logit_row)[::-1]
-    return float(sorted_vals[0] - sorted_vals[1])
-
-
-def expected_match_rate(sigma_eff, gaps):
-    """E[Phi(gap / (sigma_eff * sqrt(2)))] over all positions."""
-    return np.mean([phi(g / (sigma_eff * math.sqrt(2))) for g in gaps])
-
-
-def find_sigma(target_rate, gaps, lo=1.0, hi=1e6, tol=1.0):
-    """Binary-search for sigma_eff in integer units that achieves target_rate."""
-    # At small sigma_eff, most tokens match (high probability). At large sigma, fewer match.
-    # So match_rate is decreasing in sigma_eff.
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        r = expected_match_rate(mid, gaps)
-        if r > target_rate:
+def find_sigma(target_rate: float, gaps: np.ndarray,
+               lo: float = 1e-6, hi: float = 1e6) -> float:
+    """Binary search: match rate is decreasing in sigma."""
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if expected_match_rate(mid, gaps) > target_rate:
             lo = mid
         else:
             hi = mid
-        if hi - lo < tol:
-            break
-    return (lo + hi) / 2
+    return (lo + hi) / 2.0
+
+
+def run_greedy(model, input_ids: torch.Tensor, max_new_tokens: int,
+               device) -> tuple[list[int], list[np.ndarray]]:
+    """
+    Run greedy decoding, returning:
+      tokens    : list of generated token ids
+      logit_rows: list of np.ndarray (vocab_size,) raw logits per step
+    """
+    tokens = []
+    logit_rows = []
+    past = None
+    cur = input_ids.to(device)
+
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            out = model(cur, past_key_values=past, use_cache=True)
+            logits = out.logits[:, -1, :]   # (1, vocab_size)
+            past   = out.past_key_values
+            tok    = int(logits.argmax(dim=-1).item())
+            tokens.append(tok)
+            logit_rows.append(logits[0].cpu().float().numpy())
+            cur = torch.tensor([[tok]], device=device)
+
+    return tokens, logit_rows
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Calibrate sigma_eff for zkEntropy')
-    parser.add_argument('--tokens1', default='',
-                        help='First token sequence file (tokens.txt)')
-    parser.add_argument('--tokens2', default='',
-                        help='Second token sequence file (from a second inference run)')
-    parser.add_argument('--logits-dir', required=True,
-                        help='Directory containing logits_N.bin files')
-    parser.add_argument('--target-match-rate', type=float, default=0.97,
-                        help='Target empirical match rate (default 0.97); used when '
-                             '--tokens2 not given')
+    parser = argparse.ArgumentParser(
+        description='Calibrate sigma_eff by measuring GPU non-determinism')
+    parser.add_argument('--model-size', type=int, default=7, choices=[7, 13])
+    parser.add_argument('--seq-len', type=int, default=256,
+                        help='Number of tokens to generate per run (default 256)')
+    parser.add_argument('--prompt', type=str,
+                        default='The quick brown fox jumps over the lazy dog. '
+                                'In a world where science and magic coexist,',
+                        help='Prompt text for calibration')
     parser.add_argument('--logit-scale', type=int, default=65536,
-                        help='Fixed-point scale used when quantising logits (default 65536)')
-    parser.add_argument('--max-pos', type=int, default=None,
-                        help='Maximum number of positions to use (default: all)')
+                        help='zkLLM fixed-point scale (default 65536 = 1<<16)')
+    parser.add_argument('--n-runs', type=int, default=2,
+                        help='Number of independent inference runs (default 2)')
+    parser.add_argument('--verbose', '-v', action='store_true')
     args = parser.parse_args()
 
-    logits_dir = args.logits_dir
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cpu':
+        print('WARNING: running on CPU — noise may not reflect GPU non-determinism',
+              file=sys.stderr)
 
-    # ── Determine empirical match rate ────────────────────────────────────────
-    if args.tokens1 and args.tokens2:
-        tok1 = load_tokens(args.tokens1)
-        tok2 = load_tokens(args.tokens2)
-        rate = match_rate(tok1, tok2)
-        T = min(len(tok1), len(tok2))
-        print(f"Empirical match rate: {rate:.4f} ({int(rate*T)}/{T} positions match)")
-    else:
-        rate = args.target_match_rate
-        print(f"No second token file given; targeting match rate = {rate:.4f}")
+    MODEL_CARD = f'meta-llama/Llama-2-{args.model_size}b-hf'
+    print(f'Loading {MODEL_CARD} on {device}...', flush=True)
 
-    # ── Load logit tensors and compute argmax gaps ────────────────────────────
-    print(f"Loading logit tensors from {logits_dir} ...")
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_CARD, local_files_only=True, cache_dir='./model-storage')
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_CARD, local_files_only=True, cache_dir='./model-storage',
+        torch_dtype=torch.float32).to(device)
+    model.eval()
+
+    input_ids = tokenizer(args.prompt, return_tensors='pt').input_ids
+
+    # ── Run inference n_runs times ────────────────────────────────────────────
+    all_tokens = []
+    all_logits = []   # logits from run 0 only (used for gap computation)
+    print(f'Running {args.n_runs} greedy passes of {args.seq_len} tokens...', flush=True)
+
+    for run in range(args.n_runs):
+        print(f'  Run {run + 1}/{args.n_runs}...', flush=True)
+        toks, logit_rows = run_greedy(model, input_ids, args.seq_len, device)
+        all_tokens.append(toks)
+        if run == 0:
+            all_logits = logit_rows
+
+    # ── Compute pairwise match rates ──────────────────────────────────────────
+    T = args.seq_len
+    match_counts = []
+    for i in range(args.n_runs):
+        for j in range(i + 1, args.n_runs):
+            n_match = sum(a == b for a, b in zip(all_tokens[i], all_tokens[j]))
+            rate = n_match / T
+            match_counts.append(rate)
+            if args.verbose or args.n_runs == 2:
+                print(f'  Run {i+1} vs Run {j+1}: {n_match}/{T} tokens match  '
+                      f'(rate={rate:.4f})')
+
+    empirical_rate = float(np.mean(match_counts))
+    print(f'Mean empirical match rate: {empirical_rate:.4f}')
+
+    if empirical_rate >= 1.0:
+        print('All runs produced identical output — '
+              'GPU appears fully deterministic for this prompt.')
+        print('Try a longer sequence or different prompt, or use --target-match-rate.')
+        # Fall back to a plausible default
+        empirical_rate = 0.999
+
+    # ── Compute logit gaps from run 0 ─────────────────────────────────────────
     gaps = []
-    t = 0
-    while True:
-        path = os.path.join(logits_dir, f"logits_{t}.bin")
-        if not os.path.isfile(path):
-            break
-        if args.max_pos is not None and t >= args.max_pos:
-            break
-        row = load_logit_row(path)
-        gaps.append(argmax_gap(row))
-        t += 1
+    for row in all_logits:
+        top2 = np.partition(row, -2)[-2:]
+        gap  = float(top2[1] - top2[0])  # max - second_max (in raw fp units)
+        gaps.append(max(gap, 1e-9))
 
-    if not gaps:
-        print(f"ERROR: no logits_N.bin found in {logits_dir}", file=sys.stderr)
-        sys.exit(1)
-
-    T_used = len(gaps)
-    print(f"Loaded {T_used} positions.")
     gaps_arr = np.array(gaps)
-    print(f"Argmax gap stats (in logit-scale integers):")
-    print(f"  mean={gaps_arr.mean():.1f}  std={gaps_arr.std():.1f}  "
-          f"min={gaps_arr.min():.0f}  max={gaps_arr.max():.0f}")
+    print(f'\nLogit gap stats (raw fp32 logit units):')
+    print(f'  mean={gaps_arr.mean():.4f}  std={gaps_arr.std():.4f}  '
+          f'min={gaps_arr.min():.4f}  max={gaps_arr.max():.4f}')
 
-    # ── Binary-search for sigma_eff ───────────────────────────────────────────
-    sigma_eff = find_sigma(rate, gaps_arr)
-    sigma_real = sigma_eff / args.logit_scale
-    achieved_rate = expected_match_rate(sigma_eff, gaps_arr)
+    if args.verbose:
+        print('\nGreedy tokens (run 0):',
+              tokenizer.decode(all_tokens[0], skip_special_tokens=True)[:200])
 
-    print()
-    print(f"Calibrated sigma_eff : {sigma_eff:.1f}  (sigma_real = {sigma_real:.5f})")
-    print(f"Achieved match rate  : {achieved_rate:.4f}  (target {rate:.4f})")
-    print()
-    print("Use this sigma_eff value in zkllm_entropy:")
-    print(f"  ./zkllm_entropy <logits_dir> <tokens.txt> <proof.bin> {sigma_eff:.0f}")
-    print()
+    # ── Binary-search for sigma in raw fp units ───────────────────────────────
+    sigma_fp = find_sigma(empirical_rate, gaps_arr)
+    achieved = expected_match_rate(sigma_fp, gaps_arr)
+
+    # Convert to zkLLM integer units: sigma_eff = sigma_fp * logit_scale
+    sigma_eff = sigma_fp * args.logit_scale
+
+    print(f'\nCalibrated sigma (fp32 units)  : {sigma_fp:.6f}')
+    print(f'Calibrated sigma_eff (integer) : {sigma_eff:.1f}  '
+          f'(= sigma_fp × {args.logit_scale})')
+    print(f'Achieved match rate            : {achieved:.4f}  '
+          f'(target {empirical_rate:.4f})')
+
+    print(f'\nUse this sigma_eff in zkllm_entropy:')
+    print(f'  ./zkllm_entropy <workdir> tokens.txt proof.bin {sigma_eff:.0f}')
 
     # ── Sensitivity table ─────────────────────────────────────────────────────
-    print("Sensitivity (sigma_eff → expected match rate):")
+    print(f'\nSensitivity (sigma_eff → expected match rate):')
     for s in [sigma_eff * 0.5, sigma_eff * 0.75, sigma_eff,
-              sigma_eff * 1.25, sigma_eff * 1.5, sigma_eff * 2.0]:
-        r = expected_match_rate(s, gaps_arr)
-        marker = " <--" if abs(s - sigma_eff) < 1 else ""
-        print(f"  sigma_eff={s:8.1f}  match_rate={r:.4f}{marker}")
+              sigma_eff * 1.25, sigma_eff * 2.0]:
+        r = expected_match_rate(s / args.logit_scale, gaps_arr)
+        marker = ' <--' if abs(s - sigma_eff) < 1 else ''
+        print(f'  sigma_eff={s:10.1f}  match_rate={r:.4f}{marker}')
 
 
 if __name__ == '__main__':
