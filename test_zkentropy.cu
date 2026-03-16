@@ -94,14 +94,15 @@ int main() {
     // ── Test 5: compute() sums per-position surprises ────────────────────
     {
         vector<FrTensor> seq;
+        // Use one greedy token (0 surprise) and one unlikely token (high surprise)
+        // so the total is non-zero.
         seq.push_back(make_logits(vocab_size, 5, 5000L, 100L));
         seq.push_back(make_logits(vocab_size, 3, 4000L, 200L));
-        vector<uint> tokens = {5, 3};
+        vector<uint> tokens = {5, 20};  // token 20 is unlikely at position 1
 
         Fr_t total = prover.compute(seq, tokens);
-        // Just check it doesn't throw and produces a non-zero result.
         unsigned long tv = ((unsigned long)total.val[1] << 32) | total.val[0];
-        check(tv > 0, "compute() returns non-zero total entropy");
+        check(tv > 0, "compute() returns non-zero total entropy for unlikely token");
     }
 
     // ── Test 6: prove() validates consistency ────────────────────────────
