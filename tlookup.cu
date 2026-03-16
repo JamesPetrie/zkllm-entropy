@@ -411,12 +411,20 @@ FrTensor tLookupRange::prep(const int* vals, const uint D){
     return out;
 }
 
-KERNEL void lookuprange_tensor_prep_kernel(const Fr_t* vals, int low, uint* indices, uint N)
+// table_bound: size of the target lookup table.  Indices are clamped to
+// [0, table_bound-1] to prevent out-of-bounds GPU memory writes.
+// Scalar_sub handles both positive and p-k (negative) field elements correctly
+// because the subtraction is done in Fp: (p-k) - (p-low) = low-k (mod p),
+// which gives the correct table index for valid negative values like remainders.
+// Values that are genuinely out-of-range (raw >= table_bound) are clamped to
+// the last entry, which is safe for CDF lookups where diff >> table exceeds Phi≈1.
+KERNEL void lookuprange_tensor_prep_kernel(const Fr_t* vals, int low, uint* indices, uint N, uint table_bound)
 {
     const uint tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid < N)
     {
-        indices[tid] = blstrs__scalar__Scalar_sub(vals[tid], int_to_scalar(low)).val[0];
+        uint raw = blstrs__scalar__Scalar_sub(vals[tid], int_to_scalar(low)).val[0];
+        indices[tid] = (raw < table_bound) ? raw : (table_bound - 1u);
     }
 }
 
@@ -424,8 +432,8 @@ FrTensor tLookupRange::prep(const FrTensor& vals){
     // assign uint indices pointer on gpu
     uint* indices;
     cudaMalloc((void **)&indices, sizeof(uint) * vals.size);
-    // convert vals (which should be on gpu) to indices
-    lookuprange_tensor_prep_kernel<<<(vals.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(vals.gpu_data, low, indices, vals.size);
+    // convert vals (which should be on gpu) to indices, clamped to [0, table.size-1]
+    lookuprange_tensor_prep_kernel<<<(vals.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(vals.gpu_data, low, indices, vals.size, table.size);
     cudaDeviceSynchronize();
     auto out = tLookup::prep(indices, vals.size);
     cudaFree(indices);
@@ -474,8 +482,8 @@ pair<FrTensor, FrTensor> tLookupRangeMapping::operator()(const FrTensor& vals)
 {
     uint* indices;
     cudaMalloc((void **)&indices, sizeof(uint) * vals.size);
-    // convert vals (which should be on gpu) to indices
-    lookuprange_tensor_prep_kernel<<<(vals.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(vals.gpu_data, low, indices, vals.size);
+    // convert vals (which should be on gpu) to indices, clamped to [0, mapped_vals.size-1]
+    lookuprange_tensor_prep_kernel<<<(vals.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(vals.gpu_data, low, indices, vals.size, mapped_vals.size);
     cudaDeviceSynchronize();
     auto m = tLookup::prep(indices, vals.size);
     FrTensor y(vals.size);

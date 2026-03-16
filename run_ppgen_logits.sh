@@ -10,6 +10,9 @@
 set -e
 mkdir -p logs
 
+source /mnt/sharefs/user50/miniconda3/etc/profile.d/conda.sh
+conda activate zkllm-env
+
 cd /mnt/sharefs/user50/zk/zkllm-ccs2024
 
 WORKDIR=./zkllm-workdir/Llama-2-7b
@@ -18,9 +21,13 @@ LOGITS_DIR=$WORKDIR/logits
 VOCAB_SIZE=32768   # next power-of-2 >= 32000 (Llama-2 vocab)
 
 echo "=== Step 1: ppgen ==="
-echo "Generating $VOCAB_SIZE public-parameter generators -> $PP_FILE"
-./ppgen $VOCAB_SIZE $PP_FILE
-echo "ppgen done."
+if [ -f "$PP_FILE" ]; then
+    echo "pp file already exists, skipping ppgen."
+else
+    echo "Generating $VOCAB_SIZE public-parameter generators -> $PP_FILE"
+    ./ppgen $VOCAB_SIZE $PP_FILE
+    echo "ppgen done."
+fi
 
 echo ""
 echo "=== Step 2: gen_logits ==="

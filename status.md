@@ -54,7 +54,27 @@ derive from committed weights via `zkFC + verifyWeightClaim`.
 
 ## Recent Debugging
 
-- **Job 2063 / 2066 (BIT_WIDTH=16/25)**: `zkArgmax::prove: bit reconstruction mismatch` — root cause: Llama-2 logit range spans >512 float units (some tokens have logits < -512); after int scaling (×65536), max diff = v_star_int + |min_logit_int| > 2^25. Fixed by increasing BIT_WIDTH to 32 (2^32/65536 = 65536 float units, safe upper bound). Added max_diff diagnostic to zkargmax.cu to print the actual range.
+- **Job 2063 / 2066 (BIT_WIDTH=16/25)**: `zkArgmax::prove: bit reconstruction mismatch` — root cause traced to two bugs:
+
+### Bug 1: `fr_gt` wrong comparison for negative-negative field elements (`zkargmax.cu`)
+For two "negative" field elements (val[2..7]≠0, representing p−k), the original code used `av < bv`, but the correct comparison is `av > bv`: a larger raw value = p − (smaller k) = less negative = greater signed integer.
+**Fix**: Changed to `return av > bv;` (correct for both positive and negative cases).
+
+### Bug 2: Out-of-bounds GPU write in CDF lookup (`tlookup.cu`)
+`lookuprange_tensor_prep_kernel` used `vals[tid].val[0]` as a lookup table index without bounds-checking. With wrong argmax (Bug 1), some diffs were negative field elements (val[2..7]≠0), giving huge `val[0]` values (≈2^32). With correct argmax, valid positive diffs can still be in the millions (logit range × 65536), far beyond the 4096-entry CDF table. This caused `tlookup_kernel`'s `atomicAdd(&counts[huge_index], 1)` to write to arbitrary GPU memory, corrupting the logit tensors for all subsequent positions.
+**Fix**: Added `table_bound` parameter to kernel; indices are clamped to `[0, table_bound-1]`. *(See Bug 4 for a correction to the negative-element handling.)*
+
+### Bug 3: CDF table too small (`zkllm_entropy.cu`)
+Default `cdf_precision=12` gives a 4096-entry table covering diffs `[0, 4095]` = `[0, 0.78×sigma_eff]`. With sigma_eff=5223, the table must cover at least 6×sigma=31338 to get `Phi≈1.0` at the boundary (ensuring `win_prob≈0` for large-diff tokens). Increased default to `cdf_precision=15` (32768 entries, covers 6.28×sigma).
+
+**Bugs 1–3 fixed → job 2102 passed entropy proof (34.29 bits, 1024 positions, n_negative_diffs=0 for all).** But then crashed at `Rescaling::prove` → see Bug 4.
+
+### Bug 4: `lookuprange_tensor_prep_kernel` incorrectly maps valid negative remainders to index 0 (`tlookup.cu`)
+The Bug 2 fix added `is_neg` check that maps all negative field elements (val[2..7]≠0) to index 0. This is **correct for CDF lookups** (after the argmax fix, all diffs are non-negative). But `Rescaling::prove` also calls `tl_rem.prep(rem)` via the same kernel, and remainder values in `[-32768, -1]` are valid negative integers stored as p−k. Mapping these to index 0 corrupts the multiplicity vector `m`, breaking the LogUp constraint in `tLookup_phase1` (`claim != p(0) + p(1)`).
+
+Key insight: `Scalar_sub(p−k, p−(-32768)) = 32768 − k` (standard field arithmetic), which is the correct table index. The upper-bound clamp `(raw < table_bound) ? raw : (table_bound−1)` handles out-of-range large values without an `is_neg` check.
+
+**Fix**: Removed the `is_neg` branch; kept only the upper-bound clamp. Submitted as job 2142.
 
 ## Remaining TODOs
 

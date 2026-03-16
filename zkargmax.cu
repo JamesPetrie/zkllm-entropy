@@ -16,9 +16,10 @@ static bool fr_gt(const Fr_t& a, const Fr_t& b) {
     if (a_neg != b_neg) return b_neg; // positive > negative
     unsigned long long av = ((unsigned long long)a.val[1] << 32) | a.val[0];
     unsigned long long bv = ((unsigned long long)b.val[1] << 32) | b.val[0];
-    // Both positive: larger raw value is larger. Both negative: smaller raw value
-    // is less negative (higher signed value), so smaller unsigned is greater.
-    return a_neg ? (av < bv) : (av > bv);
+    // Both positive: larger raw value is larger.
+    // Both negative (p-k form): larger raw value means smaller k, i.e. less
+    // negative, i.e. a greater signed value.  So av > bv in both cases.
+    return av > bv;
 }
 
 uint zkArgmax::compute(const FrTensor& logits) {
