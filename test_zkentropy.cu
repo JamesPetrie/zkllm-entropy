@@ -124,6 +124,34 @@ int main() {
         check(ok, "prove() does not throw for correct claimed entropy");
     }
 
+    // ── Test 7: replacing greedy tokens with unlikely ones increases entropy ──
+    //    Build a 4-position sequence, all with the same dominant winner (token 5).
+    //    Compute entropy with all-greedy tokens, then replace 2 positions with an
+    //    unlikely token (token 20) and verify the entropy bound is strictly larger.
+    {
+        const uint seq_len = 4;
+        vector<FrTensor> seq;
+        for (uint i = 0; i < seq_len; i++)
+            seq.push_back(make_logits(vocab_size, /*winner=*/5, 5000L, 100L));
+
+        // All-greedy baseline: every position uses the argmax token.
+        vector<uint> greedy_tokens(seq_len, 5u);
+        Fr_t entropy_greedy = prover.compute(seq, greedy_tokens);
+        unsigned long eg = ((unsigned long)entropy_greedy.val[1] << 32) | entropy_greedy.val[0];
+        double greedy_bits = (double)eg / log_scale;
+        cout << "  all-greedy entropy  = " << greedy_bits << " bits" << endl;
+
+        // Replace positions 1 and 3 with an unlikely token.
+        vector<uint> mixed_tokens = {5u, 20u, 5u, 20u};
+        Fr_t entropy_mixed = prover.compute(seq, mixed_tokens);
+        unsigned long em = ((unsigned long)entropy_mixed.val[1] << 32) | entropy_mixed.val[0];
+        double mixed_bits = (double)em / log_scale;
+        cout << "  mixed-token entropy = " << mixed_bits << " bits" << endl;
+
+        check(em > eg,
+              "replacing greedy tokens with unlikely ones increases entropy bound");
+    }
+
     cout << "\nAll zkConditionalEntropy tests passed." << endl;
     return 0;
 }
