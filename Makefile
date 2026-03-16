@@ -18,7 +18,7 @@ CU_OBJS := $(CU_SRCS:.cu=.o)
 CPP_SRCS := $(wildcard *.cpp)
 CPP_OBJS := $(CPP_SRCS:.cpp=.o)
 TARGETS := main ppgen commit-param self-attn ffn rmsnorm skip-connection \
-           zkllm_entropy test_zkargmax test_zklog test_zknormalcdf test_zkentropy
+           zkllm_entropy commit_logits test_zkargmax test_zklog test_zknormalcdf test_zkentropy
 TARGET_OBJS := $(TARGETS:=.o)
 
 # Pattern rule for CUDA source files
