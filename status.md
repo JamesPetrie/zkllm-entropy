@@ -52,9 +52,13 @@ derive from committed weights via `zkFC + verifyWeightClaim`.
 4. `zkLog::compute` — `surprise = −log₂(q_idx / 2^log_precision) × log_scale`
 5. Accumulate over sequence → total entropy bound H
 
+## Recent Debugging
+
+- **Job 2063 / 2066 (BIT_WIDTH=16/25)**: `zkArgmax::prove: bit reconstruction mismatch` — root cause: Llama-2 logit range spans >512 float units (some tokens have logits < -512); after int scaling (×65536), max diff = v_star_int + |min_logit_int| > 2^25. Fixed by increasing BIT_WIDTH to 32 (2^32/65536 = 65536 float units, safe upper bound). Added max_diff diagnostic to zkargmax.cu to print the actual range.
+
 ## Remaining TODOs
 
-1. **Rebuild**: recompile `zkllm_entropy` after the architecture change.
+1. **Rebuild and re-run** (job 2066 with BIT_WIDTH=32): rebuild zkllm_entropy, run prover, verify.
 
 2. **Commit final weights** (once per model):
    ```bash

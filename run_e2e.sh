@@ -17,7 +17,7 @@ cd /mnt/sharefs/user50/zk/zkllm-ccs2024
 
 WORKDIR=./zkllm-workdir/Llama-2-7b
 SIGMA_EFF=5223   # calibrated from job 2062
-BIT_WIDTH=25     # must cover max logit gap: scale(65536) * real_gap(~256) < 2^24
+BIT_WIDTH=32     # must cover max logit gap: scale(65536) * real_gap; 2^32/65536=65536 float units (safe upper bound)
 
 echo "=============================="
 echo "Step 1: commit final weights"

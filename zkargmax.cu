@@ -1,5 +1,6 @@
 #include "zkargmax.cuh"
 #include <stdexcept>
+#include <iostream>
 
 zkArgmax::zkArgmax(uint bit_width) : bit_width(bit_width) {}
 
@@ -64,6 +65,50 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
     FrTensor diffs(N);
     zkargmax_diffs_kernel<<<blocks, FrNumThread>>>(logits.gpu_data, v_star, diffs.gpu_data, N);
     cudaDeviceSynchronize();
+
+    // 2. Diagnostic: check diff values and verify bit_width is sufficient.
+    {
+        Fr_t* cpu_diffs = new Fr_t[N];
+        Fr_t* cpu_logits = new Fr_t[N];
+        cudaMemcpy(cpu_diffs,  diffs.gpu_data,  N * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+        cudaMemcpy(cpu_logits, logits.gpu_data, N * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+        unsigned long long max_diff_pos = 0;  // max among small positive diffs
+        uint n_negative = 0;    // diffs with val[2..7] != 0 (genuinely negative)
+        uint n_large64  = 0;    // diffs with val[1] bit-31 set but val[2..7] == 0 (>= 2^63)
+        uint first_neg_idx = N;
+        for (uint i = 0; i < N; i++) {
+            const Fr_t& d = cpu_diffs[i];
+            bool has_high = d.val[2]||d.val[3]||d.val[4]||d.val[5]||d.val[6]||d.val[7];
+            if (has_high) {
+                n_negative++;
+                if (first_neg_idx == N) first_neg_idx = i;
+            } else {
+                unsigned long long dv = ((unsigned long long)d.val[1] << 32) | d.val[0];
+                if (d.val[1] >> 31) n_large64++;
+                if (dv > max_diff_pos) max_diff_pos = dv;
+            }
+        }
+        cerr << "[zkArgmax] n_negative_diffs=" << n_negative << "  n_large64=" << n_large64
+             << "  max_positive_diff=" << max_diff_pos << "  N=" << N << endl;
+        if (n_negative > 0) {
+            cerr << "[zkArgmax] NEGATIVE DIFFS: v_star < logits[i] for " << n_negative
+                 << " elements (argmax bug?). First at i=" << first_neg_idx << endl;
+            // Print first negative diff and corresponding logit
+            const Fr_t& lg = cpu_logits[first_neg_idx];
+            cerr << "  logit[" << first_neg_idx << "] = val[0..3]="
+                 << lg.val[0] << "," << lg.val[1] << "," << lg.val[2] << "," << lg.val[3] << endl;
+            cerr << "  v_star = val[0..3]="
+                 << v_star.val[0] << "," << v_star.val[1] << "," << v_star.val[2] << "," << v_star.val[3] << endl;
+        }
+        {
+            uint needed = 0;
+            unsigned long long tmp = max_diff_pos;
+            while (tmp > 0) { needed++; tmp >>= 1; }
+            cerr << "[zkArgmax] max_positive_diff needs " << needed << " bits (bit_width=" << bit_width << ")" << endl;
+        }
+        delete[] cpu_diffs;
+        delete[] cpu_logits;
+    }
 
     // 2. Bit-decompose each diff into bit_width bits.
     //    bits_vecs[b][i] = (diffs[i] >> b) & 1

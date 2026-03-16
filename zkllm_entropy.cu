@@ -85,7 +85,7 @@ int main(int argc, char* argv[]) {
     uint seq_len      = argc > 5  ? (uint)atoi(argv[5])  : 1024u;
     uint hidden_size  = argc > 6  ? (uint)atoi(argv[6])  : 4096u;
     uint vocab_size   = argc > 7  ? (uint)atoi(argv[7])  : 32000u;
-    uint bit_width    = argc > 8  ? (uint)atoi(argv[8])  : 25u; // logit_scale=65536 * max_gap~256 ≈ 2^24
+    uint bit_width    = argc > 8  ? (uint)atoi(argv[8])  : 32u; // logit_scale=65536 * max_gap; 2^32/65536 covers any realistic range
     uint cdf_precision= argc > 9  ? (uint)atoi(argv[9])  : 12u;
     uint log_precision= argc > 10 ? (uint)atoi(argv[10]) : 15u;
     uint cdf_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
