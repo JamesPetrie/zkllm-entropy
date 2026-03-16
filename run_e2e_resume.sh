@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=zk-e2e
+#SBATCH --job-name=zk-e2e-resume
 #SBATCH --gpus=1
 #SBATCH --cpus-per-gpu=16
-#SBATCH --mem=128G
-#SBATCH --time=03:00:00
-#SBATCH --output=logs/e2e-%j.out
-#SBATCH --error=logs/e2e-%j.err
+#SBATCH --mem=64G
+#SBATCH --time=02:00:00
+#SBATCH --output=logs/e2e-resume-%j.out
+#SBATCH --error=logs/e2e-resume-%j.err
 
 set -e
 mkdir -p logs
@@ -16,21 +16,9 @@ conda activate zkllm-env
 cd /mnt/sharefs/user50/zk/zkllm-ccs2024
 
 WORKDIR=./zkllm-workdir/Llama-2-7b
-SIGMA_EFF=5223   # calibrated from job 2062
+SIGMA_EFF=5223
 BIT_WIDTH=25     # must cover max logit gap: scale(65536) * real_gap(~256) < 2^24
 
-echo "=============================="
-echo "Step 1: commit final weights"
-echo "=============================="
-python commit_final_layers.py --model-size 7 --log-scale 16
-
-echo ""
-echo "=============================="
-echo "Step 2: generate entropy inputs"
-echo "=============================="
-python gen_entropy_inputs.py --model-size 7 --seq-len 1024
-
-echo ""
 echo "=============================="
 echo "Step 3: rebuild zkllm_entropy"
 echo "=============================="
