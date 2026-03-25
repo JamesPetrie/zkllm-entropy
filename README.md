@@ -33,15 +33,29 @@ Given the committed model weights W and public input x, the claimed output seque
 
 ### Why conditional entropy bounds covert channel capacity
 
-Any covert message encoded in output o must survive compression. By Shannon's source coding theorem, o can be compressed to H(o | x, W) bits given the input and model. Therefore, covert information in o is bounded by H(o | x, W).
+The prover claims their node is running a workload consisting of declared model weights, W, and a declared set of algorithms, A. The verifier monitors the declared channel to measure the inputs, I, and outputs O. Let D = A(I, W) denote the set of outputs that could be produced by running the declared algorithm(s) on the measured inputs.
+
+We define the covert message capacity, C(O), of an output as the information in O that could be used to encode a covert payload. The conditional entropy H(O | D), the information in O not determined by the declared computation D, provides an upper bound:
+
+$$C(O) \leq H(O \mid D)$$
+
+If inference were perfectly deterministic, H(O | D) would be zero. In practice, current frontier AI implementations exhibit hardware nondeterminism even at temperature zero, mainly because the order of operations can vary between runs, and floating-point arithmetic is nonassociative. A dishonest prover could mimic this noise to encode covert information. To be conservative, we treat all unexplained entropy as potential covert message capacity.
 
 ### Why approximations give valid upper bounds
 
-By Gibbs' inequality, for any approximation q of the true token distribution p:
+The verifier does not know the true distribution P(O | D), but can estimate it. Let Q(O | D) be any estimate of this distribution.
 
-$$H(o | x, W) = -\sum_i \log_2 p(o_i) \leq -\sum_i \log_2 q(o_i)$$
+Gibbs' inequality states that for any true distribution P and estimate Q, then H(P) ≤ -E_P[log₂ Q], with equality iff P = Q. Combining with C(O) ≤ H(O | D):
 
-This means we don't need exact token probabilities. Any reasonable approximation yields a valid (though possibly loose) upper bound on covert capacity.
+$$C(O) \leq H(O \mid D) \leq -\mathbb{E}_{P}\left[\log_2 Q(O \mid D)\right]$$
+
+This bound holds for any estimate Q: a better estimate gives a tighter bound.
+
+We compute Q(O | D) by recomputing token probabilities autoregressively and multiplying them. We denote by q̂(oᵢ; W, I, o_{<i}) the verifier's estimate of the probability of token oᵢ given the declared weights, measured inputs, and preceding tokens. The prover may propose any approximation q̂ they wish, for instance by specifying the exact inference algorithm, random seed handling, or sampling procedure used. Since Gibbs' inequality guarantees the bound holds for any estimate Q, a prover who provides a more accurate approximation only tightens the bound on their own covert capacity, creating an incentive for honest specification.
+
+Taking the log gives the **estimated covert message capacity**, the sum of per-token surprisals:
+
+$$\hat{C}(O) = -\sum_{i=1}^{m} \log_2 \hat{q}(o_i; W, I, o_{<i})$$
 
 ### Handling hardware non-determinism
 
@@ -55,7 +69,7 @@ Where:
 - σ is calibrated so the noise model predicts ~97% exact token matches
 - Φ is the standard normal CDF
 
-This gives the probability that token i would be selected under hardware noise, even if it wasn't the exact argmax in the verifier's computation.
+This gives the probability that token i would be selected under hardware noise, even if it wasn't the exact argmax in the verifier's computation. This approach extends to non-zero temperature sampling via the Gumbel max trick.
 
 ---
 
