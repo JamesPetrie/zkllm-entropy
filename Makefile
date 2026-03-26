@@ -1,14 +1,20 @@
 # Compilers
-NVCC := $(CONDA_PREFIX)/bin/nvcc
+NVCC := /usr/local/cuda/bin/nvcc
 
 # Include and library paths
 INCLUDES := -I$(CONDA_PREFIX)/include
 LIBS := -L$(CONDA_PREFIX)/lib
 
 # get compute capability from retrieved value
-ARCH := sm_100
+ARCH := sm_90
 
 # NVCC compiler flags
+# Note: -dlto (device link-time optimization) is omitted here to keep build times
+# short (~5 min vs ~17 min). Add -dlto to the compile and link rules below for an
+# optimized production build:
+#   %.o: %.cu  →  add -dlto after -dc
+#   %.o: %.cpp →  add -dlto after -dc
+#   $(TARGETS) →  add -dlto at the end of the link command
 NVCC_FLAGS := -arch=$(ARCH) -std=c++17
 
 # Source and object files
@@ -23,15 +29,15 @@ TARGET_OBJS := $(TARGETS:=.o)
 
 # Pattern rule for CUDA source files
 %.o: %.cu
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -dc -dlto $< -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -dc $< -o $@
 
 # Pattern rule for C++ source files
 %.o: %.cpp
-	$(NVCC) -x cu $(NVCC_FLAGS) $(INCLUDES) -dc -dlto $< -o $@
+	$(NVCC) -x cu $(NVCC_FLAGS) $(INCLUDES) -dc $< -o $@
 
 # General rule for building each target
 $(TARGETS): % : %.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@ -dlto
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
 
 # Clean rule
 clean:
