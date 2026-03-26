@@ -82,25 +82,36 @@ For reference, the σ_eff value hardcoded in the prototype is 5,223 — roughly 
 
 ## Entropy Implications
 
-### Nondeterminism entropy per token
+### Simplified model: close-call positions
 
-At σ = 0.007, the nondeterminism is concentrated at the 12 positions (out of 384) where the logit gap is below the bfloat16 ULP. At these positions, the noise is sufficient to flip the argmax with near-50% probability, contributing ~1 bit of entropy each. At all other positions, the flip probability is negligible.
+The nondeterminism is concentrated at "close-call" token positions where the top two candidates are nearly tied. At these positions, the outcome is effectively a coin flip (~1 bit of entropy); at all other positions, the nondeterminism entropy is negligible. This leads to a simple estimate:
 
-| Metric | Value |
-|--------|-------|
-| Mean nondeterminism entropy per token | **0.031 bits** |
-| Tokens with nonzero nondeterminism entropy | 12/384 (3.1%) |
-| Entropy at affected positions | ~1 bit each |
+- A pairwise first-divergence occurs when a close-call position exists **and** the two runs land on opposite sides of the coin flip (probability ≈ 50%).
+- Therefore: **close-call rate ≈ 2 × first-divergence rate = 2 × 0.74% = 1.48%**.
+- Each close-call contributes ~1 bit of nondeterminism entropy.
+- **Nondeterminism entropy per token ≈ 0.0148 × 1 = 0.0148 bits**.
+
+### Gaussian noise model (from logit gap distribution)
+
+Fitting σ to the Llama-2-7B logit gap distribution (Experiment 1) to match the 0.74% flip rate gives a slightly higher estimate, because some positions contribute fractional entropy rather than a clean 0-or-1. However, the gap distribution is sharply bimodal — positions are either bf16-tied (gap < 0.016, flip ≈ 50%) or well-separated (gap > 0.1, flip ≈ 0) — so the fractional contributions are negligible:
+
+| Metric | Simplified model | Gaussian fit (Llama-2-7B) |
+|--------|-----------------|---------------------------|
+| Nondeterminism entropy per token | **0.015 bits** | **0.031 bits** |
+| Close-call / tied positions | 1.48% (from API) | 3.1% (12/384, from logprobs) |
+
+The difference between the two estimates (0.015 vs 0.031 bits/token) reflects the different close-call rates: 1.48% derived from the Claude API first-divergence rate vs 3.1% observed in Llama-2-7B logprob gaps. These measure different models under different serving conditions, so some discrepancy is expected. Both estimates are small.
 
 ### Ratio to token representation size
 
 Llama-2-7B has a vocabulary of 32,000 tokens, requiring log₂(32,000) ≈ **15 bits** to represent a token.
 
-| Ratio | Value |
-|-------|-------|
-| Nondeterminism entropy / token size | 0.031 / 15 = **0.0021** |
+| Estimate | Entropy / token size |
+|----------|---------------------|
+| Simplified (from API disagreement rate) | 0.015 / 15 = **0.10%** |
+| Gaussian fit (from Llama-2-7B logprobs) | 0.031 / 15 = **0.21%** |
 
-The nondeterminism entropy is **0.2% of the information needed to specify a token**. Equivalently, 99.8% of each token's identity is fully determined by the model's computation; only 0.2% is attributable to noise.
+The nondeterminism entropy is **0.1–0.2% of the information needed to specify a token**. Equivalently, 99.8–99.9% of each token's identity is fully determined by the model's computation; only 0.1–0.2% is attributable to noise.
 
 ---
 
@@ -108,7 +119,7 @@ The nondeterminism entropy is **0.2% of the information needed to specify a toke
 
 1. **Source of production nondeterminism.** Single-GPU inference is deterministic. The 0.74% flip rate observed in the Claude API likely arises from multi-replica routing and dynamic batching — different request groupings change padding and attention masks, altering floating-point accumulation order across replicas. This is not Gaussian noise on logits; it is better described as an occasional tie-breaking mechanism at positions where the model's top candidates are nearly equal.
 
-2. **The Gaussian model is a convenient fiction.** The actual nondeterminism is binary at each position: either the gap is large enough to be stable (>99% of tokens) or it is near-degenerate and the outcome depends on implementation details (~1% of tokens). Modeling this as continuous Gaussian noise with σ = 0.007 reproduces the correct aggregate flip rate but overstates the noise at most positions and understates it at the vulnerable ones.
+2. **The Gaussian model is a convenient fiction.** The actual nondeterminism is binary at each position: either the gap is large enough to be stable (>99% of tokens) or it is near-degenerate and the outcome depends on implementation details (~1% of tokens). Modeling this as continuous Gaussian noise with σ = 0.007 reproduces the correct aggregate flip rate but overstates the noise at most positions and understates it at the vulnerable ones. The simplified close-call model better reflects the actual mechanism.
 
 3. **Model and prompt dependence.** The logit gap distribution depends on the model, vocabulary size, prompt content, and position in the sequence. The 12/384 near-tied positions observed for Llama-2-7B on these six prompts may not be representative of other models or workloads. A larger-vocabulary model may have more near-ties (more candidates to be close), while a more confident model may have fewer.
 
@@ -122,9 +133,11 @@ The nondeterminism entropy is **0.2% of the information needed to specify a toke
 
 | Quantity | Value |
 |----------|-------|
-| Observed per-token flip rate (Claude API) | 0.74% |
+| Observed per-token first-divergence rate (Claude API) | 0.74% |
+| Implied close-call rate | 1.48% |
 | Calibrated σ (logit space) | 0.007 |
 | Calibrated σ_eff (×65536) | 456 |
-| Nondeterminism entropy per token | 0.031 bits |
+| Nondeterminism entropy per token (simplified) | 0.015 bits |
+| Nondeterminism entropy per token (Gaussian fit) | 0.031 bits |
 | Bits per token (vocab 32K) | 15 bits |
-| **Nondeterminism / token size** | **0.21%** |
+| **Nondeterminism / token size** | **0.1–0.2%** |
