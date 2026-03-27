@@ -12,7 +12,7 @@
 // ── Platform macros (shared with bls12-381.cuh) ─────────────────────────────
 #ifndef DEVICE
 #ifdef __NVCC__
-  #define DEVICE __device__
+  #define DEVICE __host__ __device__
   #define GLOBAL
   #define KERNEL extern "C" __global__
   #define LOCAL __shared__
@@ -47,6 +47,14 @@ extern CONSTANT Gold_t gold_ZERO;   // {0}
 extern CONSTANT Gold_t gold_ONE;    // {1}
 extern CONSTANT Gold_t gold_P;      // {GOLDILOCKS_P}
 
+
+// Portable 64x64->high64 multiply (works on host and device)
+#ifdef __CUDA_ARCH__
+  #define UMUL64HI(a, b) __umul64hi((a), (b))
+#else
+  #define UMUL64HI(a, b) ((uint64_t)(((__uint128_t)(a) * (b)) >> 64))
+#endif
+
 // ── Core arithmetic ─────────────────────────────────────────────────────────
 
 DEVICE inline Gold_t gold_add(Gold_t a, Gold_t b) {
@@ -75,7 +83,7 @@ DEVICE inline Gold_t gold_mul(Gold_t a, Gold_t b) {
     // Since 2^64 ≡ 2^32 - 1 (mod p), we have:
     //   (hi * 2^64 + lo) ≡ hi * (2^32 - 1) + lo (mod p)
     unsigned long long lo = a.val * b.val;
-    unsigned long long hi = __umul64hi(a.val, b.val);
+    unsigned long long hi = UMUL64HI(a.val, b.val);
 
     // Reduce: result = lo + hi * EPSILON where EPSILON = 2^32 - 1
     // Since hi < p and EPSILON < 2^32, hi * EPSILON < 2^96
@@ -85,7 +93,7 @@ DEVICE inline Gold_t gold_mul(Gold_t a, Gold_t b) {
     // Step 1: compute hi * EPSILON as 128-bit
     uint64_t eps = GOLDILOCKS_P_NEG;  // 2^32 - 1
     uint64_t t_lo = hi * eps;
-    uint64_t t_hi = __umul64hi(hi, eps);
+    uint64_t t_hi = UMUL64HI(hi, eps);
 
     // Step 2: add lo + t_lo (with carry)
     uint64_t sum = lo + t_lo;
@@ -99,7 +107,7 @@ DEVICE inline Gold_t gold_mul(Gold_t a, Gold_t b) {
     // plus carry is at most 1), total_hi * eps < 2^65.
     // So total_hi * eps fits in 128 bits but the high part is at most 1 bit.
     uint64_t r_lo = total_hi * eps;
-    uint64_t r_hi = __umul64hi(total_hi, eps);  // 0 or very small
+    uint64_t r_hi = UMUL64HI(total_hi, eps);  // 0 or very small
 
     // Step 5: sum + r_lo
     uint64_t result = sum + r_lo;
@@ -192,10 +200,10 @@ DEVICE inline uint gold_get_bits(Gold_t a, uint start, uint count) {
 
 #define blstrs__scalar__Scalar          Gold_t
 
-#define blstrs__scalar__Scalar_ZERO     gold_ZERO
-#define blstrs__scalar__Scalar_ONE      gold_ONE
-#define blstrs__scalar__Scalar_P        gold_P
-#define blstrs__scalar__Scalar_R2       gold_ONE
+#define blstrs__scalar__Scalar_ZERO     Gold_t{0ULL}
+#define blstrs__scalar__Scalar_ONE      Gold_t{1ULL}
+#define blstrs__scalar__Scalar_P        Gold_t{GOLDILOCKS_P}
+#define blstrs__scalar__Scalar_R2       Gold_t{1ULL}
 
 #define blstrs__scalar__Scalar_add      gold_add
 #define blstrs__scalar__Scalar_sub      gold_sub

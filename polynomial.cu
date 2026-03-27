@@ -1,5 +1,37 @@
 #include "polynomial.cuh"
 
+#ifdef USE_GOLDILOCKS
+// ── CPU-side scalar field operators (Goldilocks) ─────────────────────────────
+// Goldilocks arithmetic is simple 64-bit integer math — no need for GPU kernels.
+// This eliminates ~16k cudaMalloc/cudaFree calls per layer proof.
+
+Fr_t operator+(const Fr_t& a, const Fr_t& b) {
+    return gold_add(a, b);
+}
+
+Fr_t operator-(const Fr_t& a, const Fr_t& b) {
+    return gold_sub(a, b);
+}
+
+Fr_t operator-(const Fr_t& a) {
+    return gold_sub(Gold_t{0ULL}, a);
+}
+
+Fr_t operator*(const Fr_t& a, const Fr_t& b) {
+    return gold_mul(a, b);
+}
+
+Fr_t operator/(const Fr_t& a, const Fr_t& b) {
+    if (b.val == 0) throw std::runtime_error("divide by zero");
+    return gold_div(a, b);
+}
+
+Fr_t inv(const Fr_t& a) {
+    if (a.val == 0) throw std::runtime_error("inverse of zero");
+    return gold_inverse(a);
+}
+
+#else
 //kernel for operator+
 __global__ void addKernel(const Fr_t* a, const Fr_t* b, Fr_t* c)
 {
@@ -150,6 +182,8 @@ Fr_t inv(const Fr_t& a)
     cudaFree(c_cuda);
     return c;
 }
+
+#endif
 
 Polynomial::Polynomial() : degree_(0), coefficients_(nullptr) {}
 
