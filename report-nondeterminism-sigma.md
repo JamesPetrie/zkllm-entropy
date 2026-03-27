@@ -18,7 +18,7 @@ We ran two complementary experiments:
 Llama-2-7B was served via vLLM (v0.18.0, bfloat16, FlashAttention v3, `--enforce-eager`) on a single NVIDIA H100 PCIe GPU. Six prompts were each submitted 50 times at temperature 0 with `max_tokens=64`. Top-5 log-probabilities were collected at every token position, yielding 384 token positions with full logprob data.
 
 **Experiment 2 — Production-scale nondeterminism (Claude API).**
-The same six prompts were each submitted 10 times at temperature 0 to Claude Haiku (claude-haiku-4-5-20251001) via the Anthropic API with `max_tokens=50`. Since the API does not return log-probabilities, only text-level agreement was measured.
+The same six prompts were each submitted 10 times at temperature 0 to three Claude models — Haiku, Sonnet, and Opus — via the Anthropic API with `max_tokens=50`. Since the API does not return log-probabilities, only text-level agreement was measured.
 
 ---
 
@@ -30,9 +30,41 @@ Across all 470,400 pairwise token comparisons (6 prompts × C(50,2) pairs × 64 
 
 ### Production inference shows measurable nondeterminism
 
-Across 270 pairwise comparisons of Claude API outputs, 85 pairs (31.5%) diverged at some point during generation. However, divergence is concentrated at specific token positions — most tokens are generated identically across all runs. Factual prompts ("The capital of France is", "The solution to x² − 5x + 6 = 0 is") were fully deterministic. Open-ended prompts diverged at consistent character positions, suggesting a small number of "decision points" where the model's top candidates are nearly tied.
+All three Claude models showed nondeterminism at temperature 0, with larger models showing less:
 
-The **per-token first-divergence rate** — counting only the first token at which a pair of runs disagrees, conditional on all prior tokens matching — was **0.74%** (85 first-divergence events out of ~11,500 token comparisons up to divergence).
+| Model | Pair disagree rate | Per-token first-divergence | Implied close-call rate | Entropy/token | % of token size |
+|-------|-------------------|---------------------------|------------------------|---------------|-----------------|
+| Haiku | 31.5% | 0.74% | 1.48% | 0.0148 bits | 0.099% |
+| Sonnet | 24.8% | 0.56% | 1.12% | 0.0112 bits | 0.075% |
+| Opus | 12.2% | 0.26% | 0.52% | 0.0052 bits | 0.035% |
+
+Divergence is concentrated at specific token positions — most tokens are generated identically across all runs. Which prompts diverge varies by model: the fibonacci prompt diverges on Haiku and Sonnet but not Opus; the "capital of France" prompt diverges only on Opus. The close-call positions are model-specific, not prompt-specific.
+
+The **per-token first-divergence rate** — counting only the first token at which a pair of runs disagrees, conditional on all prior tokens matching — ranged from **0.26%** (Opus) to **0.74%** (Haiku).
+
+### Examples of divergence
+
+Divergence occurs at positions where the model's top candidates are nearly tied. The text before the divergence point is identical across all runs; only the marked token differs.
+
+**Haiku** — prompt: "In the year 2024, artificial intelligence"
+Diverges at character 86, after "...iencing rapid advancement and":
+- [2×] "...**widespread** adoption across many sectors:..."
+- [1×] "...**mainstream** adoption across multiple doma..."
+
+**Sonnet** — prompt: "def fibonacci(n): ..."
+Diverges at the very first character (position 0):
+- [3×] "**Here's** the implementation of the Fibonacci function:..."
+- [2×] "**\`\`\`python**\ndef fibonacci(n):..."
+
+**Sonnet** — prompt: "The top five programming languages in 2024 are:"
+Diverges at character 77, after "Based on various indices and surveys":
+- [9×] "...(lik..."
+- [1×] "...(suc..."
+
+**Opus** — prompt: "In the year 2024, artificial intelligence"
+Diverges at character 139, after "...otable trends and events:\n\n##":
+- [4×] "...## **Major** Developments..."
+- [1×] "...## **Key** Developments..."
 
 ---
 
@@ -87,9 +119,11 @@ For reference, the σ_eff value hardcoded in the prototype is 5,223 — roughly 
 The nondeterminism is concentrated at "close-call" token positions where the top two candidates are nearly tied. At these positions, the outcome is effectively a coin flip (~1 bit of entropy); at all other positions, the nondeterminism entropy is negligible. This leads to a simple estimate:
 
 - A pairwise first-divergence occurs when a close-call position exists **and** the two runs land on opposite sides of the coin flip (probability ≈ 50%).
-- Therefore: **close-call rate ≈ 2 × first-divergence rate = 2 × 0.74% = 1.48%**.
+- Therefore: **close-call rate ≈ 2 × first-divergence rate**.
 - Each close-call contributes ~1 bit of nondeterminism entropy.
-- **Nondeterminism entropy per token ≈ 0.0148 × 1 = 0.0148 bits**.
+- **Nondeterminism entropy per token ≈ close-call rate × 1 bit**.
+
+For the worst case (Haiku): 2 × 0.74% = 1.48% close-call rate, giving 0.0148 bits/token. For Opus: 2 × 0.26% = 0.52%, giving 0.0052 bits/token.
 
 ### Gaussian noise model (from logit gap distribution)
 
@@ -106,12 +140,14 @@ The difference between the two estimates (0.015 vs 0.031 bits/token) reflects th
 
 Llama-2-7B has a vocabulary of 32,000 tokens, requiring log₂(32,000) ≈ **15 bits** to represent a token.
 
-| Estimate | Entropy / token size |
-|----------|---------------------|
-| Simplified (from API disagreement rate) | 0.015 / 15 = **0.10%** |
-| Gaussian fit (from Llama-2-7B logprobs) | 0.031 / 15 = **0.21%** |
+| Estimate | Entropy/token | Entropy / token size |
+|----------|---------------|---------------------|
+| Simplified — Haiku (worst case) | 0.0148 bits | **0.099%** |
+| Simplified — Sonnet | 0.0112 bits | **0.075%** |
+| Simplified — Opus (best case) | 0.0052 bits | **0.035%** |
+| Gaussian fit (Llama-2-7B logprobs) | 0.031 bits | **0.21%** |
 
-The nondeterminism entropy is **0.1–0.2% of the information needed to specify a token**. Equivalently, 99.8–99.9% of each token's identity is fully determined by the model's computation; only 0.1–0.2% is attributable to noise.
+Across all models and estimation methods, the nondeterminism entropy is **0.03–0.2% of the information needed to specify a token**. Equivalently, 99.8–99.97% of each token's identity is fully determined by the model's computation.
 
 ---
 
@@ -121,7 +157,7 @@ The nondeterminism entropy is **0.1–0.2% of the information needed to specify 
 
 2. **The Gaussian model is a convenient fiction.** The actual nondeterminism is binary at each position: either the gap is large enough to be stable (>99% of tokens) or it is near-degenerate and the outcome depends on implementation details (~1% of tokens). Modeling this as continuous Gaussian noise with σ = 0.007 reproduces the correct aggregate flip rate but overstates the noise at most positions and understates it at the vulnerable ones. The simplified close-call model better reflects the actual mechanism.
 
-3. **Model and prompt dependence.** The logit gap distribution depends on the model, vocabulary size, prompt content, and position in the sequence. The 12/384 near-tied positions observed for Llama-2-7B on these six prompts may not be representative of other models or workloads. A larger-vocabulary model may have more near-ties (more candidates to be close), while a more confident model may have fewer.
+3. **Model and prompt dependence.** The logit gap distribution depends on the model, vocabulary size, prompt content, and position in the sequence. The multi-model comparison confirms that larger models have fewer close-call positions (Opus ~3× less than Haiku), and that which specific positions are close-calls differs across models. A larger-vocabulary model may have more near-ties (more candidates to be close), while a more confident model may have fewer.
 
 4. **bfloat16 vs float32.** If inference were run in float32, the bfloat16-tied positions would likely resolve (float32 ULP ≈ 2.4×10⁻⁷ vs bfloat16 ULP ≈ 0.016), and a larger σ would be needed to produce the same flip rate. The estimate σ = 0.007 is specific to bfloat16 inference.
 
@@ -131,13 +167,17 @@ The nondeterminism entropy is **0.1–0.2% of the information needed to specify 
 
 ## Summary
 
+| Quantity | Haiku | Sonnet | Opus |
+|----------|-------|--------|------|
+| Per-token first-divergence rate | 0.74% | 0.56% | 0.26% |
+| Implied close-call rate | 1.48% | 1.12% | 0.52% |
+| Nondeterminism entropy per token | 0.0148 bits | 0.0112 bits | 0.0052 bits |
+| Nondeterminism / token size (15 bits) | 0.099% | 0.075% | 0.035% |
+
 | Quantity | Value |
 |----------|-------|
-| Observed per-token first-divergence rate (Claude API) | 0.74% |
-| Implied close-call rate | 1.48% |
-| Calibrated σ (logit space) | 0.007 |
+| Calibrated σ (logit space, from Haiku) | 0.007 |
 | Calibrated σ_eff (×65536) | 456 |
-| Nondeterminism entropy per token (simplified) | 0.015 bits |
-| Nondeterminism entropy per token (Gaussian fit) | 0.031 bits |
+| Nondeterminism entropy (Gaussian fit, Llama-2-7B) | 0.031 bits/token |
 | Bits per token (vocab 32K) | 15 bits |
-| **Nondeterminism / token size** | **0.1–0.2%** |
+| **Nondeterminism / token size (range across models)** | **0.035–0.099%** |
