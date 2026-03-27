@@ -72,12 +72,12 @@ def fr_nonzero_high(words):
 def main():
     parser = argparse.ArgumentParser(description='Verify zkllm_entropy proof file')
     parser.add_argument('proof_file')
-    parser.add_argument('--cdf-precision', type=int, default=12,
-                        help='CDF table bits (default 12, same as prover default)')
-    parser.add_argument('--cdf-scale', type=int, default=65536,
-                        help='CDF output scale (default 65536)')
-    parser.add_argument('--log-precision', type=int, default=15,
-                        help='Log table bits (default 15, same as prover default)')
+    parser.add_argument('--cdf-precision', type=int, default=None,
+                        help='CDF table bits (read from proof header if available)')
+    parser.add_argument('--cdf-scale', type=int, default=None,
+                        help='CDF output scale (read from proof header if available)')
+    parser.add_argument('--log-precision', type=int, default=None,
+                        help='Log table bits (read from proof header if available)')
     parser.add_argument('--verbose', '-v', action='store_true')
     args = parser.parse_args()
 
@@ -90,20 +90,56 @@ def main():
         vocab_size,  = struct.unpack('<I', f.read(4))
         sigma_eff,   = struct.unpack('<d', f.read(8))
         log_scale,   = struct.unpack('<I', f.read(4))
-        n_polys,     = struct.unpack('<I', f.read(4))
 
         if magic != MAGIC:
             print(f"ERROR: bad magic {magic:#x}, expected {MAGIC:#x}")
             sys.exit(1)
 
+        # Try reading v2 header fields (cdf_precision, log_precision, cdf_scale).
+        # If the file was written by the old prover, these 12 bytes are actually
+        # the start of the polynomial data. We detect this by checking whether
+        # the remaining file size is consistent with v2 header.
+        header_pos = f.tell()  # should be 36
+        remaining = f.read(12)
+        if len(remaining) == 12:
+            hdr_cdf_prec, hdr_log_prec, hdr_cdf_scale = struct.unpack('<III', remaining)
+            # Heuristic: v2 header has cdf_precision in [1,30], log_precision in [1,30],
+            # cdf_scale > 0. If values look reasonable, treat as v2.
+            if 1 <= hdr_cdf_prec <= 30 and 1 <= hdr_log_prec <= 30 and hdr_cdf_scale > 0:
+                v2_header = True
+            else:
+                v2_header = False
+                f.seek(header_pos)
+        else:
+            v2_header = False
+            f.seek(header_pos)
+
+        if v2_header:
+            cdf_precision = args.cdf_precision if args.cdf_precision is not None else hdr_cdf_prec
+            log_precision = args.log_precision if args.log_precision is not None else hdr_log_prec
+            cdf_scale     = args.cdf_scale     if args.cdf_scale     is not None else hdr_cdf_scale
+            if args.cdf_precision is not None and args.cdf_precision != hdr_cdf_prec:
+                print(f"WARNING: --cdf-precision={args.cdf_precision} overrides proof header value {hdr_cdf_prec}")
+            if args.log_precision is not None and args.log_precision != hdr_log_prec:
+                print(f"WARNING: --log-precision={args.log_precision} overrides proof header value {hdr_log_prec}")
+        else:
+            # v1 header: fall back to defaults or CLI args
+            cdf_precision = args.cdf_precision if args.cdf_precision is not None else 15
+            log_precision = args.log_precision if args.log_precision is not None else 15
+            cdf_scale     = args.cdf_scale     if args.cdf_scale     is not None else 65536
+            print("NOTE: v1 proof header (no cdf_precision/log_precision/cdf_scale); using defaults")
+
+        n_polys, = struct.unpack('<I', f.read(4))
+
         print(f"Proof: T={T}, vocab_size={vocab_size}, sigma_eff={sigma_eff:.4f}")
         print(f"       log_scale={log_scale}, n_polys={n_polys}")
-        print(f"Params: cdf_precision={args.cdf_precision}, cdf_scale={args.cdf_scale}, "
-              f"log_precision={args.log_precision}")
+        print(f"Params: cdf_precision={cdf_precision}, cdf_scale={cdf_scale}, "
+              f"log_precision={log_precision}"
+              + (" (from proof header)" if v2_header else " (defaults/CLI)"))
         print()
 
-        cdf_len = 1 << args.cdf_precision
-        log_len = 1 << args.log_precision
+        cdf_len = 1 << cdf_precision
+        log_len = 1 << log_precision
 
         # ── Read all polynomial coefficients ──────────────────────────────────
         # Each polynomial: [n_coeffs: uint32] [n_coeffs * Fr_T_SIZE bytes]
@@ -132,8 +168,6 @@ def main():
         entropy_sum = 0
         n_ok = 0
         n_fail = 0
-        log_precision = args.log_precision
-
         for pos in range(T):
             base = pos * POLYS_PER_POS
             if base + 5 >= len(poly_values):
@@ -160,8 +194,8 @@ def main():
 
             # Check 1: win_prob == cdf_scale - cdf_table[diff_actual]
             d_clamped = min(diff_actual, cdf_len - 1)
-            cdf_val = cdf_table_value(d_clamped, sigma_eff, args.cdf_scale)
-            expected_win = args.cdf_scale - cdf_val
+            cdf_val = cdf_table_value(d_clamped, sigma_eff, cdf_scale)
+            expected_win = cdf_scale - cdf_val
             if expected_win < 0:
                 expected_win = 0
             if win_prob != expected_win:

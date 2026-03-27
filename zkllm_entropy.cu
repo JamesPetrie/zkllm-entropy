@@ -208,28 +208,34 @@ int main(int argc, char* argv[]) {
     verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
 
     // ── Serialise proof ───────────────────────────────────────────────────────
-    // Format:
+    // Format (v2 — adds cdf_precision, log_precision, cdf_scale to header):
     //   [8 bytes]  magic "ZKENTROP"
     //   [8 bytes]  entropy_val (uint64, in log_scale units)
     //   [4 bytes]  seq_len
     //   [4 bytes]  vocab_size
     //   [8 bytes]  sigma_eff (double)
     //   [4 bytes]  log_scale
+    //   [4 bytes]  cdf_precision    (NEW)
+    //   [4 bytes]  log_precision    (NEW)
+    //   [4 bytes]  cdf_scale        (NEW)
     //   [4 bytes]  n_polys
     //   For each polynomial:
     //     [4 bytes] n_coeffs
-    //     [n_coeffs * 32 bytes] coefficients (Fr_t at x=0,1,...,deg)
+    //     [n_coeffs * sizeof(Fr_t) bytes] coefficients
     {
         ofstream f(proof_output, ios::binary);
         if (!f) { cerr << "Cannot write: " << proof_output << endl; return 1; }
 
         uint64_t magic = 0x5A4B454E54524F50ULL;
-        f.write((char*)&magic,       sizeof(magic));
-        f.write((char*)&entropy_val, sizeof(entropy_val));
-        f.write((char*)&seq_len,     sizeof(seq_len));
-        f.write((char*)&vocab_size,  sizeof(vocab_size));
-        f.write((char*)&sigma_eff,   sizeof(sigma_eff));
-        f.write((char*)&log_scale,   sizeof(log_scale));
+        f.write((char*)&magic,         sizeof(magic));
+        f.write((char*)&entropy_val,   sizeof(entropy_val));
+        f.write((char*)&seq_len,       sizeof(seq_len));
+        f.write((char*)&vocab_size,    sizeof(vocab_size));
+        f.write((char*)&sigma_eff,     sizeof(sigma_eff));
+        f.write((char*)&log_scale,     sizeof(log_scale));
+        f.write((char*)&cdf_precision, sizeof(cdf_precision));
+        f.write((char*)&log_precision, sizeof(log_precision));
+        f.write((char*)&cdf_scale,     sizeof(cdf_scale));
 
         uint32_t n_polys = (uint32_t)proof.size();
         f.write((char*)&n_polys, sizeof(n_polys));
