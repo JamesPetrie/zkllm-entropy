@@ -320,16 +320,19 @@ but that work is needed regardless of this change (see S1, S3).
 
 ## Recommended Implementation Order
 
-1. **S5** — Fix binary sumcheck (one-line change, immediate soundness improvement)
-2. **S6** — Throw on negative diffs (one-line change)
-3. **S7** — Remove/gate diagnostic code (cleanup)
-4. **S4 + P2** — Store cdf_precision in proof header, fix verifier defaults
-5. **S2 via P1** — Use conservative total_win as interim fix (eliminates hardest soundness
-   gap with minimal code change)
-6. **S1** — Extend verifier to check argmax sumcheck polynomials (moderate effort)
-7. **P6** — Log-space division trick (replaces P1 with tight bound, eliminates per-token
-   leakage, achieves true ZK for the entropy layer)
-8. **S3** — Serialise weight-binding proofs (large effort, needed for full security)
+1. ✅ **S5** — Binary sumcheck replaced by batched random linear combination check
+   (commit 957f804). No separate Fr_bin_sc calls; combined_error(u)==0 at random u.
+2. ✅ **S6** — Negative diffs caught by bit-decomposition reconstruction check (implicit).
+3. ✅ **S7** — Diagnostic code gated behind `#ifdef ZKARGMAX_DIAGNOSTICS` (commit 957f804).
+4. ✅ **S4 + P2** — cdf_precision, log_precision, cdf_scale stored in v2 proof header;
+   verifier auto-detects and reads them (commit ca9b8bb).
+5. ⚠️ **S2 via P1** — Conservative total_win = vocab_size * cdf_scale was implemented but
+   reverted (commit 86ccfee): it makes q_idx clamp to 1 for all positions, giving 15
+   bits/token (max). Too loose. Need P6 (log-space division) for a tight bound.
+6. ✅ **S1 (partial)** — Verifier now checks argmax ind_sum==1 and ind_dot==0
+   (commit c238ec0). Full sumcheck verification not yet implemented.
+7. **P6** — Log-space division trick (NOT YET STARTED — the priority engineering task)
+8. **S3** — Serialise weight-binding proofs (NOT YET STARTED)
 
 ---
 
@@ -404,43 +407,37 @@ logits) overflows before the result is rescaled. If the compute path uses GPU fi
 arithmetic (accumulating in F_p), the accumulation wraps modulo p, giving wrong logits.
 If it uses host-side integer arithmetic or floating point, it may be fine.
 
-**Action items:**
+### Empirical Results (overflow_check.py, 2026-03-27)
 
-1. **Trace the zkFC compute path.** Determine whether `FrTensor::matmul` accumulates in
-   the field (wraps at p) or uses wider arithmetic. If it accumulates in F_p, verify that
-   the Rescaling step accounts for wrap-around or that values are small enough to avoid it.
+**No overflows detected.** All intermediate values stay well within the Goldilocks field.
 
-2. **Empirical range check.** Run the pipeline on real Llama-2-7B weights and log the
-   maximum intermediate value at each stage. Compare against p.
-   ```python
-   # Pseudocode for instrumented run:
-   for each layer output:
-       max_val = max(abs(scalar_to_long(elem)) for elem in tensor)
-       log2_max = log2(max_val)
-       print(f"Stage: {name}, max magnitude: 2^{log2_max:.1f}, headroom: {64 - log2_max:.1f} bits")
-   ```
+The `matrixMultiplyOptimized` kernel accumulates products using `gold_mul` + `gold_add`,
+which reduce mod p after every operation. The accumulator stays in [0, p) at all times.
+The question was whether the **mathematical** sum (as an integer) exceeds p, causing the
+modular result to differ from the intended integer result. It doesn't:
 
-3. **Compare quantized vs FP16 outputs.** Run inference in FP16 and in quantized
-   fixed-point (with the same scaling factor). Compare per-token logit rankings and
-   argmax agreement. Metrics:
-   - Fraction of positions where argmax matches
-   - Mean/max absolute difference in logits (after rescaling back to float)
-   - Per-position KL divergence between softmax distributions
-   - Whether the quantization error is smaller than the calibrated σ (if so, it's
-     absorbed by the noise model and doesn't affect the entropy bound)
+| Stage | Max magnitude | Headroom | Risk |
+|-------|--------------|----------|------|
+| Weights (quantized, scale=2^16) | 2^17.5 | 46.5 bits | None |
+| Embedding output | 2^14.1 | 49.9 bits | None |
+| RMSNorm x*rms_inv (before rescale) | 2^37.8 | 26.2 bits | None |
+| Q/K/V proj matmul (pre-rescale) | 2^36.4 | 27.6 bits | None |
+| Attention scores Q@K^T (pre-rescale) | 2^39.1 | 24.9 bits | None |
+| O proj matmul (pre-rescale) | 2^40.0 | 24.0 bits | None |
+| down_proj matmul (pre-rescale) | **2^42.8** | **21.2 bits** | None |
+| lm_head matmul (pre-rescale) | 2^37.1 | 26.9 bits | None |
 
-4. **Determine minimum safe scaling factor.** The scaling factor controls precision
-   (larger = more precise quantization) but also overflow risk (larger = bigger
-   intermediate values). Find the sweet spot where quantization error < σ but
-   accumulations stay within p.
+**Tightest headroom: 21.2 bits** at layer 30 `down_proj` matmul. This is 2^21 ≈ 2M times
+below the field prime. No overflow risk at scale=2^16 for Llama-2-7B.
 
-5. **Consider mixed-precision strategy.** If overflow is a problem in zkFC, options:
-   - Reduce scaling_factor for weight quantization (trades precision for range)
-   - Split the matmul into blocks and rescale between blocks
-   - Use extension field (Goldilocks quadratic extension, 128-bit) for accumulations
-   - Accept the overflow and handle it modularly (the sumcheck proof is valid
-     regardless of overflow — the question is only whether the *proved* computation
-     matches the *intended* computation)
+**Theoretical worst case:** `down_proj` has in_dim=11008. If all 11008 products were at
+their maximum observed per-element value (~2^16 × ~2^19 = 2^35), the sum would be
+2^35 × 11008 ≈ 2^48.4 — still 15+ bits below p. The actual maximum is lower because
+not all elements are simultaneously at their peak.
+
+**Remaining action items** (lower priority given empirical safety margin):
+- Item 3 (quantized vs FP16 comparison) — still useful for understanding accuracy
+- Items 4-5 (scaling factor optimization, mixed precision) — not needed at current params
 
 ---
 
