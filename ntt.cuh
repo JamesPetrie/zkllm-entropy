@@ -12,11 +12,7 @@
 #ifndef NTT_CUH
 #define NTT_CUH
 
-#ifdef USE_GOLDILOCKS
-#include "goldilocks.cuh"
-#else
-#include "bls12-381.cuh"
-#endif
+#include "fr-tensor.cuh"
 
 #include <vector>
 #include <stdexcept>
