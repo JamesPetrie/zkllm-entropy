@@ -74,6 +74,15 @@ test_fri_pcs: gold_test_fri_pcs.o $(GOLD_OBJS)
 gold_zkllm_entropy: gold_zkllm_entropy.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
+bench_field: bench_field.o $(CU_OBJS) $(CPP_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_bench_field: gold_bench_field.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_zkllm_entropy_timed: gold_zkllm_entropy_timed.o $(GOLD_OBJS) gold_timer.o
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
 # Clean rule
 clean:
 	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS) test_goldilocks test_goldilocks.o goldilocks.o $(GOLD_OBJS) gold_test_gold_tensor.o test_gold_tensor gold_test_ntt.o test_ntt gold_test_merkle.o test_merkle gold_test_fri.o test_fri gold_test_fri_pcs.o test_fri_pcs gold_fri_pcs.o

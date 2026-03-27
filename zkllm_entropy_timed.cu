@@ -8,7 +8,9 @@
 #include "zkfc.cuh"
 #include "rescaling.cuh"
 #include "proof.cuh"
+#ifndef USE_GOLDILOCKS
 #include "commitment.cuh"
+#endif
 #include "ioutils.cuh"
 #include "timer.hpp"
 #include <iostream>
@@ -86,17 +88,31 @@ int main(int argc, char* argv[]) {
     if (rms_inv.size != seq_len)
         throw std::runtime_error("rms_inv size mismatch");
 
+#ifdef USE_GOLDILOCKS
+    Weight final_norm_w = create_weight(
+        path("final_norm.weight-int.bin"),
+        path("final_norm.weight-gold-commitment.bin"),
+        1, hidden_size);
+#else
     Weight final_norm_w = create_weight(
         path("input_layernorm.weight-pp.bin"),
         path("final_norm.weight-int.bin"),
         path("final_norm.weight-commitment.bin"),
         1, hidden_size);
+#endif
 
+#ifdef USE_GOLDILOCKS
+    Weight lm_head_w = create_weight(
+        path("lm_head-weight-int.bin"),
+        path("lm_head-weight-gold-commitment.bin"),
+        hidden_size, vocab_size);
+#else
     Weight lm_head_w = create_weight(
         path("lm_head-pp.bin"),
         path("lm_head-weight-int.bin"),
         path("lm_head-weight-commitment.bin"),
         hidden_size, vocab_size);
+#endif
 
     vector<uint> tokens = load_token_sequence(tokens_file);
     if (tokens.size() != seq_len)
