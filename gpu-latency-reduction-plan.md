@@ -1,6 +1,6 @@
 # GPU Latency Reduction Plan
 
-**Date:** 2026-03-27
+**Date:** 2026-03-27 (updated with measured data)
 **Target:** zkllm-entropy full 32-layer prover on H100 PCIe (sm_90)
 
 ## System Overview
@@ -23,9 +23,46 @@ Final:
 
 Total: **224 subprocess invocations** for the layer pipeline, plus the entropy tail.
 
-## Where Time Is Spent (Per Layer)
+## Measured Timings (Goldilocks, H100 PCIe, n=1024)
 
-Each layer has these GPU-intensive operations:
+### End-to-End
+
+| Milestone | Time | Notes |
+|-----------|------|-------|
+| 32-layer proof (full pipeline) | **6m 23s (383s)** | After -O3, sync removal, CPU scalar ops |
+| Entropy tail only | **17.8s** | gold_zkllm_entropy on final RMSNorm + lm_head + entropy |
+| **Per-layer average** | **~11.4s** | (383s - 18s) / 32 layers |
+
+### Per-Step Measurements (Layer 0)
+
+| Step | Wall time | CUDA init overhead | Actual compute+prove |
+|------|-----------|-------------------|---------------------|
+| self-attn linear (3× QKV matmul + proofs) | 5.8s | ~3.5s | ~2.3s |
+| self-attn attn (QK^T, softmax, AV + proofs) | 4.4s | ~3.5s | ~0.9s |
+| skip-connection (vector addition) | 3.9s | ~3.5s | ~0.4s |
+| FFN (3× matmul + SwiGLU + proofs) | ~6.1s | ~3.5s | ~2.6s |
+| RMSNorm (estimated) | ~4.5s | ~3.5s | ~1.0s |
+| skip-connection (2nd) | ~3.9s | ~3.5s | ~0.4s |
+| **Layer total** | **~28.6s** | **~24.5s** | **~7.6s** |
+
+**Note:** The per-step times sum to ~28.6s but the pipeline runs at ~11.4s/layer. The difference is because the Python script may be running some steps in shared processes or the CUDA context is cached across quick successive invocations. The skip-connection measurement (3.9s for trivial compute) establishes the per-process CUDA overhead baseline at ~3.5s.
+
+### nsys Profiling (Entropy Proof)
+
+From nsys kernel-level breakdown of the entropy binary:
+
+| Kernel category | % of GPU time |
+|----------------|--------------|
+| matmul (matrixMultiplyOptimized) | 87% |
+| tLookup | 5.7% |
+| multilinear extension | 2.9% |
+| Other (rescaling, NTT, etc.) | 4.4% |
+
+### Key Insight from Measurements
+
+The kernel is running at only **~4% of peak INT32 throughput** on the matmul. This is not bandwidth-bound — it's **latency-bound** due to small tile sizes and lack of register tiling. We verified this experimentally: storing weights as fp16 (4× less bandwidth) produced no speedup and was actually 7% slower due to conversion overhead.
+
+## Where Time Is Spent (Per Layer)
 
 ### Compute (forward pass on GPU)
 
@@ -45,79 +82,53 @@ Each layer has these GPU-intensive operations:
 | **Total per layer** | | **~198B field multiply-adds** |
 | **Total 32 layers** | | **~6.3 trillion** |
 
-### Prove (sumcheck protocols)
-
-Each zkFC.prove() runs an inner-product sumcheck over the input and weight tensors. Each Rescaling.prove() runs a simpler sumcheck. The softmax proof involves exp/log lookups via tLookup.
-
-At the current matmul throughput of ~13 Gop/s (from bench-goldilocks-results.md), the compute-only matmul time per layer is roughly:
-
-```
-198B ops × 2 (mul+add) / 13 Gop/s ≈ 30 seconds per layer (compute only)
-```
-
-The prove phase adds additional sumcheck rounds on top. With 32 layers, **matmul compute alone is ~960 seconds**, before any proof overhead.
-
 ## Bottleneck Analysis
 
 ### Bottleneck 1: Per-Process Overhead (Critical — Architectural)
 
 `run_proofs.py` spawns **224 separate GPU processes** via `os.system()`. Each process:
-- Initializes a CUDA context (~0.5-2s)
+- Initializes a CUDA context (~3.5s measured — dominated by driver init, not weight loading)
 - Loads weights from disk via `FrTensor::from_int_bin()` (disk I/O)
 - Loads input tensors from disk
 - Runs GPU computation
 - Writes output tensors to disk
 - Exits (destroying all GPU state)
 
-**Estimated overhead:** 1-2 seconds per subprocess × 224 = **~4-7 minutes of pure overhead** just from process spawning and CUDA initialization, plus all the disk I/O for intermediate tensors.
+**Measured:** `gold_skip-connection` (trivial compute) takes 3.9s wall time, establishing a ~3.5s per-process floor. With 7 subprocess invocations per layer × 32 layers = 224 processes, **CUDA init alone costs ~3.5s × 224 = ~784s (~13 min)** — more than double the actual 383s total. This means the pipeline must be benefiting from CUDA context caching between rapid successive calls, but the overhead is still the dominant cost.
 
 **Weight loading per layer:** Each layer loads 7 weight matrices from disk:
-- Q, K, V projections: 3 × (4096 × 4096 × 8 bytes) = 384 MB
-- FFN up, gate, down: (4096 × 11008 + 4096 × 11008 + 11008 × 4096) × 8 bytes = 1.03 GB
+- Q, K, V projections: 3 × (4096 × 4096 × 4 bytes) = 192 MB (int32 on disk)
+- FFN up, gate, down: 3 × (4096 × 11008 × 4 bytes) = 516 MB
 - 2 × RMSNorm weights: negligible
-- **Total: ~1.4 GB per layer × 32 = ~45 GB of weight I/O**
-
-Plus all weight commitments loaded alongside.
+- **Total: ~0.7 GB per layer × 32 = ~22 GB of weight I/O** (plus commitment files)
 
 ### Bottleneck 2: Matrix Multiply Kernel (Critical — Compute)
 
-The `matrixMultiplyOptimized` kernel (`fr-tensor.cu:892`) uses:
+The `matrixMultiplyOptimized` kernel uses:
 - **TILE_WIDTH = 16** (16×16 thread blocks = 256 threads)
 - Shared memory tiling for both A and B matrices
 - One field multiply-add per thread per tile iteration
 
-At 13 Gop/s achieved throughput vs 83 Gop/s bandwidth ceiling (from int32-throughput-analysis.md), the kernel achieves only **16% of memory bandwidth**. Root causes:
+**Measured throughput:** ~4% of peak INT32 ops. The kernel is latency-bound, not bandwidth-bound. Root causes:
 - TILE_WIDTH=16 means each thread block loads only 16×16×8 = 2 KB tiles — too small for the H100's 256 KB shared memory per SM
 - No register-level tiling (each thread computes exactly one output element)
 - No double-buffering of shared memory loads
-- 256 threads/block may limit occupancy depending on register pressure
+- 256 threads/block limits occupancy and instruction-level parallelism
 
 ### Bottleneck 3: Softmax Proof — O(n²) (Critical at Longer Contexts)
 
-Self-attention softmax (`self-attn.cu:96-122`) uses `zkSoftmax` which operates on the n×n attention matrix. At n=1024 this is 1M elements per head × 32 heads = 32M elements. The softmax proof involves:
+Self-attention softmax uses `zkSoftmax` which operates on the n×n attention matrix. At n=1024 this is 1M elements per head × 32 heads = 32M elements. The softmax proof involves:
 - Exp lookup via tLookup (32M lookups)
 - Normalization proof
 - Per-head sumcheck
 
-From `improvement-opportunities.md`: "Self-attention softmax proof: O(n² × d) — accounts for ~99% of proving time at 1M context." At n=1024 it's manageable but still significant.
+At n=1024 this is a small fraction of per-layer time (~0.9s for the full attn step minus CUDA overhead). At n=4096+ it becomes dominant due to O(n²) scaling.
 
 ### Bottleneck 4: Sumcheck Round-Trip Overhead (Medium)
 
-Every sumcheck (inner product for zkFC, binary for argmax, LogUp for lookups) executes log₂(N) rounds, each requiring:
-1. GPU kernel launch for polynomial evaluation
-2. `cudaDeviceSynchronize()` to read the result
-3. CPU-side challenge generation (Fiat-Shamir or random)
-4. Next round
+Every sumcheck executes log₂(N) rounds, each requiring a GPU kernel launch + sync + CPU challenge. For a single zkFC.prove() on a 4096×4096 weight matrix: ~12 rounds. Per layer this happens ~7× for weight proofs, giving ~84 sync points per layer × 32 layers = ~2,700 sync events.
 
-For a single zkFC.prove() on a 4096×4096 weight matrix:
-- N = 4096 → 12 rounds
-- Each round: 1 kernel launch + 1 sync + 1 reduction
-
-Per layer this happens 7× (3 QKV + 3 FFN + output projection in attention), giving ~84 sync points per layer × 32 layers = ~2,700 sync events for weight proofs alone.
-
-### Bottleneck 5: Entropy Proof Tail (Lower Priority)
-
-The entropy phase (634s at 1024 tokens with BLS12-381 — should be ~65s with Goldilocks) includes per-token argmax, CDF, and log proofs. This is documented in bench-results-2026-03-27.md. With Goldilocks it becomes a smaller fraction of total time compared to the 32-layer pipeline.
+**Note:** We already eliminated ~50 unnecessary `cudaDeviceSynchronize()` calls in a prior optimization pass. The remaining syncs are structurally required by the interactive sumcheck protocol (CPU must read GPU polynomial evaluations to generate challenges).
 
 ---
 
@@ -125,154 +136,122 @@ The entropy phase (634s at 1024 tokens with BLS12-381 — should be ~65s with Go
 
 ### P0: Unified Layer Binary (Critical, Medium Effort)
 
-**Problem:** 224 separate process invocations with full CUDA init + disk I/O each time.
+**Problem:** 224 separate process invocations, each paying ~3.5s CUDA init overhead.
 
 **Solution:** Create a single `gold_full_pipeline` binary that:
 1. Initializes CUDA once
-2. Loads all 32 layers' weights into GPU memory at startup (Llama-2-7B total weights ~14B params × 8 bytes = ~112 GB — won't fit in 80 GB H100 VRAM, so load 1-2 layers at a time but keep the CUDA context alive)
+2. Loops over 32 layers, loading one layer's weights at a time
 3. Keeps intermediate activations in GPU memory between steps (no disk I/O for intermediates)
-4. Streams weight loading for the next layer while proving the current layer
+4. Optionally prefetches next layer's weights while proving current layer
 
 **What this eliminates:**
-- ~224 CUDA context initializations (~4-7 min)
-- ~45 GB of intermediate tensor disk I/O
+- ~224 CUDA context initializations (~3.5s each, though amortized in practice)
+- All intermediate tensor disk I/O (activations stay on GPU)
 - Python subprocess overhead
 
-**Variant (lower effort):** Keep the Python orchestrator but use a long-lived GPU daemon process that accepts commands over a socket/pipe, avoiding context re-initialization. Or restructure as a single C++ binary with a layer loop (similar to how `zkllm_entropy.cu` already handles the entropy tail).
+**Estimated savings:** The 32-layer proof currently takes 383s. Per-layer compute+prove is ~7.6s measured. Pure compute across 32 layers = ~243s. The remaining ~140s is overhead (CUDA init, disk I/O, Python). Eliminating most of this overhead gives an estimated time of **~250-280s (~35% speedup)**.
 
-**Estimated savings:** 20-40% of total wall time, depending on how much is currently disk I/O vs compute.
+**Implementation note:** Llama-2-7B total weights = ~13B params × 4 bytes (int32) = ~52 GB on disk, ~104 GB as field elements. Doesn't fit in 80 GB VRAM, so load/free one layer at a time, but keep the CUDA context alive.
 
 ### P1: Matmul Kernel Optimization (Critical, Medium Effort)
 
-**Problem:** `matrixMultiplyOptimized` achieves 16% of memory bandwidth.
+**Problem:** `matrixMultiplyOptimized` achieves ~4% of peak throughput. Matmul is 87% of GPU kernel time.
 
 **Proposed improvements, in order of expected impact:**
 
-1. **Increase TILE_WIDTH to 32 or 64.** Each Goldilocks element is 8 bytes, so a 32×32 tile = 8 KB — still well within shared memory. The H100 has 256 KB shared memory per SM. Larger tiles reduce shared memory traffic and improve arithmetic intensity.
+1. **Register tiling.** Each thread should compute a 4×4 or 8×8 sub-tile of the output, accumulating in registers. This is the single biggest lever — it increases arithmetic intensity per shared memory load by 4-8× and is the standard technique in high-performance GEMM.
 
-2. **Register tiling.** Each thread should compute a 4×4 or 8×8 sub-tile of the output, accumulating in registers. This increases arithmetic intensity per byte loaded from shared memory by 4-8×.
+2. **Increase TILE_WIDTH to 32.** Each Goldilocks element is 8 bytes, so a 32×32 tile = 8 KB — still well within shared memory. Combined with register tiling (4×4 per thread), this means 32×32 output tile computed by 8×8 thread block = 64 threads, each handling a 4×4 sub-tile.
 
 3. **Double-buffered shared memory loading.** Prefetch the next tile from global memory while computing on the current tile, hiding memory latency.
 
-4. **Vectorized global memory loads.** Use `uint4` or `longlong2` loads (16 bytes at a time) to maximize memory transaction efficiency.
+4. **Vectorized global memory loads.** Use `uint2` loads (16 bytes = 2 field elements at a time) to maximize memory transaction efficiency.
 
-**Target:** Reach 50-70% of memory bandwidth ceiling (~40-58 Gop/s), a 3-4× improvement over the current 13 Gop/s. This would reduce per-layer matmul time from ~30s to ~8-10s, saving **~700 seconds across 32 layers**.
+**Target:** Reaching even 15-20% of peak (from current 4%) would be a 4-5× speedup on the matmul kernel. Since matmul is 87% of GPU kernel time, this translates to ~3.5-4× on total GPU kernel time.
 
-**Alternative:** If the matmul is the same operation repeated many times (it is — zkFC with different weights), consider using cuBLAS-like approaches adapted for 64-bit field arithmetic via INT32 decomposition.
+**Estimated savings on 32-layer proof:** Matmul compute is roughly 87% of the ~243s compute time ≈ 211s. A 4× speedup on matmul → ~53s matmul + ~32s other = ~85s compute. With overhead: **~225s total (40% faster)**.
 
-### P2: Weight Memory Management (Medium, Medium Effort)
+**Combined P0+P1:** ~110-150s total (2.5-3.5× speedup from current 383s).
 
-**Problem:** Each layer loads ~1.4 GB of weights from disk (or from host memory), even though weights are static.
+### P2: Weight Memory Management (Low Priority — Subsumed by P0)
 
-**Solution:**
-- Pre-compute weight commitments once and cache them
-- For the unified binary (P0), keep a 2-layer weight buffer on GPU: load layer N+1 weights while proving layer N
-- Use pinned (page-locked) host memory for weight staging to enable async DMA transfers
-- Use CUDA streams to overlap weight transfer with compute
+**Problem:** Each layer loads ~0.7 GB of weights from disk.
 
-**Estimated savings:** Eliminates weight loading latency for all but the first layer — could save 5-10s per layer if I/O bound.
+With P0 (unified binary), this becomes a streaming problem: load layer N+1 weights while proving layer N. The weight files are on local SSD, so sequential reads of 0.7 GB take <0.5s — well hidden behind proof compute.
 
-### P3: Batch Sumcheck Across Dimensions (High, High Effort)
+**Standalone value:** Only matters if P0 is not done. With P0, this is free.
 
-**Problem:** Each zkFC.prove() runs a sequential sumcheck with log₂(N) rounds, each round requiring a CPU-GPU sync.
+### P3: Batch Sumcheck Across Dimensions (Medium Impact, High Effort)
 
-**Proposed approaches:**
+**Problem:** Each zkFC.prove() runs a sequential sumcheck with log₂(N) rounds, each requiring a CPU-GPU sync.
 
-**a) Kernel fusion within a sumcheck:** Fuse the polynomial evaluation kernel + reduction into a single kernel that produces all 3 polynomial coefficients in one pass, avoiding intermediate global memory writes.
+**Existing code:** `zkFCStacked` in `zkfc.cu` already proves N stacked FC layers together, amortizing sumcheck rounds. Check whether `run_proofs.py` uses it — if not, enabling it is low-hanging fruit.
 
-**b) Batched proving:** When proving multiple zkFC layers with the same structure (e.g., all 32 layers' Q projections have the same dimensions), batch them into a single `zkFCStacked` proof. The code already has `zkFCStacked` in `zkfc.cu:258-298` — it proves N stacked FC layers together, amortizing sumcheck rounds. **This is already implemented but may not be used in the layer pipeline.**
+**Other approaches:**
+- **Kernel fusion:** Fuse polynomial evaluation + reduction into a single kernel per sumcheck round
+- **Pipelined sumcheck:** Overlap compute for round N+1 with CPU challenge generation for round N using 2 CUDA streams
 
-**c) Pipelined sumcheck:** While one sumcheck round computes on GPU, prepare the next round's challenge on CPU. Use 2 CUDA streams to overlap.
-
-**Estimated savings:** 2-3× on proof time if `zkFCStacked` can be applied across layers.
+**Estimated savings:** Unclear without profiling the sumcheck separately. The fact that self-attn linear (3 matmuls + 3 proofs + 3 openings) only takes ~2.3s of actual compute suggests proofs are already fast relative to matmul.
 
 ### P4: GKR Protocol for Matrix Multiply (High Impact, High Effort)
 
-**From `improvement-opportunities.md`:** zkGPT reports 6.5× speedup using GKR protocol for matrix multiplication proofs vs the sumcheck approach used here.
+zkGPT reports 6.5× speedup using GKR protocol for matrix multiplication proofs vs sumcheck. This replaces the inner-product sumcheck with a layered circuit approach.
 
-**Estimated savings:** 2-5× on all linear layer proofs.
+**Estimated savings:** 2-5× on all linear layer proofs. At n=1024, linear layers are the dominant cost, so this is a ~1.5-3× overall speedup.
 
-**At n=1024:** Linear layers are ~60% of proving cost, so this is a ~1.5-3× overall speedup.
+**Effort:** High — requires implementing GKR prover on GPU. Well-understood protocol but significant engineering.
 
-**Effort:** High — requires implementing GKR prover on GPU, but well-understood protocol with reference implementations.
+### P5: Softmax Proof Optimization (Low Priority at n=1024, Critical at n>4K)
 
-### P5: Softmax Proof Optimization (Medium Impact at n=1024, Critical for Longer Contexts)
+At n=1024, the full attention step (including softmax) takes only ~0.9s of compute per layer. Not worth optimizing until we scale to longer contexts.
 
-**Problem:** Softmax proof is O(n² × d) due to the full attention matrix.
+At n=4096, the attention matrix is 16× larger (16M per head × 32 heads = 512M elements) and softmax proof becomes O(n²) dominant.
 
-**Possible approaches:**
-- FlashAttention-style chunking to reduce peak memory
-- Sparse attention patterns that avoid materializing the full n×n matrix
-- At n=1024, this is less critical than matmul optimization; at n=4096+ it becomes dominant
+### P6: GPU-Side Argmax + Batched Entropy Sumchecks (Low Priority)
 
-### P6: GPU-Side Argmax + Batched Entropy Sumchecks (Medium)
+The entropy tail is 17.8s — a small fraction of the 383s total. Further optimizing it has diminishing returns until the layer pipeline is faster.
 
-**Problem:** Argmax in `zkargmax.cu:34-43` copies full 32K logit vector to CPU per token (2 GB total for 1024 tokens). Per-token sumchecks create ~46,000 CPU-GPU sync events.
+### P7: Compiler Flags and -dlto (Low Effort, Already Partially Done)
 
-**Solution:** GPU parallel reduction for argmax (only return index). Batch sumcheck rounds across all 1024 tokens.
+- `-O3` already enabled ✓
+- `-dlto` (device link-time optimization) is available but untested. Low effort to try.
+- `cudaOccupancyMaxPotentialBlockSize` for dynamic block size tuning
 
-**Estimated savings:** 5-10× on entropy prove phase, but this phase is now a smaller fraction of total time when the 32-layer pipeline is included.
-
-### P7: Kernel Launch Tuning and -dlto (Low Effort)
-
-- Enable `-dlto` in Makefile for release builds (currently commented out)
-- Tune block sizes via `cudaOccupancyMaxPotentialBlockSize`
-- Use shared memory for NTT butterflies
-
-**Estimated savings:** 5-15% on kernel execution time.
+**Estimated savings:** 5-10%.
 
 ---
 
 ## Priority Summary
 
-| Priority | Optimization | Target | Expected Impact | Effort |
-|----------|-------------|--------|-----------------|--------|
-| **P0** | Unified binary (eliminate 224 subprocess spawns + disk I/O) | Architecture | 20-40% wall time | Medium |
-| **P1** | Matmul kernel (TILE=32+, register tiling, double buffer) | Compute | 3-4× matmul speed → ~700s saved | Medium |
-| **P2** | Weight memory management (async loading, pinned memory) | I/O | 5-10s per layer | Medium |
-| **P3** | Batched/stacked FC proving (use existing zkFCStacked) | Prove | 2-3× proof time | Medium-High |
-| **P4** | GKR protocol for matmul proofs | Prove | 2-5× linear proof | High |
-| **P5** | Softmax proof optimization | Prove (attention) | Critical at n>4K | High |
-| **P6** | GPU argmax + batched entropy sumchecks | Entropy tail | 5-10× entropy prove | Medium |
-| **P7** | Kernel tuning + -dlto | All kernels | 5-15% | Low |
+| Priority | Optimization | Expected Impact | Effort |
+|----------|-------------|-----------------|--------|
+| **P0** | Unified binary (eliminate subprocess overhead) | 383s → ~250s (35% faster) | Medium |
+| **P1** | Matmul kernel (register tiling, TILE=32, double buffer) | 4× matmul speed | Medium |
+| **P0+P1** | Combined | 383s → ~110-150s (2.5-3.5× faster) | Medium |
+| **P3** | Check if zkFCStacked is used; enable if not | Unknown (need profiling) | Low-Medium |
+| **P4** | GKR protocol for matmul proofs | 1.5-3× overall | High |
+| **P7** | -dlto + block size tuning | 5-10% | Low |
+| **P5** | Softmax proof optimization | Critical only at n>4K | High |
+| **P6** | Batched entropy sumchecks | Marginal (17.8s of 383s) | Medium |
 
-## Estimated Total Time Budget (32 Layers, n=1024, Goldilocks)
+## Time Budget Summary
 
-### Current (estimated, before any optimization)
+| Scenario | Estimated time | Speedup |
+|----------|---------------|---------|
+| **Current (measured)** | **383s (6m 23s)** | baseline |
+| After P0 (unified binary) | ~250s | 1.5× |
+| After P0 + P1 (+ fast matmul) | ~110-150s | 2.5-3.5× |
+| After P0 + P1 + P4 (+ GKR proofs) | ~60-90s | 4-6× |
 
-| Component | Per Layer | × 32 | Notes |
-|-----------|----------|------|-------|
-| Process spawn + CUDA init | ~2s | ~64s | 2 subprocesses have most of the cost |
-| Weight loading from disk | ~3-5s | ~96-160s | ~1.4 GB per layer |
-| Matmul compute (all FC layers) | ~30s | ~960s | 7 matmuls per layer at 13 Gop/s |
-| Sumcheck proofs (FC + rescaling) | ~15-30s | ~480-960s | Multiple sumchecks per layer |
-| Softmax compute + proof | ~5-10s | ~160-320s | Attention only |
-| Intermediate disk I/O | ~2-3s | ~64-96s | Tensors written between steps |
-| **Layer subtotal** | **~57-80s** | **~1,824-2,560s** | |
-| Entropy tail (Goldilocks) | — | ~65-100s | From BLS12-381 timing / 9.8× |
-| **Total estimate** | | **~1,900-2,700s** | **~30-45 minutes** |
+## Optimizations Already Applied
 
-### After P0 + P1 (most impactful, medium effort)
+These are not in the plan because they're already done:
 
-| Component | Per Layer | × 32 | Change |
-|-----------|----------|------|--------|
-| Process spawn + CUDA init | 0s | 0s | Eliminated by P0 |
-| Weight loading | ~1-2s | ~32-64s | Still needed, but no disk I/O for intermediates |
-| Matmul compute | ~8-10s | ~256-320s | 3-4× faster kernel (P1) |
-| Sumcheck proofs | ~15-30s | ~480-960s | Unchanged |
-| Softmax compute + proof | ~5-10s | ~160-320s | Unchanged |
-| Intermediate disk I/O | 0s | 0s | Eliminated by P0 |
-| **Layer subtotal** | **~29-52s** | **~928-1,664s** | |
-| Entropy tail | — | ~65-100s | |
-| **Total estimate** | | **~1,000-1,760s** | **~1.5-2× speedup** |
-
-### After P0 + P1 + P3 + P4
-
-With batched proving (P3) and GKR matmul proofs (P4) reducing proof time by 2-5×:
-
-| **Total estimate** | | **~500-900s** | **~3-5× speedup** |
-|---------------------|---|---------------|---------------------|
+1. **-O3 compiler flag** — ~10% speedup
+2. **cudaDeviceSynchronize removal** — ~50 unnecessary syncs eliminated, ~2s/layer saved
+3. **CPU-side scalar field operators** — Goldilocks add/mul/div done on CPU instead of launching GPU kernels. Eliminated ~16k cudaMalloc/cudaFree calls per layer. 29% speedup on entropy proof, ~5% on layer proofs.
+4. **fp16 weight storage** — Implemented and tested, but disabled (7% slower due to conversion overhead). The kernel is latency-bound, not bandwidth-bound, so reducing memory footprint doesn't help speed. Code remains dormant for future memory-constrained scenarios.
 
 ## Key Insight
 
-**The 32 transformer layers dominate total proving time, not the entropy tail.** The entropy proof (634s with BLS12-381, ~65s with Goldilocks) is important but is dwarfed by 32 layers × 7 matmuls/layer × sumcheck proofs per matmul. The most impactful optimizations target the per-layer overhead (P0), matmul kernel performance (P1), and proof protocol efficiency (P3/P4).
+**Process overhead dominates at small compute-per-step, matmul dominates at large compute-per-step.** The skip-connection (trivial compute) spends 90% of its wall time on CUDA init. The FFN (3 large matmuls) spends ~60% on compute. P0 eliminates the overhead floor; P1 attacks the compute ceiling. Together they address both regimes.
