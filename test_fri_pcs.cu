@@ -174,6 +174,58 @@ int main() {
         cout << "  (inner product = 120, verified via sumcheck + FRI PCS)" << endl;
     }
 
+    // ── Test 7: Weight struct + verifyWeightClaim ──────────────────────
+    {
+        // Simulate a 4x2 weight matrix (in_dim=4, out_dim=2, total=8 elements)
+        uint in_dim = 4, out_dim = 2;
+        uint n = in_dim * out_dim;
+        int w_data[] = {10, 20, 30, 40, 50, 60, 70, 80};
+        FrTensor weight(n, w_data);
+
+        // Pad and commit (same as create_weight does)
+        auto w_padded = weight.pad({in_dim, out_dim});
+        FriPcsCommitment com = FriPcs::commit(w_padded.gpu_data, w_padded.size);
+
+        Weight w{weight, com, in_dim, out_dim};
+
+        // Build a Claim: evaluate the padded weight at random u
+        // u[0] has ceilLog2(out_dim) elements, u[1] has ceilLog2(in_dim) elements
+        uint log_out = ceilLog2(out_dim);
+        uint log_in = ceilLog2(in_dim);
+        vector<Fr_t> u0 = random_vec(log_out);
+        vector<Fr_t> u1 = random_vec(log_in);
+
+        // The claim value is MLE(w_padded, concat(u1, u0))
+        vector<Fr_t> u_cat = concatenate(vector<vector<Fr_t>>({u1, u0}));
+        Fr_t claim_val = FriPcs::open(w_padded.gpu_data, w_padded.size, com, u_cat);
+
+        Claim c;
+        c.claim = claim_val;
+        c.u = {u0, u1};
+        c.dims = {out_dim, in_dim};
+
+        // verifyWeightClaim should succeed
+        bool passed = false;
+        try {
+            verifyWeightClaim(w, c);
+            passed = true;
+        } catch (const std::runtime_error& e) {
+            cout << "  verifyWeightClaim threw: " << e.what() << endl;
+        }
+        check(passed, "verifyWeightClaim succeeds with correct claim");
+
+        // verifyWeightClaim should fail with wrong claim
+        Claim bad_c = c;
+        bad_c.claim = Fr_t{999ULL};
+        bool caught = false;
+        try {
+            verifyWeightClaim(w, bad_c);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        check(caught, "verifyWeightClaim rejects wrong claim");
+    }
+
     cout << "\n=== Results: " << (failures == 0 ? "ALL PASSED" : "FAILURES")
          << " (failures=" << failures << ") ===" << endl;
     return failures;
