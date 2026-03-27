@@ -42,7 +42,8 @@ $(TARGETS): % : %.o $(CU_OBJS) $(CPP_OBJS)
 
 # ── Standalone Goldilocks targets (no BLS12-381 dependency) ──────────────────
 GOLD_FLAG := -DUSE_GOLDILOCKS
-GOLD_SRCS := goldilocks.cu fr-tensor.cu proof.cu polynomial.cu ioutils.cu ntt.cu merkle.cu fri.cu fri_pcs.cu
+GOLD_SRCS := goldilocks.cu fr-tensor.cu proof.cu polynomial.cu ioutils.cu ntt.cu merkle.cu fri.cu fri_pcs.cu \
+             zkrelu.cu zkfc.cu tlookup.cu zksoftmax.cu rescaling.cu zkargmax.cu zklog.cu zknormalcdf.cu zkentropy.cu
 GOLD_OBJS := $(GOLD_SRCS:%.cu=gold_%.o)
 
 gold_%.o: %.cu
@@ -68,6 +69,9 @@ test_fri: gold_test_fri.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
 test_fri_pcs: gold_test_fri_pcs.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_zkllm_entropy: gold_zkllm_entropy.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
 # Clean rule

@@ -34,7 +34,9 @@
 #include "zkfc.cuh"
 #include "rescaling.cuh"
 #include "proof.cuh"
+#ifndef USE_GOLDILOCKS
 #include "commitment.cuh"
+#endif
 #include "ioutils.cuh"
 #include <iostream>
 #include <fstream>
@@ -108,18 +110,32 @@ int main(int argc, char* argv[]) {
 
     // ── Load committed weights ────────────────────────────────────────────────
     // final_norm: in_dim=1, out_dim=hidden_size (same shape as per-layer norms)
+#ifdef USE_GOLDILOCKS
+    Weight final_norm_w = create_weight(
+        path("final_norm.weight-int.bin"),
+        path("final_norm.weight-gold-commitment.bin"),
+        1, hidden_size);
+#else
     Weight final_norm_w = create_weight(
         path("input_layernorm.weight-pp.bin"),
         path("final_norm.weight-int.bin"),
         path("final_norm.weight-commitment.bin"),
         1, hidden_size);
+#endif
 
     // lm_head: in_dim=hidden_size, out_dim=vocab_size
+#ifdef USE_GOLDILOCKS
+    Weight lm_head_w = create_weight(
+        path("lm_head-weight-int.bin"),
+        path("lm_head-weight-gold-commitment.bin"),
+        hidden_size, vocab_size);
+#else
     Weight lm_head_w = create_weight(
         path("lm_head-pp.bin"),
         path("lm_head-weight-int.bin"),
         path("lm_head-weight-commitment.bin"),
         hidden_size, vocab_size);
+#endif
 
     // ── Step 1: Final RMSNorm ─────────────────────────────────────────────────
     // Following the pattern in rmsnorm.cu:
@@ -222,7 +238,7 @@ int main(int argc, char* argv[]) {
             uint32_t n_coeffs = (deg >= 0) ? (uint32_t)(deg + 1) : 0u;
             f.write((char*)&n_coeffs, sizeof(n_coeffs));
             for (uint32_t k = 0; k < n_coeffs; k++) {
-                Fr_t xk = {k, 0, 0, 0, 0, 0, 0, 0};
+                Fr_t xk = FR_FROM_INT(k);
                 Fr_t yk = const_cast<Polynomial&>(poly)(xk);
                 f.write((char*)&yk, sizeof(Fr_t));
             }
