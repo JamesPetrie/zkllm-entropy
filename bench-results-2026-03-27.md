@@ -42,8 +42,38 @@ This has two implications:
 
 2. **The per-token lookup proofs are the bottleneck, not the linear algebra.** Future optimization should focus on the argmax/CDF/log proof pipeline. Breaking down the entropy prove phase further (into argmax, CDF, and log sub-timings) would identify which sub-component dominates.
 
+## Experiment 3: Pedersen vs SHA-256 Merkle Tree Commitment
+
+**Goal.** Compare the current Pedersen commitment scheme (elliptic curve multi-scalar multiplication, not post-quantum) against a hash-based Merkle tree (SHA-256, post-quantum). This is relevant to the design goal of post-quantum security: if hash-based commitments are fast enough, switching from Pedersen eliminates the only non-post-quantum component.
+
+**Method.** Benchmark (`bench_commitment.cu`) commits to the same vector of random field elements using both schemes. Pedersen uses the existing `commit_int()` (bit-by-bit EC scalar multiplication with 31-bit signed integers). SHA-256 Merkle tree hashes each 32-byte field element as a leaf, then binary-tree reduces with SHA-256 pair hashing. Three trials, average reported. Warmup pass before timing.
+
+### Results at 131K elements (4 MB, ~one small layer)
+
+| Scheme | Avg Time (s) | Throughput (M elements/s) | Speedup |
+|---|---|---|---|
+| Pedersen (EC scalar mul) | 0.099 | 1.3 | 1× |
+| SHA-256 Merkle tree | 0.0012 | 110.4 | **84×** |
+
+### Results at 4M elements (128 MB, ~one large weight matrix)
+
+| Scheme | Avg Time (s) | Throughput (M elements/s) | Speedup |
+|---|---|---|---|
+| Pedersen (EC scalar mul) | 2.95 | 1.4 | 1× |
+| SHA-256 Merkle tree | 0.0093 | 450.7 | **318×** |
+
+**Interpretation.** SHA-256 Merkle tree commitment is 84–318× faster than Pedersen on GPU, with the gap widening at larger sizes (the Merkle tree benefits more from memory bandwidth at scale). Pedersen throughput is roughly constant at ~1.4 M elements/s regardless of size, while SHA-256 scales from 110 to 451 M elements/s as parallelism increases.
+
+This has several implications:
+
+1. **Commitment is not currently the bottleneck** for the entropy proof tail (Experiment 2 showed the entropy prove phase dominates). But for the full 32-layer proof pipeline, Pedersen commitment of all model weights (~7B parameters = ~7 billion field elements) would take ~5,000 seconds (~83 minutes) at 1.4 M/s. SHA-256 Merkle trees would do the same in ~16 seconds.
+
+2. **Post-quantum security is essentially free for commitments.** The hash-based scheme is not only post-quantum but also dramatically faster. The cost of post-quantum commitments is in the proof system, not the commitment step.
+
+3. **Other hash functions would be even faster.** SHA-256 was chosen as a conservative baseline. Blake3 (used by SP1 and Risc0) and Poseidon/Poseidon2 (used by Plonky2/Plonky3, designed for algebraic circuits) are alternatives worth benchmarking. For committing *outside* the proof (as done here), Blake3 would likely be fastest. For commitments that must be *opened inside* a proof, Poseidon over Goldilocks would be the natural pairing if the proof field is switched to Goldilocks.
+
 ## Next Steps
 
 - **Sub-breakdown of entropy prove:** Instrument `zkConditionalEntropy::prove()` to separate argmax, CDF, and log proving times.
 - **Context length scaling:** Run at seq_len = 64, 128, 256, 512, 1024 to verify O(n) scaling of the entropy proof (which is per-token, so should be linear) vs O(n²) for self-attention layers.
-- **Hash vs Pedersen commitment:** Benchmark hash-based commitments (post-quantum) against the current Pedersen scheme. The timing breakdown shows commitment is not currently the bottleneck for the entropy tail, but it may matter for the 32-layer proofs.
+- **Poseidon and Blake3 benchmarks:** Compare against SHA-256 for both raw commitment throughput and in-proof verification cost.
