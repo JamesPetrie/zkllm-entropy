@@ -65,7 +65,6 @@ static FrTensor tensor_row(const FrTensor& mat, uint row_idx, uint row_size) {
                mat.gpu_data + (size_t)row_idx * row_size,
                row_size * sizeof(Fr_t),
                cudaMemcpyDeviceToDevice);
-    cudaDeviceSynchronize();
     return row;
 }
 

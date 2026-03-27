@@ -615,7 +615,6 @@ std::pair<FrTensor, FrTensor> FrTensor::split(uint window_size) const
     uint out_size = num_window_out * window_size; // TODO: BUGGY
     std::pair<FrTensor, FrTensor> out {out_size, out_size};
     Fr_split_by_window<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, out.first.gpu_data, out.second.gpu_data, size, out_size, window_size);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -670,7 +669,6 @@ FrTensor Fr_partial_me(const FrTensor& t, vector<Fr_t>::const_iterator begin, ve
     uint out_size = window_size * num_windows;
     FrTensor t_new(out_size);
     Fr_partial_me_step<<<(t_new.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size, window_size);
-    cudaDeviceSynchronize();
     return Fr_partial_me(t_new, begin + 1, end, window_size);
 }
 
@@ -879,7 +877,6 @@ FrTensor FrTensor::pad(const vector<uint>& shape, const Fr_t& pad_val) const
 
     FrTensor out((cum_shape / last_dim) * last_dim_padded);
     FrTensor_pad_kernel<<<(out.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, out.gpu_data, out.size, last_dim, last_dim_padded, pad_val);
-    cudaDeviceSynchronize();
 
     if (shape.size() == 1) return out;
     else {

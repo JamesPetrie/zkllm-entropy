@@ -54,7 +54,6 @@ least_significant_segments(), other_segments()
         uint threads_per_block = 256;
         uint blocks_per_grid = (bs[i] + threads_per_block - 1) / threads_per_block;
         zksoftmax_calculate_table<<<blocks_per_grid, threads_per_block>>>(mapped_values.gpu_data, thetas[i - L], scaling_factor_in, d, Bs[i], bs[i]);
-        cudaDeviceSynchronize();
         other_segments.push_back({0, bs[i], mapped_values});
 
         // cout << "======== Debug info for segment " << i << endl;
@@ -125,7 +124,6 @@ FrTensor zkSoftmax::compute(const FrTensor& X, FrTensor& shift, FrTensor& X_shif
     uint threads_per_block = 256;
     uint blocks_per_grid = (m + threads_per_block - 1) / threads_per_block;
     zksoftmax_shift<<<blocks_per_grid, threads_per_block>>>(X.gpu_data, shift.gpu_data, X_shifted.gpu_data, m, n, scaling_factor_in, d);
-    cudaDeviceSynchronize();
 
     // decompose X into segments
     Fr_t* X_decomposed;
@@ -140,7 +138,6 @@ FrTensor zkSoftmax::compute(const FrTensor& X, FrTensor& shift, FrTensor& X_shif
 
     blocks_per_grid = (m * n + threads_per_block - 1) / threads_per_block;
     zksoftmax_decompose_kernel<<<blocks_per_grid, threads_per_block>>>(X_shifted.gpu_data, bs_gpu, X_decomposed, m * n, K);
-    cudaDeviceSynchronize();
 
     FrTensor out(m * n);
     cudaMemset(out.gpu_data, 0, out.size * sizeof(Fr_t));

@@ -74,7 +74,6 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
     // 1. Compute diffs[i] = v_star - logits[i] on GPU.
     FrTensor diffs(N);
     zkargmax_diffs_kernel<<<blocks, FrNumThread>>>(logits.gpu_data, v_star, diffs.gpu_data, N);
-    cudaDeviceSynchronize();
 
     // 2. Diagnostic: check diff values and verify bit_width is sufficient.
     //    Gated behind ZKARGMAX_DIAGNOSTICS to avoid per-position GPU→CPU copies.
