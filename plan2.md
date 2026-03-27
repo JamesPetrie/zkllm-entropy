@@ -229,11 +229,24 @@ provable with a single sumcheck.
 
 - **`win_prob`** is in `[1, cdf_scale]` (typically 2^15). A `zkLog` table of size 2^15
   handles this directly — same as the existing log table.
-- **`total_win`** is in `[1, vocab_size × cdf_scale]` (up to ~2^30 for 32K vocab).
-  A direct table of size 2^25 (~256 MB on GPU) covers values up to ~33M, which exceeds
-  `32768 × 1024 ≈ 33.5M` for sequences up to 1024 tokens. For longer sequences or
-  larger vocabularies, a 2^27 table (~1 GB) provides ample headroom. Both are feasible
-  on H100 (80 GB).
+- **`total_win`** is in `[1, vocab_size × cdf_scale]` (up to 32000 × 65536 ≈ 2^31 for
+  32K vocab with default cdf_scale). A direct table of size 2^31 (~16 GB) is impractical.
+  **CORRECTION:** The original estimate of 2^25-2^27 was based on cdf_scale=1024 (not
+  65536). At the current cdf_scale=65536, the upper bound is ~2.1 billion.
+
+  **Alternatives for total_win log lookup:**
+  - (a) Reduce cdf_scale to 1024 (table size 2^25 ≈ 33M entries, ~256 MB). Tradeoff:
+    coarser CDF quantization.
+  - (b) Factor total_win: log(total_win) = log(total_win/cdf_scale) + log(cdf_scale).
+    Since cdf_scale is a public constant, only log(total_win/cdf_scale) needs a table.
+    total_win/cdf_scale ∈ [1, vocab_size=32000], so a 2^15 table suffices. But this
+    requires proving the division total_win/cdf_scale, which is the problem we're
+    trying to avoid.
+  - (c) Use two-stage log: break total_win = hi * 2^k + lo, look up log(hi),
+    compute correction from lo/hi. Standard range-reduction technique.
+  - (d) Accept that practical total_win ≈ cdf_scale/2 (empirically 32768 for greedy
+    decoding) and use a 2^16 table that covers this range, with a soundness argument
+    that total_win ≤ vocab_size * cdf_scale (verifier checks bounds).
 
 ### Per-position proof structure (replaces current 6-constant approach)
 
