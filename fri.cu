@@ -283,12 +283,11 @@ FriProof FriProver::prove(const Fr_t* coeffs_gpu, uint degree,
     proof.queries.resize(query_positions.size());
     for (uint q = 0; q < query_positions.size(); q++) {
         uint pos = query_positions[q] % layers[0].size;
-        proof.queries[q].resize(layers.size() - 1);  // no query needed for final layer
 
         for (uint round = 0; round < layers.size() - 1; round++) {
             uint layer_size = layers[round].size;
             uint half = layer_size / 2;
-            uint idx = pos % layer_size;
+            uint idx = pos;
             uint paired = (idx < half) ? (idx + half) : (idx - half);
 
             FriQueryRound qr;
@@ -298,8 +297,8 @@ FriProof FriProver::prove(const Fr_t* coeffs_gpu, uint degree,
             qr.sibling_proof = layers[round].tree->prove(paired);
             proof.queries[q].push_back(qr);
 
-            // Next round position: pos maps to pos % half
-            pos = idx % half;
+            // Next round: the folded position is min(idx, paired)
+            pos = (idx < half) ? idx : (idx - half);
         }
     }
 
@@ -320,39 +319,37 @@ bool FriVerifier::verify(const FriCommitment& commitment,
                          const FriParams& params) {
     uint domain_log = commitment.domain_log_size;
     uint domain_size = 1u << domain_log;
-    uint64_t offset = commitment.domain_offset.val;
+    uint64_t current_offset = commitment.domain_offset.val;
 
     uint num_rounds = commitment.layer_roots.size() - 1;
 
     for (uint q = 0; q < proof.query_positions.size(); q++) {
         uint pos = proof.query_positions[q] % domain_size;
+        uint64_t round_offset = current_offset;
 
         for (uint round = 0; round < num_rounds; round++) {
             uint layer_size = domain_size >> round;
             uint half = layer_size / 2;
-            uint idx = pos % layer_size;
-            uint paired = (idx < half) ? (idx + half) : (idx - half);
+            uint idx = pos;
 
             const auto& qr = proof.queries[q][round];
 
             // Verify Merkle proofs
             if (!MerkleTree::verify(commitment.layer_roots[round], qr.value, qr.proof, layer_size)) {
+                fprintf(stderr, "FRI verify: Merkle proof failed for query %u round %u (value)\n", q, round);
                 return false;
             }
             if (!MerkleTree::verify(commitment.layer_roots[round], qr.sibling_value, qr.sibling_proof, layer_size)) {
+                fprintf(stderr, "FRI verify: Merkle proof failed for query %u round %u (sibling)\n", q, round);
                 return false;
             }
 
-            // Verify folding consistency
-            // The value at idx in the next layer should equal the fold of (value, sibling_value)
-            uint64_t current_offset = offset;
-            for (uint r = 0; r < round; r++) current_offset = fri_mul(current_offset, current_offset);
-
+            // Determine which is f(x) and which is f(-x)
+            // Position idx < half means idx is the "positive" position
+            uint pos_in_half = (idx < half) ? idx : (idx - half);
             uint64_t omega = get_root_of_unity(domain_log - round).val;
-            uint pos_in_layer = (idx < half) ? idx : (idx - half);
-            uint64_t domain_pt = fri_mul(current_offset, fri_pow(omega, pos_in_layer));
+            uint64_t domain_pt = fri_mul(round_offset, fri_pow(omega, pos_in_half));
 
-            // f_pos and f_neg
             uint64_t f_pos_val, f_neg_val;
             if (idx < half) {
                 f_pos_val = qr.value.val;
@@ -362,7 +359,7 @@ bool FriVerifier::verify(const FriCommitment& commitment,
                 f_neg_val = qr.value.val;
             }
 
-            // Expected fold: (f_pos + f_neg)/2 + alpha * (f_pos - f_neg)/(2 * domain_pt)
+            // Fold: (f_pos + f_neg)/2 + alpha * (f_pos - f_neg)/(2 * domain_pt)
             uint64_t sum = fri_add(f_pos_val, f_neg_val);
             uint64_t diff = fri_sub(f_pos_val, f_neg_val);
             uint64_t inv_two = fri_inv(2);
@@ -373,32 +370,44 @@ bool FriVerifier::verify(const FriCommitment& commitment,
 
             // Check against next layer
             if (round < num_rounds - 1) {
-                uint next_layer_size = layer_size / 2;
-                uint next_pos = pos_in_layer % next_layer_size;
-                // The expected value should match the value reported in the next round at next_pos
-                // We'll check this in the next iteration by matching the reported value
-                // Actually, we need to check the folded value against the next layer's commitment
-                // This requires the prover to also provide the folded value's Merkle proof in the next layer
-                // which is already included as qr.value for the next round
-                uint next_idx = pos_in_layer;
-                if (next_idx != proof.queries[q][round + 1].proof.leaf_index) {
-                    // Position tracking mismatch
+                // The folded value should match what the prover claims at pos_in_half in the next layer
+                const auto& next_qr = proof.queries[q][round + 1];
+                // The prover's next round value should be at position pos_in_half
+                if (next_qr.proof.leaf_index != pos_in_half &&
+                    next_qr.sibling_proof.leaf_index != pos_in_half) {
+                    fprintf(stderr, "FRI verify: position mismatch at query %u round %u->%u: "
+                            "expected pos %u, got leaf_idx %u / sibling_idx %u\n",
+                            q, round, round+1, pos_in_half,
+                            next_qr.proof.leaf_index, next_qr.sibling_proof.leaf_index);
                     return false;
                 }
-                if (proof.queries[q][round + 1].value.val != expected) {
+                // Get the actual value at pos_in_half from next round's query data
+                uint64_t actual;
+                if (next_qr.proof.leaf_index == pos_in_half) {
+                    actual = next_qr.value.val;
+                } else {
+                    actual = next_qr.sibling_value.val;
+                }
+                if (actual != expected) {
+                    fprintf(stderr, "FRI verify: fold mismatch at query %u round %u: "
+                            "expected %lu, got %lu\n", q, round, expected, actual);
                     return false;
                 }
             } else {
-                // Last round: check against remainder
-                uint final_idx = pos_in_layer;
-                if (final_idx < commitment.remainder.size()) {
-                    if (commitment.remainder[final_idx].val != expected) {
+                // Last folding round: check against remainder
+                if (pos_in_half < commitment.remainder.size()) {
+                    if (commitment.remainder[pos_in_half].val != expected) {
+                        fprintf(stderr, "FRI verify: remainder mismatch at query %u round %u idx %u: "
+                                "expected %lu, got %lu\n", q, round, pos_in_half,
+                                expected, commitment.remainder[pos_in_half].val);
                         return false;
                     }
                 }
             }
 
-            pos = pos_in_layer;
+            // Update for next round
+            pos = pos_in_half;
+            round_offset = fri_mul(round_offset, round_offset);
         }
     }
 
