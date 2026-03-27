@@ -12,17 +12,10 @@ void verifyWeightClaim(const Weight& w, const Claim& c)
 
 Weight create_weight(string weight_filename, string com_filename, uint in_dim, uint out_dim)
 {
-    Weight w;
-    w.weight = FrTensor::from_int_bin(weight_filename);
-    w.in_dim = in_dim;
-    w.out_dim = out_dim;
-
-    // If a commitment file exists, load it; otherwise compute from weights
-    // For now, compute the commitment from the padded weight data
-    auto w_padded = w.weight.pad({in_dim, out_dim});
-    w.com = FriPcs::commit(w_padded.gpu_data, w_padded.size);
-
-    return w;
+    FrTensor weight = FrTensor::from_int_bin(weight_filename);
+    auto w_padded = weight.pad({in_dim, out_dim});
+    FriPcsCommitment com = FriPcs::commit(w_padded.gpu_data, w_padded.size);
+    return Weight{weight, com, in_dim, out_dim};
 }
 #else
 void verifyWeightClaim(const Weight& w, const Claim& c)
