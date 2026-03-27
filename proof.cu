@@ -1,6 +1,30 @@
 #include "proof.cuh"
 
-#ifndef USE_GOLDILOCKS
+#ifdef USE_GOLDILOCKS
+void verifyWeightClaim(const Weight& w, const Claim& c)
+{
+    vector<Fr_t> u_cat = concatenate(vector<vector<Fr_t>>({c.u[1], c.u[0]}));
+    auto w_padded = w.weight.pad({w.in_dim, w.out_dim});
+    Fr_t opening = FriPcs::open(w_padded.gpu_data, w_padded.size, w.com, u_cat);
+    if (opening != c.claim) throw std::runtime_error("verifyWeightClaim: opening != c.claim");
+    cout << "Opening complete" << endl;
+}
+
+Weight create_weight(string weight_filename, string com_filename, uint in_dim, uint out_dim)
+{
+    Weight w;
+    w.weight = FrTensor::from_int_bin(weight_filename);
+    w.in_dim = in_dim;
+    w.out_dim = out_dim;
+
+    // If a commitment file exists, load it; otherwise compute from weights
+    // For now, compute the commitment from the padded weight data
+    auto w_padded = w.weight.pad({in_dim, out_dim});
+    w.com = FriPcs::commit(w_padded.gpu_data, w_padded.size);
+
+    return w;
+}
+#else
 void verifyWeightClaim(const Weight& w, const Claim& c)
 {
     vector<Fr_t> u_cat = concatenate(vector<vector<Fr_t>>({c.u[1], c.u[0]}));

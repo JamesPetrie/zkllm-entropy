@@ -6,6 +6,8 @@
 #include "g1-tensor.cuh"
 #include "commitment.cuh"
 #include "bls12-381.cuh"
+#else
+#include "fri_pcs.cuh"
 #endif
 #include "polynomial.cuh"
 
@@ -18,16 +20,20 @@ struct Claim {
     std::vector<uint> dims;
 };
 
-#ifndef USE_GOLDILOCKS
+#ifdef USE_GOLDILOCKS
+struct Weight {
+    FrTensor weight;
+    FriPcsCommitment com;
+    uint in_dim;
+    uint out_dim;
+};
+
+Weight create_weight(std::string weight_filename, std::string com_filename, uint in_dim, uint out_dim);
+void verifyWeightClaim(const Weight& w, const Claim& c);
+#else
 struct Weight;
 void verifyWeightClaim(const Weight& w, const Claim& c);
 #endif
-
-// struct Weight {
-//     Commitment generator;
-//     FrTensor weight;
-//     G1TensorJacobian com;
-// };
 
 KERNEL void Fr_ip_sc_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint in_size, uint out_size);
 
