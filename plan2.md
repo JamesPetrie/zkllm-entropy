@@ -200,16 +200,247 @@ entropy claims so each can be verified independently.
 
 ---
 
+## P6. Log-Space Division Trick (Enables True ZK)
+
+The current entropy pipeline computes per-token surprise as:
+```
+q = floor(win_prob * 2^p / total_win)
+surprise = -log2(q / 2^p)
+```
+
+This requires proving an integer division by a variable denominator (`total_win`), which
+is the hardest unsolved cryptographic sub-problem (see S2). The softmax module avoids an
+analogous division using a log-space subtraction trick — the same idea applies here.
+
+### Core observation
+
+Since `-log2(win_prob / total_win) = -log2(win_prob) + log2(total_win)`, the division
+becomes a subtraction of two log lookups:
+
+```
+surprise = log_table_tw[total_win] - log_table_wp[win_prob]
+```
+
+No division, no quantization step, no `q_idx`. The two log values are looked up
+independently via `tLookupRangeMapping`, and their difference is a linear relation
+provable with a single sumcheck.
+
+### Lookup table sizing
+
+- **`win_prob`** is in `[1, cdf_scale]` (typically 2^15). A `zkLog` table of size 2^15
+  handles this directly — same as the existing log table.
+- **`total_win`** is in `[1, vocab_size × cdf_scale]` (up to ~2^30 for 32K vocab).
+  A direct table of size 2^25 (~256 MB on GPU) covers values up to ~33M, which exceeds
+  `32768 × 1024 ≈ 33.5M` for sequences up to 1024 tokens. For longer sequences or
+  larger vocabularies, a 2^27 table (~1 GB) provides ample headroom. Both are feasible
+  on H100 (80 GB).
+
+### Per-position proof structure (replaces current 6-constant approach)
+
+For each position, the prover holds intermediate tensors but never reveals them:
+
+1. **`zkArgmax.prove(logits)`** — proves `t_star` is the argmax and `v_star` is its value.
+   Existing module, just needs binary sumcheck fix (S5) and serialisation.
+
+2. **`cdf_prover.prove(diffs_all)`** — proves CDF lookup over full vocabulary via
+   `tLookupRangeMapping::prove()`. Existing module. With `D = vocab_size` padded to 32768
+   and `N = 2^cdf_precision`, the `D % N == 0` constraint is satisfiable.
+
+3. **Sumcheck: `total_win = sum(win_probs_all)`** — standard inner-product sumcheck with
+   an all-ones vector. Uses existing `Fr_ip_sc`.
+
+4. **`log_prover_wp.prove(win_prob_vec)`** — log lookup on per-position win_prob values
+   batched across all T positions. Uses existing `tLookupRangeMapping` with table size
+   2^15. Requires `T` padded to a multiple of table size.
+
+5. **`log_prover_tw.prove(total_win_vec)`** — log lookup on per-position total_win values
+   batched across all T positions. New `zkLog` instance with larger precision (2^25).
+
+6. **Subtraction sumcheck: `surprise_vec = log_tw_vec - log_wp_vec`** — linear relation,
+   provable as a single-round sumcheck or direct MLE equality check.
+
+7. **Sum: `H = sum(surprise_vec)`** — only H (or H/T) is revealed.
+
+### What this achieves
+
+- **Eliminates the variable-denominator division** — the hardest unsolved sub-problem.
+- **Eliminates all 6 per-position constant polynomials** — no `logit_act`, `diff_actual`,
+  `win_prob`, `total_win`, `q_fr`, or `surprise` values are revealed. All intermediate
+  values remain committed but unopened.
+- **Reveals only the aggregate entropy bound H** — achieving true zero knowledge (in the
+  cryptographic sense) for the entropy layer.
+- **Reuses existing modules** — `zkArgmax`, `tLookupRangeMapping`, `Fr_ip_sc` all work
+  as-is. The only new component is a second `zkLog` instance with a larger table.
+
+### Precision considerations
+
+The current pipeline quantizes `win_prob / total_win` to a `log_precision`-bit integer
+before the log lookup, introducing quantization error. The log-space approach applies the
+log directly to `win_prob` and `total_win` separately, which changes the error profile:
+
+- Each log lookup has ±0.5 ULP rounding error relative to `log_scale`.
+- The subtraction doubles this to ±1 ULP.
+- This is comparable to the current quantization error and can be made arbitrarily small
+  by increasing `log_scale`.
+
+The bound remains valid (always an upper bound on true entropy) because the CDF
+approximation via Gibbs' inequality is the dominant source of looseness, not the log
+precision.
+
+### Relationship to other issues
+
+- **Supersedes S2** (total_win unproven): total_win is now proven via sumcheck (step 3)
+  and its log is proven via lookup (step 5).
+- **Supersedes P1** (conservative total_win): no longer needed — the actual total_win is
+  used with full tightness.
+- **Complements S1** (argmax verification): the argmax proof is still needed and must be
+  serialised and verified.
+- **Complements S3** (weight binding): the weight-binding layer is orthogonal and still
+  needs serialisation for full security.
+- **Resolves the ZK leakage concern**: the current proof format leaks per-token logit
+  gaps, probabilities, and surprise values. This approach reveals only H.
+
+### Implementation effort
+
+| Component | Existing? | Effort |
+|-----------|-----------|--------|
+| Batch CDF lookup (`tLookup.prove`) | Yes | Low |
+| `total_win` sum proof (`Fr_ip_sc`) | Yes | Low |
+| Log lookup on `win_prob` batch | Yes (`zkLog`) | Low |
+| Log lookup on `total_win` batch | New `zkLog` instance, larger table | Low–Medium |
+| Subtraction sumcheck | Trivial linear check | Low |
+| Final sum proof | Trivial | Low |
+| Remove scalar emissions, commit intermediates | Refactoring | Medium |
+| Build matching cryptographic verifier | No verifier exists yet | High |
+
+Total: moderate effort for the prover-side changes. The verifier is the dominant cost,
+but that work is needed regardless of this change (see S1, S3).
+
+---
+
 ## Recommended Implementation Order
 
 1. **S5** — Fix binary sumcheck (one-line change, immediate soundness improvement)
 2. **S6** — Throw on negative diffs (one-line change)
 3. **S7** — Remove/gate diagnostic code (cleanup)
 4. **S4 + P2** — Store cdf_precision in proof header, fix verifier defaults
-5. **S2 via P1** — Use conservative total_win (eliminates hardest soundness gap with
-   minimal code change; re-evaluate tightness to decide if P3 is needed)
+5. **S2 via P1** — Use conservative total_win as interim fix (eliminates hardest soundness
+   gap with minimal code change)
 6. **S1** — Extend verifier to check argmax sumcheck polynomials (moderate effort)
-7. **S3** — Serialise weight-binding proofs (large effort, needed for full security)
+7. **P6** — Log-space division trick (replaces P1 with tight bound, eliminates per-token
+   leakage, achieves true ZK for the entropy layer)
+8. **S3** — Serialise weight-binding proofs (large effort, needed for full security)
+
+---
+
+## P7. Goldilocks Field Range Validation: FP16 Accuracy and Overflow Analysis
+
+The Goldilocks field has modulus p = 2⁶⁴ − 2³² + 1 ≈ 1.8 × 10¹⁹. Field arithmetic wraps
+silently at p. If any intermediate value in the proof pipeline exceeds p, the computation
+produces a valid field element that bears no relation to the intended integer — a silent
+correctness failure, not a crash. This section plans a systematic check.
+
+### Where overflow could occur
+
+The proof pipeline converts FP16/FP32 model outputs to quantized integers, then operates
+on them in the Goldilocks field. The critical chain is:
+
+1. **Logit quantization:** `logit_int = round(logit_fp × scaling_factor)`. With FP16
+   logits in [−65504, 65504] and typical scaling_factor = 65536, the max value is
+   ~4.3 × 10⁹ (~32 bits). Safe.
+
+2. **Logit diffs:** `diff = v_star − logits[i]`. Max = 2 × max_logit ≈ 8.6 × 10⁹
+   (~33 bits). Safe.
+
+3. **CDF values:** `cdf_scale` (typically 2¹⁵ = 32768). Safe.
+
+4. **Win probability sum:** `total_win = sum(win_probs)` where each win_prob ≤ cdf_scale.
+   Max = vocab_size × cdf_scale = 32000 × 32768 ≈ 10⁹ (~30 bits). Safe.
+
+5. **Rescaling products:** `zkFC` computes `output = input × weight`, summed over
+   `in_dim`. If input and weight are both ~2³² and in_dim = 4096, the sum is
+   ~2³² × 2³² × 2¹² = 2⁷⁶. **This exceeds p ≈ 2⁶⁴.** The Rescaling step divides
+   by scaling_factor after the multiply, but the intermediate accumulation happens in
+   the field and would wrap.
+
+6. **RMSNorm inverse:** `rms_inv = round(1/rms × scaling_factor)`. Bounded by
+   scaling_factor. Safe.
+
+7. **Hadamard products in RMSNorm:** element-wise multiply of two ~2³² values = ~2⁶⁴.
+   Borderline — depends on actual magnitude.
+
+8. **tLookup inverse:** `A[i] = 1/(S[i] + beta)` — field inverse, always valid.
+
+9. **Sumcheck intermediate products:** `a(u) × b(u)` where both are MLE evaluations.
+   MLE values are linear combinations of field elements with coefficients in [0,1], so
+   they stay within the range of the input elements. Products of two ~2³² values = ~2⁶⁴.
+   Borderline.
+
+### Risk assessment
+
+| Location | Max magnitude | Goldilocks headroom | Risk |
+|----------|--------------|---------------------|------|
+| Logits, diffs | ~2³³ | 2³¹ headroom | None |
+| CDF, win_prob | ~2³⁰ | 2³⁴ headroom | None |
+| total_win | ~2³⁰ | 2³⁴ headroom | None |
+| zkFC accumulation | ~2⁷⁶ | **Overflows** | **HIGH** |
+| Hadamard (RMSNorm) | ~2⁶⁴ | Borderline | Medium |
+| Sumcheck products | ~2⁶⁴ | Borderline | Medium |
+
+### The zkFC overflow question
+
+The `zkFC` matmul accumulates `in_dim` products of quantized values. In BLS12-381
+(255-bit), this never overflows. In Goldilocks (64-bit), it can.
+
+However, this is the **intended** behavior for sumcheck-based proofs: the matmul is
+verified via a sumcheck protocol that reduces the inner product to a single evaluation,
+never forming the full accumulation in the field. The sumcheck polynomial at each round
+is degree 2 (product of two multilinear functions), and the evaluation point is a random
+field element, so the intermediate value is a random element of F_p — it does not
+correspond to any integer accumulation.
+
+The question is whether the **compute** path (which forms the actual matmul to produce
+logits) overflows before the result is rescaled. If the compute path uses GPU field
+arithmetic (accumulating in F_p), the accumulation wraps modulo p, giving wrong logits.
+If it uses host-side integer arithmetic or floating point, it may be fine.
+
+**Action items:**
+
+1. **Trace the zkFC compute path.** Determine whether `FrTensor::matmul` accumulates in
+   the field (wraps at p) or uses wider arithmetic. If it accumulates in F_p, verify that
+   the Rescaling step accounts for wrap-around or that values are small enough to avoid it.
+
+2. **Empirical range check.** Run the pipeline on real Llama-2-7B weights and log the
+   maximum intermediate value at each stage. Compare against p.
+   ```python
+   # Pseudocode for instrumented run:
+   for each layer output:
+       max_val = max(abs(scalar_to_long(elem)) for elem in tensor)
+       log2_max = log2(max_val)
+       print(f"Stage: {name}, max magnitude: 2^{log2_max:.1f}, headroom: {64 - log2_max:.1f} bits")
+   ```
+
+3. **Compare quantized vs FP16 outputs.** Run inference in FP16 and in quantized
+   fixed-point (with the same scaling factor). Compare per-token logit rankings and
+   argmax agreement. Metrics:
+   - Fraction of positions where argmax matches
+   - Mean/max absolute difference in logits (after rescaling back to float)
+   - Per-position KL divergence between softmax distributions
+   - Whether the quantization error is smaller than the calibrated σ (if so, it's
+     absorbed by the noise model and doesn't affect the entropy bound)
+
+4. **Determine minimum safe scaling factor.** The scaling factor controls precision
+   (larger = more precise quantization) but also overflow risk (larger = bigger
+   intermediate values). Find the sweet spot where quantization error < σ but
+   accumulations stay within p.
+
+5. **Consider mixed-precision strategy.** If overflow is a problem in zkFC, options:
+   - Reduce scaling_factor for weight quantization (trades precision for range)
+   - Split the matmul into blocks and rescale between blocks
+   - Use extension field (Goldilocks quadratic extension, 128-bit) for accumulations
+   - Accept the overflow and handle it modularly (the sumcheck proof is valid
+     regardless of overflow — the question is only whether the *proved* computation
+     matches the *intended* computation)
 
 ---
 
