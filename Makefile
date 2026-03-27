@@ -15,7 +15,7 @@ ARCH := sm_90
 #   %.o: %.cu  →  add -dlto after -dc
 #   %.o: %.cpp →  add -dlto after -dc
 #   $(TARGETS) →  add -dlto at the end of the link command
-NVCC_FLAGS := -arch=$(ARCH) -std=c++17
+NVCC_FLAGS := -arch=$(ARCH) -std=c++17 -O3
 
 # Source and object files
 CU_SRCS := bls12-381.cu ioutils.cu commitment.cu fr-tensor.cu g1-tensor.cu proof.cu zkrelu.cu zkfc.cu tlookup.cu polynomial.cu zksoftmax.cu rescaling.cu \
@@ -96,6 +96,9 @@ gold_rmsnorm: gold_rmsnorm.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
 gold_skip-connection: gold_skip-connection.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_bench_matmul: gold_bench_matmul.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
 gold_commit-param: gold_commit-param.o $(GOLD_OBJS)
