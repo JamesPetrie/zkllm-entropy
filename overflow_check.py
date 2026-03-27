@@ -253,7 +253,14 @@ with torch.no_grad():
 
         # Propagate approximate x_int to next layer (use FP for simplicity)
         with torch.no_grad():
-            x_float_next = layer(x_int.float().unsqueeze(0) / SCALE)[0].squeeze(0)
+            # Compute position embeddings for the layer
+            position_ids = torch.arange(args.seq_len).unsqueeze(0)
+            cos_pos, sin_pos = model.model.rotary_emb(
+                x_int.float().unsqueeze(0) / SCALE, position_ids)
+            x_float_next = layer(
+                x_int.float().unsqueeze(0) / SCALE,
+                position_embeddings=(cos_pos, sin_pos)
+            )[0].squeeze(0)
             x_int = torch.round(x_float_next * SCALE).to(torch.int64)
         report(f"L{layer_idx} output", x_int)
 
