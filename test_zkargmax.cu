@@ -1,6 +1,6 @@
 // Tests for zkArgmax.
 // Build: add to Makefile as a target (see Makefile).
-// Run: ./test_zkargmax
+// Run: ./test_zkargmax  (BLS) or ./gold_test_zkargmax (Goldilocks)
 
 #include "zkargmax.cuh"
 #include <iostream>
@@ -15,16 +15,22 @@ static FrTensor from_longs(const vector<long>& vals) {
     Fr_t* cpu = new Fr_t[N];
     for (uint i = 0; i < N; i++) {
         long v = vals[i];
+#ifdef USE_GOLDILOCKS
+        if (v >= 0) {
+            cpu[i] = {(uint64_t)v};
+        } else {
+            // Negative: represent as p - |v|
+            cpu[i] = {GOLDILOCKS_P - (uint64_t)(-v)};
+        }
+#else
         if (v >= 0) {
             cpu[i] = {(uint)(v & 0xFFFFFFFF), (uint)((unsigned long)v >> 32),
                       0, 0, 0, 0, 0, 0};
         } else {
-            // Negative: represent as field element p - |v|.
-            // For small |v|, use blstrs subtraction via a kernel or store directly.
-            // Simple approach: use two's-complement in 64-bit then let field arithmetic handle it.
-            unsigned long uv = (unsigned long)v;  // reinterpret as unsigned
+            unsigned long uv = (unsigned long)v;
             cpu[i] = {(uint)(uv & 0xFFFFFFFF), (uint)(uv >> 32), 0, 0, 0, 0, 0, 0};
         }
+#endif
     }
     FrTensor t(N, cpu);
     delete[] cpu;
@@ -57,7 +63,6 @@ int main() {
     {
         auto logits = from_longs({7, 7, 7, 7});
         uint t = am.compute(logits);
-        // All same: argmax should return one of them (implementation returns 0).
         check(t < 4, "argmax of all-equal is a valid index");
     }
 
@@ -69,7 +74,6 @@ int main() {
         auto u = random_vec(ceilLog2(4u));
         vector<Polynomial> proof;
         Fr_t claim = am.prove(logits, t_star, v_star, u, proof);
-        // Should not throw; claim is logits(u).
         check(true, "prove does not throw for correct argmax");
         (void)claim;
     }
@@ -78,7 +82,6 @@ int main() {
     {
         auto logits = from_longs({10, 99, 55, 3});
         uint t_star = 1;  // correct
-        // Deliberately pass wrong v_star (value of index 2, not the max)
         Fr_t wrong_v = logits(2u);
         auto u = random_vec(ceilLog2(4u));
         vector<Polynomial> proof;
@@ -105,6 +108,26 @@ int main() {
             threw = true;
         }
         check(threw, "prove throws when t_star is not the argmax (negative diff found)");
+    }
+
+    // ── Test 7: prove rejects inflated v_star (soundness of indicator) ───
+    //    A cheating prover sets v_star above the true max.  All diffs are
+    //    non-negative and fit in bit_width bits, but the indicator check
+    //    (<ind, diffs> != 0) catches it.
+    {
+        auto logits = from_longs({10, 99, 55, 3});
+        uint t_star = 1;  // true argmax index
+        // Inflate v_star: use 150 instead of the real max (99)
+        Fr_t inflated_v = FR_FROM_INT(150);
+        auto u = random_vec(ceilLog2(4u));
+        vector<Polynomial> proof;
+        bool threw = false;
+        try {
+            am.prove(logits, t_star, inflated_v, u, proof);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw, "prove throws when v_star is inflated above true max");
     }
 
     cout << "\nAll zkArgmax tests passed." << endl;

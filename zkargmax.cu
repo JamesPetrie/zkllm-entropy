@@ -152,13 +152,45 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
     if (recon != diffs_u)
         throw std::runtime_error("zkArgmax::prove: bit reconstruction mismatch at challenge u");
 
-    // 4. Binary sumcheck for each bit tensor: proves bits_b[i] in {0,1}.
-    for (uint b = 0; b < bit_width; b++) {
-        auto v = random_vec(ceilLog2(N));
-        vector<Fr_t> bin_proof;
-        Fr_bin_sc(bits_vecs[b], u.begin(), u.end(), v.begin(), v.end(), bin_proof);
-    }
+    // 4. Indicator vector: ind[t_star] = 1, all others 0.
+    //    Proves v_star is actually in the logits tensor (soundness):
+    //    - sum(ind) = 1: exactly one position selected
+    //    - <ind, diffs> = 0: selected position has diff=0, so v_star = logits[t_star]
+    //    - ind is binary: folded into the batched check below
+    Fr_t* cpu_ind = new Fr_t[N];
+    for (uint i = 0; i < N; i++) cpu_ind[i] = FR_FROM_INT(0);
+    cpu_ind[t_star] = FR_FROM_INT(1);
+    FrTensor ind(N, cpu_ind);
+    delete[] cpu_ind;
 
-    // 5. Return MLE claim on logits at u: logits(u) = v_star - diffs(u).
+    Fr_t ind_sum = ind.sum();
+    if (ind_sum != FR_FROM_INT(1))
+        throw std::runtime_error("zkArgmax::prove: indicator sum != 1");
+    Fr_t ind_dot_diffs = (ind * diffs).sum();
+    if (ind_dot_diffs != FR_FROM_INT(0))
+        throw std::runtime_error("zkArgmax::prove: v_star not in logits tensor");
+
+    // 5. Batched binary check via random linear combination.
+    //    For K = bit_width + 1 tensors (bit planes + indicator), compute:
+    //      combined_error[i] = sum_k r_k * a_k[i] * (a_k[i] - 1)
+    //    If all a_k are binary, combined_error is the zero tensor.
+    //    Verify by checking combined_error(u) = 0 (Schwartz-Zippel over |F| ~ 2^64).
+    //    This replaces bit_width separate Fr_bin_sc calls (~30× fewer kernel launches).
+    auto r = random_vec(bit_width + 1);
+    FrTensor combined_error = (bits_vecs[0] * bits_vecs[0] - bits_vecs[0]) * r[0];
+    for (uint b = 1; b < bit_width; b++) {
+        combined_error += (bits_vecs[b] * bits_vecs[b] - bits_vecs[b]) * r[b];
+    }
+    combined_error += (ind * ind - ind) * r[bit_width];
+
+    Fr_t ce_u = combined_error(u);
+    if (ce_u != FR_FROM_INT(0))
+        throw std::runtime_error("zkArgmax::prove: batched binary check failed");
+
+    // 6. Add proof elements for indicator constraints.
+    proof.push_back(Polynomial(ind_sum));
+    proof.push_back(Polynomial(ind_dot_diffs));
+
+    // 7. Return MLE claim on logits at u: logits(u) = v_star - diffs(u).
     return v_star - diffs_u;
 }
