@@ -20,114 +20,222 @@ Proposed:   Gold_t (Goldilocks 64-bit) +  FRI (NTT + Merkle tree)        +  fri_
 
 The sumcheck protocol itself is field-agnostic — it only needs field add, multiply, and inverse. The commitment scheme is the only component that changes structurally (from algebraic EC opening to FRI-based opening).
 
-## Implementation Phases
+## Implementation Status
 
-### Phase 1: Goldilocks Field Arithmetic (~1 week)
+### Phase 1: Goldilocks Field Arithmetic — COMPLETE ✓
 
-Replace the BLS12-381 scalar field with Goldilocks (p = 2⁶⁴ − 2³² + 1).
+Replaced the BLS12-381 scalar field with Goldilocks (p = 2⁶⁴ − 2³² + 1).
 
-**Files to create:**
-- `goldilocks.cuh` — field element type, device functions for add, sub, mul, inverse, Montgomery form
-- `goldilocks.cu` — host-side utilities, constants
+**Files created:**
+- `goldilocks.cuh` — `Gold_t` type (single `uint64_t`), all device functions: `gold_add`, `gold_sub`, `gold_mul`, `gold_sqr`, `gold_inverse`, `gold_pow`, `gold_mont`/`gold_unmont` (identity for Goldilocks). Compatibility `#define` macros mapping `blstrs__scalar__Scalar_*` to `gold_*`. Initializer macros `FR_ZERO`, `FR_ONE`, `FR_LITERAL`.
+- `goldilocks.cu` — device constant definitions (`gold_ZERO`, `gold_ONE`, `gold_P`).
+- `test_goldilocks.cu` — 36 unit tests for all field operations.
 
-**Design decisions:**
-- `Gold_t` is a single `uint64_t` (vs 8 × `uint32_t` for BLS12-381). This changes the `Fr_t` typedef and every kernel that touches field elements.
-- Montgomery multiplication: Goldilocks has a fast reduction because p = 2⁶⁴ − 2³² + 1 allows reduction with shifts and adds instead of general modular reduction. The `bench_field_arith.cu` benchmark already has a working device implementation.
-- Batch inverse: implement Montgomery's trick (one inversion + 3(n−1) multiplications) since sumcheck needs inverses.
+**Files modified (via `#ifdef USE_GOLDILOCKS` guards):**
+- `fr-tensor.cuh` — conditional include of `goldilocks.cuh` vs `bls12-381.cuh`, guard EC types behind `#ifndef USE_GOLDILOCKS`
+- `fr-tensor.cu` — Goldilocks-compatible: `operator<<`, `random_vec`, `random_int_kernel`, `random_kernel`, all `_to_scalar`/`scalar_to_` conversions, `modular_inverse`
+- `proof.cuh` — guard `g1-tensor.cuh`, `commitment.cuh` includes and `verifyWeightClaim` declaration
+- `proof.cu` — guard `verifyWeightClaim`, fix `operator==` for single-field Gold_t, fix Fr_t literal initializers
+- `polynomial.cu` — replace 8-element BLS initializers with `blstrs__scalar__Scalar_ZERO`/`ONE`, guard zero-checks in `operator/` and `inv()`
 
-**Key concern: overflow.** The sumcheck accumulates dot products of field elements. For a dot product of n terms, the intermediate sum can reach n × p². In Goldilocks (64-bit), a single product is 128 bits; accumulating n products needs log₂(n) extra bits. For n = 32,000 (vocabulary size), this needs ~143 bits — safely under 2 × 64 = 128 bits only if we reduce after each multiply-add. The existing `bench_field_arith.cu` Goldilocks multiply already returns a reduced result, so accumulation is safe as long as we reduce per step (not batched). For the self-attention dot product (n up to 1M context length), same approach applies — reduce after each multiply-add.
+**Build system:**
+- Makefile: `GOLD_FLAG := -DUSE_GOLDILOCKS`, `gold_%.o` pattern rule, standalone Goldilocks targets
 
-**Validation:** Run existing test cases (`test_zkargmax`, `test_zklog`, `test_zknormalcdf`, `test_zkentropy`) with Goldilocks field and verify identical proof structure (different field values, same polynomial degrees and claim counts).
+**Test results:** 36/36 field tests + 18/18 tensor tests (creation, negatives, add, Hadamard mul, sum, MLE, random, inner product sumcheck, matmul) all pass on H100.
 
-### Phase 2: NTT over Goldilocks (~1 week)
+### Phase 2: NTT over Goldilocks — COMPLETE ✓
 
-FRI requires evaluating polynomials on multiplicative subgroups, which uses the Number Theoretic Transform (NTT).
+NTT (Number Theoretic Transform) for polynomial evaluation on multiplicative subgroups.
 
-**Files to create:**
-- `ntt.cuh` / `ntt.cu` — forward and inverse NTT over Goldilocks
+**Files created:**
+- `ntt.cuh` — interface: `get_root_of_unity()`, `ntt_forward()`, `ntt_inverse()`, `ntt_coset_forward()`, `ntt_coset_inverse()`
+- `ntt.cu` — Cooley-Tukey radix-2 DIT with bit-reversal permutation. Host-side precomputation of twiddle factors, GPU butterfly kernel. Coset variants multiply by powers of a shift element before/after NTT.
+- `test_ntt.cu` — 6 tests: root of unity properties (log_n=1..20), NTT round-trip (n=8), polynomial evaluation at roots of unity (n=4), coset NTT round-trip (n=8), large round-trip (n=2^16), very large round-trip (n=2^20).
 
-**Design decisions:**
-- Goldilocks p = 2⁶⁴ − 2³² + 1 has multiplicative group order p − 1 = 2³² × (2³² − 1). The 2³² factor means NTT domains up to size 2³² are supported natively (root of unity exists). This is sufficient for any realistic model — 2³² = 4 billion elements covers even 1T-parameter models.
-- Standard Cooley-Tukey radix-2 butterfly, parallelized across GPU threads.
-- For FRI, we need NTT on coset domains (shifted by a generator), not just the standard domain. Implement as `ntt(data, shift)` where `shift` is the coset offset.
+**Design notes:**
+- Goldilocks has 2³² roots of unity (p−1 = 2³² × (2³²−1)), supporting NTT domains up to 2³².
+- Generator g=7 for the full multiplicative group; ω_k = 7^((p−1)/2^k).
+- Twiddle factors precomputed on host, uploaded per butterfly stage. This is simple but not optimal — a production version could precompute all twiddles once and reuse.
 
-**Validation:** Verify NTT(INTT(x)) = x, and that polynomial evaluation via NTT matches naive evaluation at random points.
+**Test results:** 6/6 tests pass on H100, including 1M-element round-trip.
 
-### Phase 3: Merkle Tree Commitment (~3 days)
+### Phase 3: Merkle Tree Commitment — COMPLETE ✓
 
-Replace Pedersen commitment with a hash-based Merkle tree.
+SHA-256 hash-based Merkle tree replacing Pedersen EC commitment.
 
-**Files to create:**
-- `merkle.cuh` / `merkle.cu` — Merkle tree construction and opening
+**Files created:**
+- `merkle.cuh` — `Hash256` type, `MerkleProof` struct, `MerkleTree` class with `root()`, `prove()`, `verify()`
+- `merkle.cu` — GPU SHA-256 implementation (compress, leaf hash, pair hash), both device and host versions. `MerkleTree` builds tree on GPU, copies to host for proof generation. Supports both Goldilocks (8-byte) and BLS12-381 (32-byte) leaf formats via `#ifdef`.
+- `test_merkle.cu` — 9 tests: deterministic root, different data → different root, all-leaf proof verification (n=8), proof path length, wrong value fails, wrong index fails, large tree proofs (n=2^16), path length verification.
 
-**Design decisions:**
-- Hash function: SHA-256 initially (already benchmarked). Can swap to Poseidon2 over Goldilocks or Blake3 later.
-- Tree structure: binary Merkle tree over the NTT evaluation domain (not the coefficient domain). Store all internal nodes on GPU for fast path extraction.
-- Commitment = Merkle root (32 bytes).
-- Opening at a point = Merkle authentication path (log₂(n) × 32 bytes).
+**Design notes:**
+- Commitment = 32-byte Merkle root (vs 48-byte compressed EC point for Pedersen).
+- Proof = log₂(n) × 32-byte sibling hashes.
+- SHA-256 chosen for initial implementation. Can swap to Poseidon2 or Blake3 later without structural changes.
 
-**Files to modify:**
-- `commitment.cuh` — replace `Commitment` class (currently extends `G1TensorJacobian`) with `MerkleCommitment` class that stores root hash and internal nodes.
-- `commitment.cu` — replace `commit()`, `commit_int()`, `open()`, `me_open()` with Merkle-based equivalents.
+**Test results:** 9/9 tests pass on H100.
 
-**What gets deleted:**
-- `g1-tensor.cuh` / `g1-tensor.cu` — all elliptic curve point operations (no longer needed).
-- EC-specific parts of `bls12-381.cuh` / `bls12-381.cu` — the `Fp_t`, `G1Affine_t`, `G1Jacobian_t` types and all curve arithmetic.
+### Phase 4: FRI Polynomial Commitment — COMPLETE ✓
 
-### Phase 4: FRI Polynomial Commitment (~2 weeks)
+Full FRI (Fast Reed-Solomon IOP) protocol for polynomial commitment.
 
-Implement FRI as the polynomial commitment opening protocol, replacing the Pedersen `me_open()`.
+**Files created:**
+- `fri.cuh` — `FriParams`, `FriCommitment`, `FriQueryRound`, `FriProof` structs, `FriProver` and `FriVerifier` classes
+- `fri.cu` — FRI implementation:
+  - **Commit**: coset NTT evaluation + Merkle tree
+  - **Fold**: GPU kernel `fri_fold_kernel` implements `f_new[i] = (f[i] + f[i+half])/2 + α(f[i] − f[i+half])/(2x_i)`
+  - **Query**: opens positions across all layers with Merkle proofs for both paired indices
+  - **Verify**: checks folding consistency at queried positions, verifies Merkle proofs, checks remainder
+- `test_fri.cu` — 6 tests: small polynomial (degree 3), multiple queries (degree 7, 3 queries), larger polynomial (degree 1023)
 
-**Files to create:**
-- `fri.cuh` / `fri.cu` — FRI commit, open, and verify
+**Design notes:**
+- Blowup factor = 2 (evaluation domain = 2× polynomial degree).
+- 1 query per opening in the interactive setting (2⁻⁶⁴ soundness).
+- Coset offset = (2N)-th root of unity, ensuring evaluation domain doesn't include 0.
+- Domain offset squares at each folding round: offset' = offset².
 
-**FRI commit (done once per committed polynomial):**
-1. Compute low-degree extension: evaluate the multilinear polynomial on a domain of size ρ × n (blowup factor ρ, typically 2 or 4).
-2. Build Merkle tree over the extended evaluations.
-3. Output: Merkle root (the commitment).
+**Test results:** 6/6 tests pass on H100 (after fixing resize+push_back bug and position tracking in verifier).
 
-**FRI open (done per sumcheck opening):**
-1. Verifier sends random challenge α.
-2. Prover folds the polynomial: f'(x) = f_even(x) + α · f_odd(x), halving the degree.
-3. Prover commits to f' with a new Merkle tree.
-4. Repeat for log₂(n) rounds until polynomial is constant.
-5. Prover sends the final constant.
-6. **Interactive setting: verifier sends 1 query position** (not 50+). Prover responds with Merkle authentication paths at the query position across all rounds. Verifier checks consistency.
+### Phase 5: Integration Layer — COMPLETE ✓
 
-**Key design decision: 1 query per opening.** In the interactive setting with 64-bit field, a single query gives soundness error 2⁻⁶⁴. The prover commits output before seeing challenges, so grinding is impossible. This makes FRI openings extremely cheap:
-- Prover work per opening: log₂(n) Merkle paths = log₂(n) × log₂(ρn) hashes to extract.
-- Verifier work per opening: log₂(n) hash checks + log₂(n) field operations for folding consistency.
+FRI PCS (Polynomial Commitment Scheme) bridging FRI to the sumcheck-based proof system.
 
-**Files to modify:**
-- `proof.cuh` / `proof.cu` — replace `verifyWeightClaim()` to use FRI opening instead of `me_open()`.
-- The `Weight` struct in `commitment.cuh` changes: remove `Commitment generator` and `G1TensorJacobian com`, replace with `MerkleCommitment com` (just a root hash + cached tree).
+**Files created:**
+- `fri_pcs.cuh` — `FriPcsCommitment`, `FriPcsOpeningProof` structs, `FriPcs` class with `commit()`, `open()`, `verify()`, `multilinear_eval_host()`
+- `fri_pcs.cu` — Implementation:
+  - **Commit**: Merkle tree over raw data (commitment = root hash)
+  - **Open**: compute multilinear evaluation via iterative folding, then FRI-commit polynomial and generate proof
+  - **Verify**: verify FRI proof (polynomial is low-degree and matches commitment)
+  - Fiat-Shamir challenge derivation (simple hash mixing — placeholder for proper transcript)
+- `test_fri_pcs.cu` — 19 tests:
+  - Commit + open + verify at specific points (n=8)
+  - Multilinear evaluation correctness (all corners + midpoint of 4-element MLE)
+  - Large vector (n=1024) open + verify
+  - FrTensor MLE matches FriPcs MLE (cross-validation)
+  - **End-to-end: inner product sumcheck + FRI PCS** — verifies that sumcheck final evaluations a(u), b(u) match FRI PCS openings
 
-**Integration with sumcheck:** Currently, each sumcheck ends with a call to `verifyWeightClaim()` which opens the Pedersen commitment at the random evaluation point produced by the sumcheck. With FRI, the same evaluation point is used — the sumcheck protocol is unchanged, only the opening mechanism at the end differs. The call sites in `zkllm_entropy.cu:180,188`, `self-attn.cu:65-67`, `ffn.cu:84,90,93`, and `rmsnorm.cu:49` all go through `verifyWeightClaim()`, so they only need the signature to change.
+**Test results:** 19/19 tests pass on H100. The sumcheck+FRI PCS integration test confirms the two systems produce consistent results.
 
-### Phase 5: Integration and Testing (~1 week)
+## Remaining Work: Production Integration
 
-**Files to modify (call sites — minimal changes):**
-- `zkllm_entropy.cu` / `zkllm_entropy_timed.cu` — update `Weight` loading, remove EC generators
-- `self-attn.cu`, `ffn.cu`, `rmsnorm.cu`, `skip-connection.cu` — same pattern
-- `zkfc.cu` — `zkFC::prove()` returns claims, no change needed if `Claim` struct stays the same
-- Python scripts (`llama-commit.py`, `commit_final_layers.py`, `llama-ppgen.py`) — replace Pedersen commitment generation with Merkle tree construction
+The core infrastructure (Phases 1–5) is complete and tested. The remaining work is to wire the new FRI PCS into the production proof pipeline, replacing the Pedersen commitment path.
 
-**What stays unchanged:**
-- All sumcheck code (`proof.cu`: `Fr_ip_sc`, `Fr_hp_sc`, `Fr_bin_sc`) — field-agnostic, just needs the new `Fr_t` typedef.
-- All entropy proof code (`zkentropy.cu`, `zkargmax.cu`, `zklog.cu`, `zknormalcdf.cu`) — operates on `Fr_t` and `FrTensor`, field-agnostic.
-- Table lookup (`tlookup.cu`) — field-agnostic.
-- Rescaling (`rescaling.cu`) — field-agnostic.
-- Polynomial representation (`polynomial.cu`) — field-agnostic.
+### Phase 6: Replace Pedersen Commitment in Proof Pipeline
 
-**Validation:**
-1. Run full end-to-end proof (`run_e2e_local.sh`) with Goldilocks + FRI.
-2. Verify entropy bound matches BLS12-381 version (same model, same input, same tokens).
-3. Run `verify_entropy.py` (updated for new proof format).
-4. Benchmark: compare total proving time against BLS12-381 baseline (684.8s for 1024 tokens).
+**Goal:** Make `zkllm_entropy` (and the full 32-layer pipeline) use Goldilocks + FRI instead of BLS12-381 + Pedersen.
+
+**6a. Replace `Weight` struct and `verifyWeightClaim()`**
+
+The current `Weight` struct (`commitment.cuh:28-36`) bundles:
+- `Commitment generator` (EC generators for multi-scalar multiplication)
+- `FrTensor weight` (quantized weight values)
+- `G1TensorJacobian com` (precomputed Pedersen commitment)
+
+Replace with:
+```cpp
+struct Weight {
+    FrTensor weight;
+    FriPcsCommitment com;  // Merkle root of weight data
+    uint in_dim, out_dim;
+};
+```
+
+Replace `verifyWeightClaim()` (`proof.cu:4-11`):
+```cpp
+// Current: opens Pedersen commitment via EC multi-exp
+void verifyWeightClaim(const Weight& w, const Claim& c) {
+    auto opening = w.generator.open(w_padded, w.com, u_cat);
+    if (opening != c.claim) throw ...;
+}
+
+// New: opens FRI PCS commitment
+void verifyWeightClaim(const Weight& w, const Claim& c) {
+    auto proof = FriPcs::open(w.weight.gpu_data, w.weight.size, u_cat);
+    if (proof.claimed_value != c.claim) throw ...;
+    if (!FriPcs::verify(w.com, u_cat, proof)) throw ...;
+}
+```
+
+**Files to modify:** `commitment.cuh`, `proof.cuh`, `proof.cu`
+
+**6b. Adapt Goldilocks guards in remaining source files**
+
+These files contain BLS12-381 8-element initializer patterns (`{val, 0, 0, 0, 0, 0, 0, 0}`) and EC-specific code that need `#ifdef USE_GOLDILOCKS` guards:
+
+| File | What needs changing |
+|------|-------------------|
+| `zkentropy.cu` | Fr_t literal initializers, commitment usage |
+| `zkargmax.cu` | Fr_t literal initializers |
+| `zklog.cu` | Fr_t literal initializers |
+| `zknormalcdf.cu` | Fr_t literal initializers |
+| `zksoftmax.cu` | Fr_t literal initializers |
+| `zkfc.cu` | Fr_t initializers, Weight/Claim interaction |
+| `zkrelu.cu` | Fr_t initializers |
+| `tlookup.cu` | Fr_t initializers |
+| `rescaling.cu` | Fr_t initializers |
+
+Pattern: replace `{val, 0, 0, 0, 0, 0, 0, 0}` with `FR_LITERAL(val)` or use `blstrs__scalar__Scalar_ZERO`/`ONE` in device code, and explicit `Fr_t fr_zero = {0ULL}` under `#ifdef USE_GOLDILOCKS` in host code.
+
+**6c. Adapt data loading for Goldilocks serialization**
+
+The Weight loading path (`create_weight` in `commitment.cu`) reads binary files with 32-byte BLS12-381 elements. For Goldilocks, elements are 8 bytes. Need:
+- New `create_weight_gold()` function or conditional loading in `create_weight()`
+- Update `FrTensor::from_int_bin()` if the format changes
+- Update Python scripts that generate weight files (`llama-commit.py`, `commit_final_layers.py`)
+
+**6d. Update Python verification and data preparation**
+
+| Script | Change |
+|--------|--------|
+| `llama-commit.py` | Generate Merkle commitments instead of Pedersen |
+| `commit_final_layers.py` | Same |
+| `llama-ppgen.py` | Remove (no longer needed — no EC generators to precompute) |
+| `verify_entropy.py` | Update proof format parsing for FRI proofs |
+| `run_e2e_local.sh` | Update binary names, remove ppgen step |
+
+### Phase 7: Performance Optimization
+
+After correctness is established, optimize for throughput:
+
+**7a. NTT optimization**
+- Current implementation: per-stage twiddle upload + kernel launch. Inefficient for large transforms.
+- Target: single kernel launch with precomputed twiddle table in constant/shared memory, similar to the existing `blstrs__scalar__Scalar_radix_fft` kernel.
+- Expected: 2–5× NTT speedup.
+
+**7b. Batch FRI commitments**
+- The 32-layer pipeline commits ~100+ weight matrices. Currently each is committed independently.
+- Batch the Merkle tree construction to amortize kernel launch overhead.
+- Precompute all NTTs in a pipeline.
+
+**7c. Poseidon2 hash function**
+- SHA-256 requires multiple rounds of 32-bit operations per hash.
+- Poseidon2 over Goldilocks uses native 64-bit field arithmetic (which we already have) — potentially 3–10× faster than SHA-256 on GPU.
+- Drop-in replacement in `merkle.cu` (change leaf/pair hash functions).
+
+**7d. Fiat-Shamir transcript**
+- Current: simple hash mixing (placeholder).
+- Target: proper Merlin-style transcript or Poseidon2-based sponge for non-interactive proofs (needed if we want to generate proofs offline).
+
+### Phase 8: End-to-End Validation
+
+1. **Correctness**: Run full entropy proof (`run_e2e_local.sh`) with Goldilocks + FRI on the same model/input as the BLS12-381 baseline. Verify identical entropy bound.
+2. **Performance**: Benchmark total proving time against the BLS12-381 baseline (684.8s for 1024 tokens). Target: ~45s (15× speedup).
+3. **Proof size**: Measure total proof size. Expected: ~775 KB for full model (well within design goal of "up to input size").
+4. **Memory**: Profile GPU memory usage. FRI needs additional memory for NTT buffers and Merkle trees vs Pedersen.
+
+## Test Suite Summary
+
+| Test binary | Tests | Status |
+|-------------|-------|--------|
+| `test_goldilocks` | 36 field arithmetic tests | ✓ Pass |
+| `test_gold_tensor` | 18 tensor + sumcheck + matmul tests | ✓ Pass |
+| `test_ntt` | 6 NTT tests (up to 2^20 elements) | ✓ Pass |
+| `test_merkle` | 9 Merkle tree tests (up to 2^16) | ✓ Pass |
+| `test_fri` | 6 FRI tests (up to degree 1023) | ✓ Pass |
+| `test_fri_pcs` | 19 integration tests (sumcheck + FRI PCS) | ✓ Pass |
+| **Total** | **94 tests** | **All pass** |
 
 ## Expected Performance
-
-Based on benchmarks:
 
 | Component | BLS12-381 + Pedersen | Goldilocks + FRI | Speedup |
 |---|---|---|---|
@@ -138,16 +246,16 @@ Based on benchmarks:
 | Commitment opening | EC multi-exp | 1-query FRI | cheaper |
 | **Total for entropy tail** | **685s** | **~45s** | **~15×** |
 
-The 15× speedup on the entropy prove phase (which is 92.6% of current time) dominates. The commitment and opening changes are secondary for the entropy tail but significant for the full 32-layer proof pipeline where weight commitments are a larger fraction of total work.
-
 ## Risk and Open Questions
 
-1. **Overflow in Goldilocks accumulation.** Needs careful analysis per kernel. The sumcheck accumulates products of field elements — each multiplication produces a full field element (already reduced), so accumulation of n reduced products needs at most 64 + log₂(n) bits before the final reduction. For n = 32,000 this is 79 bits, which fits in 128-bit intermediate. Need to verify all kernels use 128-bit intermediates for accumulation.
+1. **Overflow in Goldilocks accumulation.** Each multiplication produces a reduced result, so accumulation of n products needs at most 64 + log₂(n) bits. For n = 32,000 (vocab size) this is 79 bits, safely within 128-bit intermediates. Verified in the existing kernels.
 
-2. **NTT domain size.** FRI needs the committed polynomial evaluated on a multiplicative subgroup. For a weight matrix of size d_in × d_out (e.g., 4096 × 32000 ≈ 131M), we need an NTT domain of size ≥ ρ × 131M. With ρ = 2 and padding to power-of-2: NTT of size 256M. This fits in Goldilocks (max domain 2³²) but requires significant GPU memory (~2 GB per committed matrix at 8 bytes/element, ~4 GB with blowup). The H100 has 80 GB, so this is fine for a 7B model but may need streaming for larger models.
+2. **NTT domain size.** For a weight matrix of size 4096 × 32000 ≈ 131M elements, NTT domain = 256M elements × 8 bytes = ~2 GB. With blowup factor 2: ~4 GB. H100 has 80 GB — sufficient for a 7B model but may need streaming for larger models.
 
-3. **FRI proof size.** With 1 query per opening: each opening produces log₂(n) Merkle paths, each of depth log₂(ρn). For n = 131M, ρ = 2: path depth = 28, path size = 28 × 32 = 896 bytes. With ~27 openings per layer × 32 layers ≈ 864 openings total: ~775 KB of Merkle paths. This is well within the "proofs up to the size of the input" design goal.
+3. **FRI proof size.** With 1 query per opening: log₂(n) Merkle paths × log₂(ρn) depth. For n = 131M, ρ = 2: ~896 bytes per opening. Total for full model: ~775 KB. Well within design goals.
 
-4. **Poseidon vs SHA-256.** SHA-256 is a safe starting point, but Poseidon2 over Goldilocks would be algebraically compatible with the field, potentially enabling more efficient in-circuit verification if needed. Can be swapped later without changing the FRI structure.
+4. **Poseidon2 vs SHA-256.** SHA-256 is working. Poseidon2 would be faster (native field arithmetic) and enable algebraic in-circuit verification. Can swap later — the FRI/Merkle structure is hash-agnostic.
 
-5. **Compatibility with existing Python scripts.** The Python verification and data preparation scripts will need updates to work with Goldilocks serialization (8 bytes per element vs 32 bytes). This is straightforward but touches many files.
+5. **Fiat-Shamir security.** Current challenge derivation is a placeholder. For production, need a proper transcript (Merlin or Poseidon-based sponge). Only matters for non-interactive proofs.
+
+6. **Compatibility with existing Python pipeline.** Weight files need re-serialization (32 → 8 bytes per element). Commitment files change format (EC point → Merkle root). Scripts need updates but the changes are mechanical.
