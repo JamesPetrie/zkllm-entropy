@@ -2,9 +2,11 @@
 #define PROOF_CUH
 
 #include "fr-tensor.cuh"
+#ifndef USE_GOLDILOCKS
 #include "g1-tensor.cuh"
 #include "commitment.cuh"
 #include "bls12-381.cuh"
+#endif
 #include "polynomial.cuh"
 
 #include <vector>
@@ -16,9 +18,10 @@ struct Claim {
     std::vector<uint> dims;
 };
 
+#ifndef USE_GOLDILOCKS
 struct Weight;
-
 void verifyWeightClaim(const Weight& w, const Claim& c);
+#endif
 
 // struct Weight {
 //     Commitment generator;

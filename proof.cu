@@ -1,5 +1,6 @@
 #include "proof.cuh"
 
+#ifndef USE_GOLDILOCKS
 void verifyWeightClaim(const Weight& w, const Claim& c)
 {
     vector<Fr_t> u_cat = concatenate(vector<vector<Fr_t>>({c.u[1], c.u[0]}));
@@ -8,6 +9,7 @@ void verifyWeightClaim(const Weight& w, const Claim& c)
     if (opening != c.claim) throw std::runtime_error("verifyWeightClaim: opening != c.claim");
     cout << "Opening complete" << endl;
 }
+#endif
 
 KERNEL void Fr_ip_sc_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint in_size, uint out_size)
 {
@@ -161,7 +163,11 @@ vector<Fr_t> binary_sumcheck(const FrTensor& a, vector<Fr_t> u, vector<Fr_t> v)
 
 bool operator==(const Fr_t& a, const Fr_t& b)
 {
+#ifdef USE_GOLDILOCKS
+    return a.val == b.val;
+#else
     return (a.val[0] == b.val[0] && a.val[1] == b.val[1] && a.val[2] == b.val[2] && a.val[3] == b.val[3] && a.val[4] == b.val[4] && a.val[5] == b.val[5] && a.val[6] == b.val[6] && a.val[7] == b.val[7]);
+#endif
 }
 
 bool operator!=(const Fr_t& a, const Fr_t& b)

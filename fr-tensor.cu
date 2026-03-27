@@ -5,12 +5,17 @@ using namespace std;
 
 ostream& operator<<(ostream& os, const Fr_t& x)
 {
+#ifdef USE_GOLDILOCKS
+  os << "0x" << std::hex << std::setfill('0') << std::setw(16) << x.val;
+  return os << std::dec << std::setw(0) << std::setfill(' ');
+#else
   os << "0x" << std::hex;
   for (uint i = 8; i > 0; -- i)
   {
     os << std::setfill('0') << std::setw(8) << x.val[i - 1];
   }
   return os << std::dec << std::setw(0) << std::setfill(' ');
+#endif
 }
 
 vector<Fr_t> random_vec(uint len)
@@ -19,7 +24,14 @@ vector<Fr_t> random_vec(uint len)
     std::mt19937 mt(rd());
     std::uniform_int_distribution<unsigned int> dist(0, UINT_MAX);
     vector<Fr_t> out(len);
+#ifdef USE_GOLDILOCKS
+    for (uint i = 0; i < len; ++ i) {
+        uint64_t lo = dist(mt), hi = dist(mt);
+        out[i] = {(hi << 32 | lo) % GOLDILOCKS_P};
+    }
+#else
     for (uint i = 0; i < len; ++ i) out[i] = {dist(mt), dist(mt), dist(mt), dist(mt), dist(mt), dist(mt), dist(mt), dist(mt) % 1944954707};
+#endif
     return out;
 }
 
@@ -445,13 +457,19 @@ KERNEL void random_int_kernel(Fr_t* gpu_data, uint num_bits, uint n, unsigned lo
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     curandState state;
-    
+
     // Initialize the RNG state for this thread.
-    curand_init(seed, tid, 0, &state);  
-    
+    curand_init(seed, tid, 0, &state);
+
     if (tid < n) {
+#ifdef USE_GOLDILOCKS
+        uint64_t raw = curand(&state) & ((1ULL << num_bits) - 1);
+        gpu_data[tid] = {raw};
+        gpu_data[tid] = blstrs__scalar__Scalar_sub(gpu_data[tid], Fr_t{1ULL << (num_bits - 1)});
+#else
         gpu_data[tid] = {curand(&state) & ((1U << num_bits) - 1), 0, 0, 0, 0, 0, 0, 0};
         gpu_data[tid] = blstrs__scalar__Scalar_sub(gpu_data[tid], {1U << (num_bits - 1), 0, 0, 0, 0, 0, 0, 0});
+#endif
     }
 }
 
@@ -482,10 +500,15 @@ KERNEL void random_kernel(Fr_t* gpu_data, uint n, unsigned long seed)
     curandState state;
 
     if (tid > n) return;
-    
+
     // Initialize the RNG state for this thread.
-    curand_init(seed, tid, 0, &state);  
+    curand_init(seed, tid, 0, &state);
+#ifdef USE_GOLDILOCKS
+    uint64_t lo = curand(&state), hi = curand(&state);
+    gpu_data[tid] = {(hi << 32 | lo) % GOLDILOCKS_P};
+#else
     gpu_data[tid] = {curand(&state), curand(&state), curand(&state), curand(&state), curand(&state), curand(&state), curand(&state), curand(&state) % 1944954707};
+#endif
 }
 
 FrTensor FrTensor::random(uint size)
@@ -662,8 +685,11 @@ ostream& operator<<(ostream& os, const FrTensor& A)
 // Input: x is in montgomery form
 // Output: x^{-1} = x^{P-2} in montgomery form
 DEVICE Fr_t modular_inverse(Fr_t x){
+#ifdef USE_GOLDILOCKS
+    return gold_inverse(x);
+#else
     Fr_t P_sub2 = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_P, {2,0,0,0,0,0,0,0});
-    
+
     // for each bit of P_sub2, compute x^i
     Fr_t res = blstrs__scalar__Scalar_ONE;
     for(int i = 0; i < blstrs__scalar__Scalar_LIMBS -1 ; i++){
@@ -686,8 +712,32 @@ DEVICE Fr_t modular_inverse(Fr_t x){
         x = blstrs__scalar__Scalar_sqr(x);
     }
     return res;
+#endif
 }
 
+#ifdef USE_GOLDILOCKS
+DEVICE Fr_t ulong_to_scalar(unsigned long num)
+{
+    return {num % GOLDILOCKS_P};
+}
+
+DEVICE Fr_t long_to_scalar(long num)
+{
+    if (num >= 0) return {static_cast<uint64_t>(num)};
+    else return gold_sub({0ULL}, {static_cast<uint64_t>(-num)});
+}
+
+DEVICE Fr_t uint_to_scalar(uint num)
+{
+    return {static_cast<uint64_t>(num)};
+}
+
+DEVICE Fr_t int_to_scalar(int num)
+{
+    if (num >= 0) return {static_cast<uint64_t>(num)};
+    else return gold_sub({0ULL}, {static_cast<uint64_t>(-num)});
+}
+#else
 DEVICE Fr_t ulong_to_scalar(unsigned long num)
 {
     return {static_cast<uint>(num), static_cast<uint>(num >> 32), 0, 0, 0, 0, 0, 0};
@@ -709,6 +759,7 @@ DEVICE Fr_t int_to_scalar(int num)
     if (num >= 0) return uint_to_scalar(static_cast<uint>(num));
     else return blstrs__scalar__Scalar_sub({0,0,0,0,0,0,0,0}, uint_to_scalar(static_cast<uint>(-num)));
 }
+#endif
 
 KERNEL void int_to_scalar_kernel(int* int_ptr, Fr_t* scalar_ptr, uint n)
 {
@@ -919,6 +970,34 @@ FrTensor catTensors(const vector<FrTensor>& vec){
     return out;
 }
 
+#ifdef USE_GOLDILOCKS
+DEVICE unsigned int scalar_to_uint(Fr_t x)
+{
+    if (x.val <= 0xFFFFFFFFULL) return static_cast<unsigned int>(x.val);
+    return 0U;
+}
+
+DEVICE int scalar_to_int(Fr_t x)
+{
+    // Positive: val < 2^31
+    if (x.val < 0x80000000ULL) return static_cast<int>(x.val);
+    // Negative: val > p/2 means it represents a negative number
+    return -static_cast<int>(gold_sub({0ULL}, x).val);
+}
+
+DEVICE unsigned long scalar_to_ulong(Fr_t x)
+{
+    return x.val;
+}
+
+DEVICE long scalar_to_long(Fr_t x)
+{
+    // Positive: val < p/2
+    if (x.val <= (GOLDILOCKS_P >> 1)) return static_cast<long>(x.val);
+    // Negative
+    return -static_cast<long>(gold_sub({0ULL}, x).val);
+}
+#else
 DEVICE unsigned int scalar_to_uint(Fr_t x)
 {
     if (!x.val[7] && !x.val[6] && !x.val[5] && !x.val[4] && !x.val[3] && !x.val[2] && !x.val[1]) return static_cast<unsigned int>(x.val[0]);
@@ -943,6 +1022,7 @@ DEVICE long scalar_to_long(Fr_t x)
     if (!x.val[7] && !x.val[6] && !x.val[5] && !x.val[4] && !x.val[3] && !x.val[2] && !(x.val[1] >> 31)) return static_cast<long>(scalar_to_ulong(x));
     else return -static_cast<long>(scalar_to_ulong(blstrs__scalar__Scalar_sub({0,0,0,0,0,0,0,0}, x)));
 }
+#endif
 
 FrTensor FrTensor::trunc(uint begin_idx, uint end_idx) const
 {

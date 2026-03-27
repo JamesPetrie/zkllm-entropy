@@ -104,7 +104,11 @@ __global__ void divKernel(const Fr_t* a, const Fr_t* b, Fr_t* c)
 
 Fr_t operator/(const Fr_t& a, const Fr_t& b)
 {
+#ifdef USE_GOLDILOCKS
+    if (b.val == 0) {
+#else
     if (!b.val[0] && !b.val[1] && !b.val[2] && !b.val[3] && !b.val[4] && !b.val[5] && !b.val[6] && !b.val[7]) {
+#endif
         throw std::runtime_error("divide by zero");
     }
     //copy a and b to cuda
@@ -132,7 +136,11 @@ __global__ void invKernel(const Fr_t* a, Fr_t* c)
 
 Fr_t inv(const Fr_t& a)
 {   
+#ifdef USE_GOLDILOCKS
+    if (a.val == 0) {
+#else
     if (!a.val[0] && !a.val[1] && !a.val[2] && !a.val[3] && !a.val[4] && !a.val[5] && !a.val[6] && !a.val[7]) {
+#endif
         throw std::runtime_error("divide by zero");
     }
     //copy a to cuda

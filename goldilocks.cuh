@@ -77,22 +77,7 @@ DEVICE inline Gold_t gold_mul(Gold_t a, Gold_t b) {
     unsigned long long lo = a.val * b.val;
     unsigned long long hi = __umul64hi(a.val, b.val);
 
-    // Reduce: result = lo + hi * (2^32 - 1)  mod p
-    // hi * (2^32 - 1) = hi * 2^32 - hi = (hi << 32) - hi
-    uint64_t hi_lo = (uint32_t)hi;              // low 32 bits of hi
-    uint64_t hi_hi = hi >> 32;                   // high 32 bits of hi
-
-    // hi * (2^32 - 1) = hi_hi * 2^64 * (something)... let's be more careful.
-    // Actually: hi < 2^64, so hi * (2^32 - 1) < 2^96.
-    // We need to handle this in steps.
-    //
-    // Let hi = hi_hi * 2^32 + hi_lo
-    // hi * 2^32 = hi_hi * 2^64 + hi_lo * 2^32
-    // hi * (2^32 - 1) = hi_hi * 2^64 + hi_lo * 2^32 - hi
-    //                  = hi_hi * 2^64 + (hi_lo * 2^32 - hi_hi - hi_lo) + carry adjustments
-    //
-    // This is getting complicated. Use a simpler approach:
-    // result = lo + hi * EPSILON where EPSILON = 2^32 - 1
+    // Reduce: result = lo + hi * EPSILON where EPSILON = 2^32 - 1
     // Since hi < p and EPSILON < 2^32, hi * EPSILON < 2^96
     // But we can split: hi * EPSILON = hi_hi_part * 2^64 + lo_part
     // And 2^64 ≡ EPSILON (mod p), so recursively reduce.

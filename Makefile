@@ -41,12 +41,26 @@ $(TARGETS): % : %.o $(CU_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
 
 # ── Standalone Goldilocks targets (no BLS12-381 dependency) ──────────────────
+GOLD_FLAG := -DUSE_GOLDILOCKS
+GOLD_SRCS := goldilocks.cu fr-tensor.cu proof.cu polynomial.cu ioutils.cu
+GOLD_OBJS := $(GOLD_SRCS:%.cu=gold_%.o)
+
+gold_%.o: %.cu
+	$(NVCC) $(NVCC_FLAGS) $(GOLD_FLAG) $(INCLUDES) -dc $< -o $@
+
+# Also handle .cpp files needed (timer.cpp)
+gold_%.o: %.cpp
+	$(NVCC) -x cu $(NVCC_FLAGS) $(GOLD_FLAG) $(INCLUDES) -dc $< -o $@
+
 test_goldilocks: test_goldilocks.o goldilocks.o
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+test_gold_tensor: gold_test_gold_tensor.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
 # Clean rule
 clean:
-	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS) test_goldilocks test_goldilocks.o goldilocks.o
+	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS) test_goldilocks test_goldilocks.o goldilocks.o $(GOLD_OBJS) gold_test_gold_tensor.o test_gold_tensor
 
 # Default rule
 all: $(TARGETS)

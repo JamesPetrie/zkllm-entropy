@@ -7,14 +7,20 @@
 #include <vector>
 #include <curand_kernel.h>
 #include <random>
+#ifdef USE_GOLDILOCKS
+#include "goldilocks.cuh"
+#else
 #include "bls12-381.cuh"
+#endif
 #define TILE_WIDTH 16
 
 using namespace std;
 
 typedef blstrs__scalar__Scalar Fr_t;
+#ifndef USE_GOLDILOCKS
 typedef blstrs__g1__G1Affine_affine G1Affine_t;
 typedef blstrs__g1__G1Affine_jacobian G1Jacobian_t;
+#endif
 
 const uint FrNumThread = 256;
 const uint FrSharedMemorySize = 2 * sizeof(Fr_t) * FrNumThread; 
@@ -147,7 +153,11 @@ class FrTensor
 
     Fr_t multi_dim_me(const vector<vector<Fr_t>>& us, const vector<uint>& shape) const;
 
+#ifdef USE_GOLDILOCKS
+    FrTensor pad(const vector<uint>& shape, const Fr_t& pad_val = {0ULL}) const;
+#else
     FrTensor pad(const vector<uint>& shape, const Fr_t& pad_val = {0, 0, 0, 0, 0, 0, 0, 0}) const;
+#endif
 
     FrTensor transpose(uint M, uint N) const;
     
