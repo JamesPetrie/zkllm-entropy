@@ -203,6 +203,13 @@ def main():
                                f"(diff={diff_actual}, cdf_val={cdf_val})")
                 pos_ok = False
 
+            # Check 1b: total_win == vocab_size * cdf_scale (public constant)
+            expected_total_win = vocab_size * cdf_scale
+            if total_win != expected_total_win:
+                errors.append(f"total_win mismatch: got {total_win}, expected {expected_total_win} "
+                               f"(vocab_size={vocab_size} * cdf_scale={cdf_scale})")
+                pos_ok = False
+
             # Check 2: q_fr == clamp(floor(win_prob * 2^log_precision / total_win), 1, 2^log_precision)
             if total_win == 0:
                 expected_q = 1

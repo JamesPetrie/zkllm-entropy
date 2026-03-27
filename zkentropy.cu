@@ -156,7 +156,14 @@ Fr_t zkConditionalEntropy::prove(
         Fr_t cdf_scale_fr = FR_FROM_INT(cdf_scale);
         FrTensor win_probs_all = -(cdf_vals_all - cdf_scale_fr);
         Fr_t win_prob  = win_probs_all(actual_token);
-        Fr_t total_win = win_probs_all.sum();
+
+        // Conservative total_win: use public upper bound vocab_size * cdf_scale.
+        // This is always >= the true sum and requires no proof (verifier can
+        // compute it from header parameters). Makes the entropy bound slightly
+        // looser but eliminates the soundness gap where a malicious prover could
+        // self-report an arbitrary total_win (S2 fix via P1).
+        unsigned long long total_win_val = (unsigned long long)vocab_size * cdf_scale;
+        Fr_t total_win = FR_FROM_INT(total_win_val);
 
         Fr_t diff_actual = diffs_all(actual_token);
         proof.push_back(Polynomial(diff_actual));
@@ -166,9 +173,7 @@ Fr_t zkConditionalEntropy::prove(
         // ── Normalisation + log ───────────────────────────────────────────
         unsigned long long wp    = fr_to_ull(win_prob);
         unsigned long long lp    = 1ULL << log_precision;
-        unsigned long long denom = fr_to_ull(total_win);
-        if (denom == 0) denom = 1;
-        unsigned long long q_idx = (denom > 0) ? (wp * lp) / denom : 1ULL;
+        unsigned long long q_idx = (wp * lp) / total_win_val;
         if (q_idx < 1)  q_idx = 1;
         if (q_idx > lp) q_idx = lp;
 
