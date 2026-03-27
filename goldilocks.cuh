@@ -79,46 +79,53 @@ DEVICE inline Gold_t gold_double(Gold_t a) {
 }
 
 DEVICE inline Gold_t gold_mul(Gold_t a, Gold_t b) {
-    // Full 128-bit product, then reduce mod p = 2^64 - 2^32 + 1
-    // Since 2^64 ≡ 2^32 - 1 (mod p), we have:
-    //   (hi * 2^64 + lo) ≡ hi * (2^32 - 1) + lo (mod p)
-    unsigned long long lo = a.val * b.val;
-    unsigned long long hi = UMUL64HI(a.val, b.val);
+    // Full 128-bit product: (hi, lo) = a * b
+    uint64_t lo = a.val * b.val;
+    uint64_t hi = UMUL64HI(a.val, b.val);
 
-    // Reduce: result = lo + hi * EPSILON where EPSILON = 2^32 - 1
-    // Since hi < p and EPSILON < 2^32, hi * EPSILON < 2^96
-    // But we can split: hi * EPSILON = hi_hi_part * 2^64 + lo_part
-    // And 2^64 ≡ EPSILON (mod p), so recursively reduce.
+    // Reduce mod p = 2^64 - 2^32 + 1 using 2^64 ≡ (2^32 - 1) mod p
+    // So: (hi * 2^64 + lo) ≡ lo + hi * (2^32 - 1) mod p
+    //
+    // Key trick: hi * (2^32 - 1) = (hi << 32) - hi, avoiding a second UMUL64HI.
+    // Split hi into hi_hi (top 32 bits) and hi_lo (bottom 32 bits):
+    //   hi << 32 = (hi_hi << 64) + (hi_lo << 32)
+    //   2^64 ≡ (2^32 - 1) mod p, so hi_hi << 64 ≡ hi_hi * (2^32 - 1) mod p
+    //
+    // Since hi < p < 2^64, hi_hi < 2^32, so hi_hi * (2^32-1) < 2^64 — no overflow.
 
-    // Step 1: compute hi * EPSILON as 128-bit
-    uint64_t eps = GOLDILOCKS_P_NEG;  // 2^32 - 1
-    uint64_t t_lo = hi * eps;
-    uint64_t t_hi = UMUL64HI(hi, eps);
+    uint64_t hi_hi = hi >> 32;
+    uint64_t hi_lo = hi & 0xFFFFFFFFULL;
 
-    // Step 2: add lo + t_lo (with carry)
-    uint64_t sum = lo + t_lo;
-    uint64_t carry1 = (sum < lo) ? 1ULL : 0ULL;
+    // Compute: result = lo + (hi_lo << 32) - hi + hi_hi * (2^32 - 1)
+    // Rewrite hi_hi * (2^32-1) = (hi_hi << 32) - hi_hi
+    // So: result = lo + (hi_lo << 32) - hi + (hi_hi << 32) - hi_hi
+    //            = lo + ((hi_lo + hi_hi) << 32) - hi - hi_hi
+    //            = lo + (hi << 32 handled via parts) ... let's just be explicit:
 
-    // Step 3: total high part = t_hi + carry1
-    uint64_t total_hi = t_hi + carry1;
+    // Step 1: t = hi * (2^32 - 1) = (hi << 32) - hi
+    // We split this to avoid 128-bit: hi << 32 = hi_lo << 32 (fits 64-bit) + hi_hi << 64 (overflow)
+    uint64_t t_lo = (hi_lo << 32) - hi;  // This can underflow (borrow)
+    bool borrow = (hi_lo << 32) < hi;
+    // The overflow part: hi_hi contributes hi_hi words of 2^64, which ≡ hi_hi * (2^32-1)
+    // Minus the borrow
+    uint64_t t_hi = hi_hi - (borrow ? 1ULL : 0ULL);  // hi_hi is at most 2^32-1, so this is fine
 
-    // Step 4: reduce total_hi * 2^64 ≡ total_hi * EPSILON (mod p)
-    // Since total_hi < 2^33 (because hi < 2^64 and eps < 2^32, so t_hi < 2^32,
-    // plus carry is at most 1), total_hi * eps < 2^65.
-    // So total_hi * eps fits in 128 bits but the high part is at most 1 bit.
-    uint64_t r_lo = total_hi * eps;
-    uint64_t r_hi = UMUL64HI(total_hi, eps);  // 0 or very small
+    // Step 2: result = lo + t_lo (with carry)
+    uint64_t result = lo + t_lo;
+    uint64_t carry = (result < lo) ? 1ULL : 0ULL;
 
-    // Step 5: sum + r_lo
-    uint64_t result = sum + r_lo;
-    uint64_t carry2 = (result < sum) ? 1ULL : 0ULL;
-    uint64_t final_hi = r_hi + carry2;
+    // Step 3: add overflow: (t_hi + carry) * (2^32 - 1)
+    // t_hi + carry < 2^32 + 1, so (t_hi + carry) * (2^32-1) < 2^64
+    uint64_t overflow = (t_hi + carry) * (uint64_t)GOLDILOCKS_P_NEG;
+    result += overflow;
 
-    // Step 6: if there's still a high part, reduce once more
-    // final_hi is at most ~2, so final_hi * eps fits in 64 bits
-    result += final_hi * eps;
+    // One more carry possible
+    if (result < overflow) {
+        // Wrapped: add another (2^32 - 1) for the 2^64 overflow
+        result += GOLDILOCKS_P_NEG;
+    }
 
-    // Final canonical reduction
+    // Final canonical reduction (at most one subtraction needed)
     if (result >= GOLDILOCKS_P) result -= GOLDILOCKS_P;
 
     return Gold_t{result};
