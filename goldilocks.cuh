@@ -212,6 +212,15 @@ DEVICE inline uint gold_get_bits(Gold_t a, uint start, uint count) {
 #define blstrs__scalar__Scalar_get_bit  gold_get_bit
 #define blstrs__scalar__Scalar_get_bits gold_get_bits
 
+// ── Initializer compatibility macros ────────────────────────────────────────
+// BLS12-381 code uses {val, 0, 0, 0, 0, 0, 0, 0} to create Fr_t literals.
+// These macros let the same pattern work for Goldilocks.
+#define FR_ZERO Gold_t{0ULL}
+#define FR_ONE  Gold_t{1ULL}
+#define FR_FROM_U32(x) Gold_t{(uint64_t)(x)}
+// Accept 8-arg initializer: use only first arg (cast to uint64_t)
+#define FR_LITERAL(a, ...) Gold_t{(uint64_t)(a)}
+
 // Reverse bits (used by FFT kernel in bls12-381.cu, may not be needed)
 DEVICE inline uint bitreverse(uint n, uint bits) {
     uint r = 0;

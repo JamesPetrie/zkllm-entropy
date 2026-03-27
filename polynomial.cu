@@ -52,7 +52,7 @@ Fr_t operator-(const Fr_t& a, const Fr_t& b)
 
 __global__ void negKernel(const Fr_t* a, Fr_t* c)
 {
-    *c = blstrs__scalar__Scalar_sub({0, 0, 0, 0, 0, 0, 0, 0}, *a);
+    *c = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ZERO, *a);
 }
 
 Fr_t operator-(const Fr_t& a)
@@ -239,7 +239,7 @@ Polynomial Polynomial::operator-(const Polynomial& other) {
 __global__ void polyMulKernel(int n, int m, const Fr_t* a, const Fr_t* b, Fr_t* c) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n + m - 1) {
-        c[i] = {0, 0, 0, 0, 0, 0, 0, 0};
+        c[i] = blstrs__scalar__Scalar_ZERO;
         for (int j = max(0, i - m + 1); j <= min(i, n - 1); j++) {
             c[i] = blstrs__scalar__Scalar_add(c[i], blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(a[j], b[i - j])));
         }
@@ -269,7 +269,7 @@ Polynomial& Polynomial::operator=(const Polynomial& other) {
 __global__ void polyNegKernel(int n, const Fr_t* a, Fr_t* c) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
-        c[i] = blstrs__scalar__Scalar_sub({0, 0, 0, 0, 0, 0, 0, 0}, a[i]);
+        c[i] = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ZERO, a[i]);
     }
 }
 
@@ -302,7 +302,7 @@ Polynomial& Polynomial::operator*=(const Polynomial& other)
 }
 
 __global__ void polyEvalKernel(int deg, const Fr_t* coefs, Fr_t x, Fr_t* result_ptr) {
-    Fr_t pow = {1, 0, 0, 0, 0, 0, 0, 0};
+    Fr_t pow = blstrs__scalar__Scalar_ONE;
     *result_ptr = blstrs__scalar__Scalar_ZERO;
     for (int i = 0; i <= deg; ++ i)
     {
@@ -349,8 +349,8 @@ std::ostream& operator<<(std::ostream& os, const Polynomial& poly)
 
 __global__ void eqPolyKernel(Fr_t u, Fr_t* coefs)
 {
-    coefs[0] = blstrs__scalar__Scalar_sub({1, 0, 0, 0, 0, 0, 0, 0}, u);
-    coefs[1] = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_double(u), {1, 0, 0, 0, 0, 0, 0, 0});
+    coefs[0] = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ONE, u);
+    coefs[1] = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_double(u), blstrs__scalar__Scalar_ONE);
 }
 
 Polynomial Polynomial::eq(const Fr_t& u){
@@ -364,7 +364,7 @@ __global__ void eqEvalKernel(Fr_t u, Fr_t v, Fr_t* eval)
 {
     *eval = blstrs__scalar__Scalar_double(blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(u, v)));
     *eval = blstrs__scalar__Scalar_sub(*eval, blstrs__scalar__Scalar_add(u, v));
-    *eval = blstrs__scalar__Scalar_add(*eval, {1, 0, 0, 0, 0, 0, 0, 0});
+    *eval = blstrs__scalar__Scalar_add(*eval, blstrs__scalar__Scalar_ONE);
 }
 
 Fr_t Polynomial::eq(const Fr_t& u, const Fr_t& v)

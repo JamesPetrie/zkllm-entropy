@@ -231,7 +231,12 @@ Fr_t multi_hadamard_sumchecks(const Fr_t& claim, const vector<FrTensor>& Xs, con
     proof.push_back(Polynomial(coefs));
     auto p = proof.back() * Polynomial::eq(u.back());
 
-    if (claim != p({0, 0, 0, 0, 0, 0, 0, 0}) + p({1, 0, 0, 0, 0, 0, 0, 0})) throw std::runtime_error("multi_hadamard_sumchecks: claim != p(0) + p(1)");
+#ifdef USE_GOLDILOCKS
+    Fr_t fr_zero = {0ULL}, fr_one = {1ULL};
+#else
+    Fr_t fr_zero = {0, 0, 0, 0, 0, 0, 0, 0}, fr_one = {1, 0, 0, 0, 0, 0, 0, 0};
+#endif
+    if (claim != p(fr_zero) + p(fr_one)) throw std::runtime_error("multi_hadamard_sumchecks: claim != p(0) + p(1)");
 
     auto new_claim = proof.back()(v.back());
     vector<FrTensor> new_Xs;
