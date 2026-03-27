@@ -22,7 +22,7 @@ int main(int argc, char *argv[])
     auto rmsnorm_weight = create_weight(
         workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-int.bin",
         workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-gold-commitment.bin",
-        1, embed_dim, 1UL << 16
+        1, embed_dim
     );
 #else
     auto rmsnorm_weight = create_weight(
@@ -43,7 +43,7 @@ int main(int argc, char *argv[])
 
     Rescaling rs1(1 << 16), rs2(1 << 16);
 
-    zkFC g = zkFC(1, embed_dim, rmsnorm_weight.weight, rmsnorm_weight.weight_fp16, rmsnorm_weight.scaling_factor);
+    zkFC g = zkFC(1, embed_dim, rmsnorm_weight.weight);
     auto g_inv_rms = g(rms_inv_temp);
     auto g_inv_rms_ = rs1(g_inv_rms);
 

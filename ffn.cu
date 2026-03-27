@@ -23,15 +23,15 @@ int main(int argc, char *argv[])
     auto up_proj = create_weight(
         workdir + "/" + layer_prefix + "-mlp.up_proj.weight-int.bin",
         workdir + "/" + layer_prefix + "-mlp.up_proj.weight-gold-commitment.bin",
-        embed_dim, hidden_dim, 1UL << 16);
+        embed_dim, hidden_dim);
     auto gate_proj = create_weight(
         workdir + "/" + layer_prefix + "-mlp.gate_proj.weight-int.bin",
         workdir + "/" + layer_prefix + "-mlp.gate_proj.weight-gold-commitment.bin",
-        embed_dim, hidden_dim, 1UL << 16);
+        embed_dim, hidden_dim);
     auto down_proj = create_weight(
         workdir + "/" + layer_prefix + "-mlp.down_proj.weight-int.bin",
         workdir + "/" + layer_prefix + "-mlp.down_proj.weight-gold-commitment.bin",
-        hidden_dim, embed_dim, 1UL << 16);
+        hidden_dim, embed_dim);
 #else
     auto up_proj = create_weight(
         workdir + "/mlp.up_proj.weight-pp.bin",
@@ -50,9 +50,9 @@ int main(int argc, char *argv[])
         hidden_dim, embed_dim);
 #endif
 
-    zkFC up_layer(embed_dim, hidden_dim, up_proj.weight, up_proj.weight_fp16, up_proj.scaling_factor);
-    zkFC gate_layer(embed_dim, hidden_dim, gate_proj.weight, gate_proj.weight_fp16, gate_proj.scaling_factor);
-    zkFC down_layer(hidden_dim, embed_dim, down_proj.weight, down_proj.weight_fp16, down_proj.scaling_factor);
+    zkFC up_layer(embed_dim, hidden_dim, up_proj.weight);
+    zkFC gate_layer(embed_dim, hidden_dim, gate_proj.weight);
+    zkFC down_layer(hidden_dim, embed_dim, down_proj.weight);
 
     Rescaling up_rescale(1 << 16);
     Rescaling gate_rescale(1 << 20);
