@@ -124,7 +124,28 @@ The core infrastructure (Phases 1–5) is complete and tested. The remaining wor
 
 **Goal:** Make `zkllm_entropy` (and the full 32-layer pipeline) use Goldilocks + FRI instead of BLS12-381 + Pedersen.
 
-**6a. Replace `Weight` struct and `verifyWeightClaim()`**
+**6a. Fix soundness: bind evaluation claims to FRI commitments**
+
+The current FRI PCS has a soundness gap: the verifier checks that the FRI proof is valid (polynomial is low-degree) but doesn't verify that the claimed multilinear evaluation is correct relative to the committed data. Two approaches:
+
+*Option A — Quotient polynomial (standard FRI evaluation argument):*
+- Prover commits to data as univariate polynomial p(x) via FRI.
+- To open at multilinear point u, prover constructs quotient q(x) = (p(x) − v) / Z(x), where v is the claimed evaluation and Z(x) vanishes at the points encoding u.
+- Prover FRI-commits q(x). Verifier checks: (1) FRI proof for q valid, (2) at queried positions, p(x) − v = q(x) · Z(x).
+- If q is valid low-degree, then p(x) − v is divisible by Z(x), so v is the correct evaluation.
+
+*Option B — Sumcheck reduction (fits existing architecture):*
+- The existing sumcheck protocol already reduces multilinear evaluation claims to single univariate point queries: "what is p(z)?"
+- FRI answers that point query by opening the committed polynomial at z with a Merkle proof.
+- The verifier checks: (1) the Merkle proof is valid against the commitment root, (2) the FRI folding is consistent at the opened position.
+- This is simpler because the codebase already does the sumcheck reduction — we just need FRI to handle the final point query.
+
+**Decision: Option B.** It leverages the existing sumcheck infrastructure and requires less new code. The `verifyWeightClaim()` flow becomes:
+1. Sumcheck reduces the multilinear claim to a point evaluation p(z) = v
+2. FRI proves that the committed polynomial evaluates to v at z
+3. Verifier checks FRI proof + Merkle proof at z
+
+**6b. Replace `Weight` struct and `verifyWeightClaim()`**
 
 The current `Weight` struct (`commitment.cuh:28-36`) bundles:
 - `Commitment generator` (EC generators for multi-scalar multiplication)
@@ -148,17 +169,19 @@ void verifyWeightClaim(const Weight& w, const Claim& c) {
     if (opening != c.claim) throw ...;
 }
 
-// New: opens FRI PCS commitment
+// New: opens via sumcheck reduction + FRI point query
 void verifyWeightClaim(const Weight& w, const Claim& c) {
+    // Sumcheck has already reduced multilinear claim to point evaluation
+    // FRI proves the committed polynomial evaluates correctly at that point
     auto proof = FriPcs::open(w.weight.gpu_data, w.weight.size, u_cat);
     if (proof.claimed_value != c.claim) throw ...;
     if (!FriPcs::verify(w.com, u_cat, proof)) throw ...;
 }
 ```
 
-**Files to modify:** `commitment.cuh`, `proof.cuh`, `proof.cu`
+**Files to modify:** `commitment.cuh`, `proof.cuh`, `proof.cu`, `fri_pcs.cu`
 
-**6b. Adapt Goldilocks guards in remaining source files**
+**6c. Adapt Goldilocks guards in remaining source files**
 
 These files contain BLS12-381 8-element initializer patterns (`{val, 0, 0, 0, 0, 0, 0, 0}`) and EC-specific code that need `#ifdef USE_GOLDILOCKS` guards:
 
@@ -176,14 +199,14 @@ These files contain BLS12-381 8-element initializer patterns (`{val, 0, 0, 0, 0,
 
 Pattern: replace `{val, 0, 0, 0, 0, 0, 0, 0}` with `FR_LITERAL(val)` or use `blstrs__scalar__Scalar_ZERO`/`ONE` in device code, and explicit `Fr_t fr_zero = {0ULL}` under `#ifdef USE_GOLDILOCKS` in host code.
 
-**6c. Adapt data loading for Goldilocks serialization**
+**6d. Adapt data loading for Goldilocks serialization**
 
 The Weight loading path (`create_weight` in `commitment.cu`) reads binary files with 32-byte BLS12-381 elements. For Goldilocks, elements are 8 bytes. Need:
 - New `create_weight_gold()` function or conditional loading in `create_weight()`
 - Update `FrTensor::from_int_bin()` if the format changes
 - Update Python scripts that generate weight files (`llama-commit.py`, `commit_final_layers.py`)
 
-**6d. Update Python verification and data preparation**
+**6e. Update Python verification and data preparation**
 
 | Script | Change |
 |--------|--------|
