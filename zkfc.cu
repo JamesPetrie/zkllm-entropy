@@ -19,9 +19,7 @@ zkFC zkFC::from_float_gpu_ptr (uint input_size, uint output_size, unsigned long 
     FrTensor weights(input_size * output_size);
     FrTensor bias(output_size);
     float_to_scalar_kernel<<<(input_size * output_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(weight_ptr, weights.gpu_data, scaling_factor, input_size * output_size);
-    cudaDeviceSynchronize();
     float_to_scalar_kernel<<<(output_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(bias_ptr, bias.gpu_data, scaling_factor * scaling_factor, output_size);
-    cudaDeviceSynchronize();
     return zkFC(input_size, output_size, weights, bias);
 }
 
@@ -29,7 +27,6 @@ zkFC zkFC::from_float_gpu_ptr (uint input_size, uint output_size, unsigned long 
 {
     FrTensor weights(input_size * output_size);
     float_to_scalar_kernel<<<(input_size * output_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(weight_ptr, weights.gpu_data, scaling_factor, input_size * output_size);
-    cudaDeviceSynchronize();
     return zkFC(input_size, output_size, weights);
 }
 
@@ -49,10 +46,8 @@ FrTensor zkFC::operator()(const FrTensor& X) const { // X.size is batch_size * i
     dim3 gridSize((outputSize + blockSize.x - 1) / blockSize.x, (batchSize + blockSize.y - 1) / blockSize.y);
     FrTensor out(batchSize * outputSize);
     matrixMultiplyOptimized<<<gridSize, blockSize>>>(X.gpu_data, weights.gpu_data, out.gpu_data, batchSize, inputSize, outputSize);
-    cudaDeviceSynchronize();
     if(has_bias){
         fcAddBiasKernel<<<(batchSize * outputSize + FrNumThread - 1) / FrNumThread, FrNumThread>>>(out.gpu_data, bias.gpu_data, batchSize, outputSize);
-        cudaDeviceSynchronize();
     }
     return out;
 }
@@ -132,7 +127,6 @@ Polynomial zkip_step_poly(const FrTensor& a, const FrTensor& b, const Fr_t& u)
     uint N_in = a.size, N_out = (1 << ceilLog2(a.size)) >> 1;
     FrTensor out0(N_out), out1(N_out), out2(N_out);
     zkip_poly_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, b.gpu_data, out0.gpu_data, out1.gpu_data, out2.gpu_data, N_in, N_out);
-    cudaDeviceSynchronize();
     return {{out0.sum(), out1.sum(), out2.sum()}};
     
 }
@@ -146,7 +140,6 @@ Fr_t zkip(const Fr_t& claim, const FrTensor& a, const FrTensor& b, const vector<
     uint N_in = a.size, N_out = (1 << ceilLog2(a.size)) >> 1;
     FrTensor new_a(N_out), new_b(N_out);
     zkip_reduce_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, b.gpu_data, new_a.gpu_data, new_b.gpu_data, u.back(), N_in, N_out);
-    cudaDeviceSynchronize();
     return zkip(p(u.back()), new_a, new_b, {u.begin(), u.end()-1}, proof);
 }
 
@@ -201,7 +194,6 @@ Polynomial zkip_stacked_step_poly(const FrTensor& A, const FrTensor& B, const ve
     // cout << "size_out = " << size_out << endl;
     FrTensor out0(size_out), out1(size_out), out2(size_out);
     zkip_stacked_poly_kernel<<<(size_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(A.gpu_data, B.gpu_data, out0.gpu_data, out1.gpu_data, out2.gpu_data, N, N_out, D);
-    cudaDeviceSynchronize();
     // cout << out0(size_out - 1) << endl;
     // cout << out1(size_out - 1) << endl;
     // cout << out2(size_out - 1) << endl;
@@ -222,7 +214,6 @@ Fr_t zkip_stacked(const Fr_t& claim, const FrTensor& A, const FrTensor& B, const
     uint size_out = N_out * D;
     FrTensor new_A(size_out), new_B(size_out);
     zkip_stacked_reduce_kernel<<<(size_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(A.gpu_data, B.gpu_data, new_A.gpu_data, new_B.gpu_data, vN.back(), N, N_out, D);
-    cudaDeviceSynchronize();
     // cout << new_A(size_out - 1) << endl;
     // cout << new_B(size_out - 1) << endl;
     return zkip_stacked(p(vN.back()), new_A, new_B, {uN.begin(), uN.end()-1}, uD, {vN.begin(), vN.end()-1}, N_out, D, proof);

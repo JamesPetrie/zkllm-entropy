@@ -68,16 +68,15 @@ void Fr_ip_sc(const FrTensor& a, const FrTensor& b, vector<Fr_t>::const_iterator
     auto out_size = (in_size + 1) / 2;
     FrTensor out0(out_size), out1(out_size), out2(out_size);
     Fr_ip_sc_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, b.gpu_data, out0.gpu_data, out1.gpu_data, out2.gpu_data, in_size, out_size);
-    cudaDeviceSynchronize();
+    // No sync needed: .sum() starts with cudaMemcpy which synchronizes
     proof.push_back(out0.sum());
     proof.push_back(out1.sum());
     proof.push_back(out2.sum());
 
     FrTensor a_new(out_size), b_new(out_size);
     Fr_me_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, a_new.gpu_data, *begin, in_size, out_size);
-    cudaDeviceSynchronize();
     Fr_me_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(b.gpu_data, b_new.gpu_data, *begin, in_size, out_size);
-    cudaDeviceSynchronize();
+    // No sync needed: kernels execute in stream order
     Fr_ip_sc(a_new, b_new, begin + 1, end, proof);
 }
 
@@ -107,18 +106,14 @@ void Fr_hp_sc(const FrTensor& a, const FrTensor& b, vector<Fr_t>::const_iterator
     auto out_size = (in_size + 1) / 2;
     FrTensor out0(out_size), out1(out_size), out2(out_size);
     Fr_ip_sc_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, b.gpu_data, out0.gpu_data, out1.gpu_data, out2.gpu_data, in_size, out_size);
-    cudaDeviceSynchronize();
     vector<Fr_t> u_(u_begin + 1, u_end);
-    //std::cout << u_.size() << "\t" << out0.size << "\t" << out1.size << "\t" << out2.size << std::endl;
     proof.push_back(out0(u_));
     proof.push_back(out1(u_));
     proof.push_back(out2(u_));
 
     FrTensor a_new(out_size), b_new(out_size);
     Fr_me_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, a_new.gpu_data, *v_begin, in_size, out_size);
-    cudaDeviceSynchronize();
     Fr_me_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(b.gpu_data, b_new.gpu_data, *v_begin, in_size, out_size);
-    cudaDeviceSynchronize();
     Fr_hp_sc(a_new, b_new, u_begin + 1, u_end, v_begin + 1, v_end, proof);
 }
 
@@ -160,16 +155,13 @@ void Fr_bin_sc(const FrTensor& a, vector<Fr_t>::const_iterator u_begin, vector<F
     auto out_size = (in_size + 1) / 2;
     FrTensor out0(out_size), out1(out_size), out2(out_size);
     Fr_bin_sc_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, out0.gpu_data, out1.gpu_data, out2.gpu_data, in_size, out_size);
-    cudaDeviceSynchronize();
     vector<Fr_t> u_(u_begin + 1, u_end);
-    //std::cout << u_.size() << "\t" << out0.size << "\t" << out1.size << "\t" << out2.size << std::endl;
     proof.push_back(out0(u_));
     proof.push_back(out1(u_));
     proof.push_back(out2(u_));
 
     FrTensor a_new(out_size);
     Fr_me_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, a_new.gpu_data, *v_begin, in_size, out_size);
-    cudaDeviceSynchronize();
     Fr_bin_sc(a_new, u_begin + 1, u_end, v_begin + 1, v_end, proof);
 }
 
@@ -232,7 +224,6 @@ Fr_t multi_hadamard_sumchecks(const Fr_t& claim, const vector<FrTensor>& Xs, con
 
     FrTensor X0(N_out), X1(N_out);
     hadamard_split_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(Xs[0].gpu_data, X0.gpu_data, X1.gpu_data, N_out);
-    cudaDeviceSynchronize();
     out.push_back(X0);
     out.push_back(X1);
 
@@ -241,7 +232,6 @@ Fr_t multi_hadamard_sumchecks(const Fr_t& claim, const vector<FrTensor>& Xs, con
         if (Xs[i].size != N) throw std::runtime_error("Xs[i] size is not N");
         FrTensor X0(N_out), X1(N_out);
         hadamard_split_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(Xs[i].gpu_data, X0.gpu_data, X1.gpu_data, N_out);
-        cudaDeviceSynchronize();
 
         out.push_back(out.back() * X1);
         for (int j = i; j >= 1; -- j)
@@ -271,7 +261,6 @@ Fr_t multi_hadamard_sumchecks(const Fr_t& claim, const vector<FrTensor>& Xs, con
     {
         FrTensor new_X(N_out);
         hadamard_reduce_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(X.gpu_data, v.back(), new_X.gpu_data, N_out);
-        cudaDeviceSynchronize();
         new_Xs.push_back(new_X);
     }
 

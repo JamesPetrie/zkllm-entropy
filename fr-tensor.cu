@@ -292,12 +292,15 @@ Fr_t FrTensor::operator()(uint idx) const
     return out;
 }
 
+// NOTE: cudaDeviceSynchronize() removed from element-wise GPU ops below.
+// Within a single CUDA stream, kernel ordering is guaranteed.  Syncs are
+// only needed before CPU reads (e.g. .sum(), cudaMemcpy D→H).
+
 FrTensor FrTensor::operator+(const FrTensor& t) const
 {
     if (size != t.size) throw std::runtime_error("Incompatible dimensions");
     FrTensor out(size);
     Fr_elementwise_add<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, t.gpu_data, out.gpu_data, size);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -305,7 +308,6 @@ FrTensor FrTensor::operator+(const Fr_t& x) const
 {
     FrTensor out(size);
     Fr_broadcast_add<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, x, out.gpu_data, size);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -313,14 +315,12 @@ FrTensor& FrTensor::operator+=(const FrTensor& t)
 {
     if (size != t.size) throw std::runtime_error("Incompatible dimensions");
     Fr_elementwise_add<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, t.gpu_data, gpu_data, size);
-    cudaDeviceSynchronize();
     return *this;
 }
 
 FrTensor& FrTensor::operator+=(const Fr_t& x)
 {
     Fr_broadcast_add<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, x, gpu_data, size);
-    cudaDeviceSynchronize();
     return *this;
 }
 
@@ -328,7 +328,6 @@ FrTensor FrTensor::operator-() const
 {
     FrTensor out(size);
     Fr_elementwise_neg<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, out.gpu_data, size);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -337,7 +336,6 @@ FrTensor FrTensor::operator-(const FrTensor& t) const
     if (size != t.size) throw std::runtime_error("Incompatible dimensions");
     FrTensor out(size);
     Fr_elementwise_sub<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, t.gpu_data, out.gpu_data, size);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -345,7 +343,6 @@ FrTensor FrTensor::operator-(const Fr_t& x) const
 {
     FrTensor out(size);
     Fr_broadcast_sub<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, x, out.gpu_data, size);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -353,28 +350,24 @@ FrTensor& FrTensor::operator-=(const FrTensor& t)
 {
     if (size != t.size) throw std::runtime_error("Incompatible dimensions");
     Fr_elementwise_sub<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, t.gpu_data, gpu_data, size);
-    cudaDeviceSynchronize();
     return *this;
 }
 
 FrTensor& FrTensor::operator-=(const Fr_t& x)
 {
     Fr_broadcast_sub<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, x, gpu_data, size);
-    cudaDeviceSynchronize();
     return *this;
 }
 
 FrTensor& FrTensor::mont()
 {
     Fr_elementwise_mont<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, gpu_data, size);
-    cudaDeviceSynchronize();
     return *this;
 }
 
 FrTensor& FrTensor::unmont()
 {
     Fr_elementwise_unmont<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, gpu_data, size);
-    cudaDeviceSynchronize();
     return *this;
 }
 
@@ -383,7 +376,6 @@ FrTensor FrTensor::operator*(const FrTensor& t) const
     if (size != t.size) throw std::runtime_error("Incompatible dimensions");
     FrTensor out(size);
     Fr_elementwise_mul<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, t.gpu_data, out.gpu_data, size);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -391,7 +383,6 @@ FrTensor FrTensor::operator*(const Fr_t& x) const
 {
     FrTensor out(size);
     Fr_broadcast_mul<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, x, out.gpu_data, size);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -399,14 +390,12 @@ FrTensor& FrTensor::operator*=(const FrTensor& t)
 {
     if (size != t.size) throw std::runtime_error("Incompatible dimensions");
     Fr_elementwise_mul<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, t.gpu_data, gpu_data, size);
-    cudaDeviceSynchronize();
     return *this;
 }
 
 FrTensor& FrTensor::operator*=(const Fr_t& x)
 {
     Fr_broadcast_mul<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, x, gpu_data, size);
-    cudaDeviceSynchronize();
     return *this;
 }
 
@@ -516,7 +505,6 @@ FrTensor FrTensor::random_int(uint size, uint num_bits)
 
     FrTensor out(size);
     random_int_kernel<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(out.gpu_data, num_bits, size, seed);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -554,7 +542,6 @@ FrTensor FrTensor::random(uint size)
 
     FrTensor out(size);
     random_kernel<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(out.gpu_data, size, seed);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -597,7 +584,6 @@ FrTensor Fr_partial_me(const FrTensor& t, vector<Fr_t>::const_iterator begin, ve
     uint out_size = other_dims * cur_dim_out * window_size;
     FrTensor t_new(out_size);
     Fr_multi_dim_partial_me_step<<<(t_new.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(t.gpu_data, t_new.gpu_data, *begin, other_dims, cur_dim, cur_dim_out, window_size);
-    cudaDeviceSynchronize();
     return Fr_partial_me(t_new, begin + 1, end, cur_dim_out, window_size);
 }
 
@@ -653,7 +639,6 @@ Fr_t Fr_me(const FrTensor& t, vector<Fr_t>::const_iterator begin, vector<Fr_t>::
     FrTensor t_new((t.size + 1) / 2);
     if (begin >= end) return t(0);
     Fr_me_step<<<(t_new.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(t.gpu_data, t_new.gpu_data, *begin, t.size, t_new.size);
-    cudaDeviceSynchronize();
     return Fr_me(t_new, begin + 1, end);
 }
 
@@ -905,6 +890,82 @@ FrTensor FrTensor::pad(const vector<uint>& shape, const Fr_t& pad_val) const
 }
 
 
+// ── Optimized matmul: 16×16 thread block, 1×4 register blocking ──────────────
+// Each thread computes 4 output elements along the column dimension.
+// Block covers 16×64 output tile using 16×16 shared tiles with 4 B-column loads.
+// This gives 4× more computation per A shared memory load.
+
+#define MM_BK 16     // block dim (threads per dimension)
+#define MM_RJ 4      // register blocking along columns
+#define MM_TILE_M 16               // = MM_BK
+#define MM_TILE_N (MM_BK * MM_RJ)  // = 64
+
+KERNEL void matmul_reg_blocked(const Fr_t* __restrict__ A, const Fr_t* __restrict__ B,
+                               Fr_t* __restrict__ C, int M, int K, int N) {
+    __shared__ Fr_t A_smem[MM_TILE_M][MM_BK];   // 16×16 = 2 KB
+    __shared__ Fr_t B_smem[MM_BK][MM_TILE_N];   // 16×64 = 8 KB
+
+    const int tx = threadIdx.x;  // 0..15
+    const int ty = threadIdx.y;  // 0..15
+
+    const int row = blockIdx.y * MM_TILE_M + ty;
+    const int col_base = blockIdx.x * MM_TILE_N;
+
+    // Each thread accumulates 4 column values
+    Fr_t acc[MM_RJ];
+    #pragma unroll
+    for (int rj = 0; rj < MM_RJ; rj++)
+        acc[rj] = blstrs__scalar__Scalar_ZERO;
+
+    const int num_k_tiles = (K + MM_BK - 1) / MM_BK;
+    for (int kt = 0; kt < num_k_tiles; kt++) {
+        const int k_base = kt * MM_BK;
+
+        // Load A_smem[16][16]: one element per thread (coalesced)
+        if (row < M && k_base + tx < K)
+            A_smem[ty][tx] = A[row * K + k_base + tx];
+        else
+            A_smem[ty][tx] = blstrs__scalar__Scalar_ZERO;
+
+        // Load B_smem[16][64]: each thread loads 4 elements along columns
+        #pragma unroll
+        for (int rj = 0; rj < MM_RJ; rj++) {
+            int col = col_base + tx * MM_RJ + rj;
+            if (k_base + ty < K && col < N)
+                B_smem[ty][tx * MM_RJ + rj] = B[(k_base + ty) * N + col];
+            else
+                B_smem[ty][tx * MM_RJ + rj] = blstrs__scalar__Scalar_ZERO;
+        }
+
+        __syncthreads();
+
+        // Compute: inner loop over K=16
+        #pragma unroll
+        for (int kk = 0; kk < MM_BK; kk++) {
+            Fr_t a_val = A_smem[ty][kk];
+            #pragma unroll
+            for (int rj = 0; rj < MM_RJ; rj++) {
+                acc[rj] = blstrs__scalar__Scalar_add(
+                    acc[rj],
+                    blstrs__scalar__Scalar_mul(a_val, B_smem[kk][tx * MM_RJ + rj]));
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // Write 4 results per thread
+    if (row < M) {
+        #pragma unroll
+        for (int rj = 0; rj < MM_RJ; rj++) {
+            int col = col_base + tx * MM_RJ + rj;
+            if (col < N)
+                C[row * N + col] = blstrs__scalar__Scalar_mont(acc[rj]);
+        }
+    }
+}
+
+// Old 16×16 kernel kept for reference / fallback
 KERNEL void matrixMultiplyOptimized(Fr_t* A, Fr_t* B, Fr_t* C, int rowsA, int colsA, int colsB) {
     __shared__ Fr_t A_tile[TILE_WIDTH][TILE_WIDTH];
     __shared__ Fr_t B_tile[TILE_WIDTH][TILE_WIDTH];
@@ -913,33 +974,26 @@ KERNEL void matrixMultiplyOptimized(Fr_t* A, Fr_t* B, Fr_t* C, int rowsA, int co
     int col = blockIdx.x * TILE_WIDTH + threadIdx.x;
 
     Fr_t sum = blstrs__scalar__Scalar_ZERO;
-    
-    // Loop over the tiles of A and B required to compute the block sub-matrix
-    for (int t = 0; t < (colsA - 1)/TILE_WIDTH + 1; ++t) {
 
-        // Load the matrices from device memory to shared memory; each thread loads
-        // one element of each matrix
+    for (int t = 0; t < (colsA - 1)/TILE_WIDTH + 1; ++t) {
         if (row < rowsA && t*TILE_WIDTH + threadIdx.x < colsA) {
             A_tile[threadIdx.y][threadIdx.x] = A[row*colsA + t*TILE_WIDTH + threadIdx.x];
         } else {
             A_tile[threadIdx.y][threadIdx.x] = blstrs__scalar__Scalar_ZERO;
         }
-        
+
         if (t*TILE_WIDTH + threadIdx.y < colsA && col < colsB) {
             B_tile[threadIdx.y][threadIdx.x] = B[(t*TILE_WIDTH + threadIdx.y)*colsB + col];
         } else {
             B_tile[threadIdx.y][threadIdx.x] = blstrs__scalar__Scalar_ZERO;
         }
 
-        // Synchronize to ensure all the data in shared memory is available
         __syncthreads();
 
-        // Multiply the two matrices together;
         for (int k = 0; k < TILE_WIDTH; ++k) {
             sum = blstrs__scalar__Scalar_add(sum, blstrs__scalar__Scalar_mul(A_tile[threadIdx.y][k], B_tile[k][threadIdx.x]));
         }
 
-        // Synchronize to ensure that the preceding computation is done before loading two new sub-matrices of A and B in the next iteration
         __syncthreads();
     }
 
@@ -953,7 +1007,6 @@ FrTensor FrTensor::matmul(const FrTensor& x, const FrTensor& y, uint M, uint N, 
     if (x.size != M * N || y.size != N * P) throw std::runtime_error("matmul: incompatible dimensions");
     FrTensor out(M * P);
     matrixMultiplyOptimized<<<dim3((P-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1), dim3(TILE_WIDTH, TILE_WIDTH)>>>(x.gpu_data, y.gpu_data, out.gpu_data, M, N, P);
-    cudaDeviceSynchronize();
     return out;
 }
 
@@ -972,7 +1025,6 @@ FrTensor FrTensor::transpose(uint M, uint N) const
     if (size != M * N) throw std::runtime_error("transpose: incompatible dimensions");
     FrTensor out(N * M);
     transpose_kernel<<<(M*N+FrNumThread-1)/FrNumThread,FrNumThread>>>(gpu_data, out.gpu_data, M, N);
-    cudaDeviceSynchronize();
     return out;
 }
 

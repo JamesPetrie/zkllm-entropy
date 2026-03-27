@@ -28,7 +28,6 @@ FrTensor Rescaling::operator()(const FrTensor& X)
     FrTensor out(X.size);
     uint block_size = 256;
     rescaling_kernel<<<(X.size + block_size - 1) / block_size, block_size>>>(X.gpu_data, out.gpu_data, rem_tensor_ptr->gpu_data, scaling_factor, X.size);
-    cudaDeviceSynchronize();
     
     return out;
 }
