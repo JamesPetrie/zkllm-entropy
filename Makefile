@@ -108,5 +108,19 @@ gold_commit-param: gold_commit-param.o $(GOLD_OBJS)
 clean:
 	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS) test_goldilocks test_goldilocks.o goldilocks.o $(GOLD_OBJS) gold_test_gold_tensor.o test_gold_tensor gold_test_ntt.o test_ntt gold_test_merkle.o test_merkle gold_test_fri.o test_fri gold_test_fri_pcs.o test_fri_pcs gold_fri_pcs.o
 
+# ── CPU-only verifier targets (no CUDA dependency) ─────────────────────────
+# These build with g++ only and can run on any machine without a GPU.
+
+CXX := g++
+CXX_FLAGS := -std=c++17 -O2 -DUSE_GOLDILOCKS
+
+verifier: verifier.cpp verifier_utils.h sumcheck_verifier.h tlookup_verifier.h
+	$(CXX) $(CXX_FLAGS) -o $@ verifier.cpp -lm
+
+test_verifier: test_verifier.cpp verifier_utils.h sumcheck_verifier.h tlookup_verifier.h
+	$(CXX) $(CXX_FLAGS) -o $@ test_verifier.cpp -lm
+
+cpu: verifier test_verifier
+
 # Default rule
 all: $(TARGETS)
