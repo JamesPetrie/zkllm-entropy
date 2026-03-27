@@ -40,9 +40,13 @@ TARGET_OBJS := $(TARGETS:=.o)
 $(TARGETS): % : %.o $(CU_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
 
+# ── Standalone Goldilocks targets (no BLS12-381 dependency) ──────────────────
+test_goldilocks: test_goldilocks.o goldilocks.o
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
 # Clean rule
 clean:
-	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS)
+	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS) test_goldilocks test_goldilocks.o goldilocks.o
 
 # Default rule
 all: $(TARGETS)
