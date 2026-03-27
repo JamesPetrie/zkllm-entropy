@@ -262,7 +262,8 @@ def main():
                 if args.verbose:
                     bits = surprise / log_scale
                     print(f"  pos {pos:4d}: OK  surprise={bits:.3f} bits  "
-                          f"diff={diff_actual}  q={q_fr}/{log_len}")
+                          f"diff={diff_actual}  q={q_fr}/{log_len}  "
+                          f"wp={win_prob}  tw={total_win}")
             else:
                 n_fail += 1
                 print(f"  pos {pos:4d}: FAIL")
