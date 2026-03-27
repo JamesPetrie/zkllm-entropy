@@ -934,6 +934,75 @@ FrTensor FrTensor::matmul(const FrTensor& x, const FrTensor& y, uint M, uint N, 
 }
 
 
+
+
+#ifdef USE_GOLDILOCKS
+// ── Matmul kernel with fp16 weight storage ──────────────────────────────────
+// Weights are stored as fp16 (2 bytes) and converted to Goldilocks field
+// elements on the fly during the B-tile load.  This reduces weight memory
+// by 4x and improves L2 cache hit rate for 7B-scale weight matrices.
+//
+// The conversion is: fp16 -> float -> * scaling_factor -> round -> long_to_scalar
+// which reproduces the exact same field elements as the offline quantization.
+
+__device__ inline Fr_t fp16_to_field(__half w, unsigned long scaling_factor) {
+    float f = __half2float(w);
+    long q = __float2ll_rn(f * (float)scaling_factor);
+    return long_to_scalar(q);
+}
+
+KERNEL void matmul_fp16w(const Fr_t* A, const __half* B_fp16, Fr_t* C,
+                         int rowsA, int colsA, int colsB,
+                         unsigned long scaling_factor)
+{
+    __shared__ Fr_t A_tile[TILE_WIDTH][TILE_WIDTH];
+    __shared__ Fr_t B_tile[TILE_WIDTH][TILE_WIDTH];
+
+    int row = blockIdx.y * TILE_WIDTH + threadIdx.y;
+    int col = blockIdx.x * TILE_WIDTH + threadIdx.x;
+
+    Fr_t sum = blstrs__scalar__Scalar_ZERO;
+
+    for (int t = 0; t < (colsA - 1)/TILE_WIDTH + 1; ++t) {
+        // Load A tile (already field elements)
+        if (row < rowsA && t*TILE_WIDTH + threadIdx.x < colsA)
+            A_tile[threadIdx.y][threadIdx.x] = A[row*colsA + t*TILE_WIDTH + threadIdx.x];
+        else
+            A_tile[threadIdx.y][threadIdx.x] = blstrs__scalar__Scalar_ZERO;
+
+        // Load B tile: fp16 -> field element conversion in registers
+        if (t*TILE_WIDTH + threadIdx.y < colsA && col < colsB) {
+            __half w = B_fp16[(t*TILE_WIDTH + threadIdx.y)*colsB + col];
+            B_tile[threadIdx.y][threadIdx.x] = fp16_to_field(w, scaling_factor);
+        } else {
+            B_tile[threadIdx.y][threadIdx.x] = blstrs__scalar__Scalar_ZERO;
+        }
+
+        __syncthreads();
+
+        for (int k = 0; k < TILE_WIDTH; ++k) {
+            sum = blstrs__scalar__Scalar_add(sum,
+                  blstrs__scalar__Scalar_mul(A_tile[threadIdx.y][k], B_tile[k][threadIdx.x]));
+        }
+
+        __syncthreads();
+    }
+
+    if (row < rowsA && col < colsB)
+        C[row*colsB + col] = blstrs__scalar__Scalar_mont(sum);
+}
+
+FrTensor FrTensor::matmul_fp16w(const FrTensor& activations, const __half* weights_fp16,
+                                uint M, uint N, uint P, unsigned long scaling_factor)
+{
+    if (activations.size != M * N) throw std::runtime_error("matmul_fp16w: incompatible activation dimensions");
+    FrTensor out(M * P);
+    ::matmul_fp16w<<<dim3((P-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1), dim3(TILE_WIDTH, TILE_WIDTH)>>>(
+        activations.gpu_data, weights_fp16, out.gpu_data, M, N, P, scaling_factor);
+    return out;
+}
+#endif
+
 // implement a kernel to transpose a matrix of size M by N
 KERNEL void transpose_kernel(Fr_t* in_ptr, Fr_t* out_ptr, int M, int N) {
     uint gid = GET_GLOBAL_ID();

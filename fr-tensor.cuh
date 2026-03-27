@@ -6,6 +6,7 @@
 #include <utility>      // std::pair, std::make_pair
 #include <vector>
 #include <curand_kernel.h>
+#include <cuda_fp16.h>
 #include <random>
 #ifdef USE_GOLDILOCKS
 #include "goldilocks.cuh"
@@ -173,6 +174,12 @@ class FrTensor
 
     static FrTensor matmul(const FrTensor& x, const FrTensor& y, uint M, uint N, uint P);
 
+#ifdef USE_GOLDILOCKS
+    // Matmul with fp16-stored weights, converted to field elements on the fly
+    static FrTensor matmul_fp16w(const FrTensor& activations, const __half* weights_fp16,
+                                 uint M, uint N, uint P, unsigned long scaling_factor);
+#endif
+
     static FrTensor random_int(uint size, uint num_bits);
     static FrTensor random(uint size);
 
@@ -242,6 +249,11 @@ KERNEL void float_to_scalar_kernel(float* float_ptr, Fr_t* scalar_ptr, unsigned 
 KERNEL void double_to_scalar_kernel(double* double_ptr, Fr_t* scalar_ptr, unsigned long scaling_factor, uint n);
 
 KERNEL void matrixMultiplyOptimized(Fr_t* A, Fr_t* B, Fr_t* C, int rowsA, int colsA, int colsB);
+
+#ifdef USE_GOLDILOCKS
+KERNEL void matmul_fp16w(const Fr_t* A, const __half* B_fp16, Fr_t* C,
+                         int rowsA, int colsA, int colsB, unsigned long scaling_factor);
+#endif
 
 FrTensor catTensors(const vector<FrTensor>& vec);
 

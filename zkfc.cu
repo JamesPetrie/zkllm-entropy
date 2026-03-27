@@ -4,12 +4,18 @@
 
 
 
-zkFC::zkFC(uint input_size, uint output_size, const FrTensor& weight): inputSize(input_size), outputSize(output_size), has_bias(false), weights(weight), bias(output_size)
+zkFC::zkFC(uint input_size, uint output_size, const FrTensor& weight): inputSize(input_size), outputSize(output_size), has_bias(false), weights(weight), bias(output_size), weights_fp16(nullptr), scaling_factor(0)
 {
     if (weight.size != input_size * output_size) throw std::runtime_error("weight size does not match");
 }
 
-zkFC::zkFC(uint input_size, uint output_size, const FrTensor& weight, const FrTensor& bias): inputSize(input_size), outputSize(output_size), has_bias(true), weights(weight), bias(bias){
+zkFC::zkFC(uint input_size, uint output_size, const FrTensor& weight,
+           __half* weights_fp16, unsigned long scaling_factor): inputSize(input_size), outputSize(output_size), has_bias(false), weights(weight), bias(output_size), weights_fp16(weights_fp16), scaling_factor(scaling_factor)
+{
+    if (weight.size != input_size * output_size) throw std::runtime_error("weight size does not match");
+}
+
+zkFC::zkFC(uint input_size, uint output_size, const FrTensor& weight, const FrTensor& bias): inputSize(input_size), outputSize(output_size), has_bias(true), weights(weight), bias(bias), weights_fp16(nullptr), scaling_factor(0){
     if(weight.size != input_size * output_size) throw std::runtime_error("weight size does not match");
     if(bias.size != output_size) throw std::runtime_error("bias size does not match");
 }
@@ -42,10 +48,21 @@ FrTensor zkFC::operator()(const FrTensor& X) const { // X.size is batch_size * i
 
     if (X.size % inputSize) throw std::runtime_error("input size does not match");
     uint batchSize = X.size / inputSize;
-    dim3 blockSize(TILE_WIDTH, TILE_WIDTH);
-    dim3 gridSize((outputSize + blockSize.x - 1) / blockSize.x, (batchSize + blockSize.y - 1) / blockSize.y);
     FrTensor out(batchSize * outputSize);
-    matrixMultiplyOptimized<<<gridSize, blockSize>>>(X.gpu_data, weights.gpu_data, out.gpu_data, batchSize, inputSize, outputSize);
+#ifdef USE_GOLDILOCKS
+    if (weights_fp16) {
+        // Use fp16 weight kernel: 4x less memory, better L2 cache utilization
+        dim3 blockSize(TILE_WIDTH, TILE_WIDTH);
+        dim3 gridSize((outputSize + blockSize.x - 1) / blockSize.x, (batchSize + blockSize.y - 1) / blockSize.y);
+        matmul_fp16w<<<gridSize, blockSize>>>(X.gpu_data, weights_fp16, out.gpu_data,
+                                               batchSize, inputSize, outputSize, scaling_factor);
+    } else
+#endif
+    {
+        dim3 blockSize(TILE_WIDTH, TILE_WIDTH);
+        dim3 gridSize((outputSize + blockSize.x - 1) / blockSize.x, (batchSize + blockSize.y - 1) / blockSize.y);
+        matrixMultiplyOptimized<<<gridSize, blockSize>>>(X.gpu_data, weights.gpu_data, out.gpu_data, batchSize, inputSize, outputSize);
+    }
     if(has_bias){
         fcAddBiasKernel<<<(batchSize * outputSize + FrNumThread - 1) / FrNumThread, FrNumThread>>>(out.gpu_data, bias.gpu_data, batchSize, outputSize);
     }

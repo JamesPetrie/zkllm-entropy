@@ -1,5 +1,19 @@
 #include "proof.cuh"
+#include "ioutils.cuh"
+#include <cuda_fp16.h>
 #include <fstream>
+
+
+#ifdef USE_GOLDILOCKS
+// Convert int32 weight data (on GPU) to fp16 representation
+KERNEL void int_to_fp16_kernel(const int* int_data, __half* fp16_data,
+                               float inv_scale, uint n)
+{
+    uint gid = GET_GLOBAL_ID();
+    if (gid >= n) return;
+    fp16_data[gid] = __float2half((float)int_data[gid] * inv_scale);
+}
+#endif
 
 #ifdef USE_GOLDILOCKS
 void verifyWeightClaim(const Weight& w, const Claim& c)
@@ -11,7 +25,8 @@ void verifyWeightClaim(const Weight& w, const Claim& c)
     cout << "Opening complete" << endl;
 }
 
-Weight create_weight(string weight_filename, string com_filename, uint in_dim, uint out_dim)
+Weight create_weight(string weight_filename, string com_filename, uint in_dim, uint out_dim,
+                     unsigned long scaling_factor)
 {
     FrTensor weight = FrTensor::from_int_bin(weight_filename);
     auto w_padded = weight.pad({in_dim, out_dim});
@@ -25,7 +40,23 @@ Weight create_weight(string weight_filename, string com_filename, uint in_dim, u
         com = FriPcs::commit(w_padded.gpu_data, w_padded.size);
         com.save(com_filename);
     }
-    return Weight{weight, com, in_dim, out_dim};
+
+    // Build fp16 weight copy for fast matmul (if scaling_factor provided)
+    __half* weight_fp16 = nullptr;
+    if (scaling_factor > 0) {
+        uint n = weight.size;
+        cudaMalloc(&weight_fp16, sizeof(__half) * n);
+        // Load int data to GPU, then convert to fp16
+        auto file_size = findsize(weight_filename);
+        int* int_gpu;
+        cudaMalloc(&int_gpu, file_size);
+        loadbin(weight_filename, int_gpu, file_size);
+        float inv_scale = 1.0f / (float)scaling_factor;
+        int_to_fp16_kernel<<<(n + 255) / 256, 256>>>(int_gpu, weight_fp16, inv_scale, n);
+        cudaFree(int_gpu);
+    }
+
+    return Weight{weight, com, in_dim, out_dim, weight_fp16, scaling_factor};
 }
 #else
 void verifyWeightClaim(const Weight& w, const Claim& c)

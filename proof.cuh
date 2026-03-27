@@ -2,6 +2,7 @@
 #define PROOF_CUH
 
 #include "fr-tensor.cuh"
+#include <cuda_fp16.h>
 #ifndef USE_GOLDILOCKS
 #include "g1-tensor.cuh"
 #include "commitment.cuh"
@@ -26,9 +27,12 @@ struct Weight {
     FriPcsCommitment com;
     uint in_dim;
     uint out_dim;
+    __half* weight_fp16;            // compact fp16 storage for matmul (GPU)
+    unsigned long scaling_factor;   // quantization scaling factor
 };
 
-Weight create_weight(std::string weight_filename, std::string com_filename, uint in_dim, uint out_dim);
+Weight create_weight(std::string weight_filename, std::string com_filename, uint in_dim, uint out_dim,
+                     unsigned long scaling_factor = 0);
 void verifyWeightClaim(const Weight& w, const Claim& c);
 #else
 struct Weight;

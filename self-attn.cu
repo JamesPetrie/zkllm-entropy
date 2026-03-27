@@ -24,15 +24,15 @@ int main(int argc, char *argv[])
         auto q_proj = create_weight(
             workdir + "/" + layer_prefix + "-self_attn.q_proj.weight-int.bin",
             workdir + "/" + layer_prefix + "-self_attn.q_proj.weight-gold-commitment.bin",
-            embed_dim, embed_dim);
+            embed_dim, embed_dim, 1UL << 16);
         auto k_proj = create_weight(
             workdir + "/" + layer_prefix + "-self_attn.k_proj.weight-int.bin",
             workdir + "/" + layer_prefix + "-self_attn.k_proj.weight-gold-commitment.bin",
-            embed_dim, embed_dim);
+            embed_dim, embed_dim, 1UL << 16);
         auto v_proj = create_weight(
             workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-int.bin",
             workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-gold-commitment.bin",
-            embed_dim, embed_dim);
+            embed_dim, embed_dim, 1UL << 16);
 #else
         auto q_proj = create_weight(
             workdir + "/self_attn.q_proj.weight-pp.bin",
@@ -50,9 +50,9 @@ int main(int argc, char *argv[])
             workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-commitment.bin",
             embed_dim, embed_dim);
 #endif
-        zkFC q_layer(embed_dim, embed_dim, q_proj.weight);
-        zkFC k_layer(embed_dim, embed_dim, k_proj.weight);
-        zkFC v_layer(embed_dim, embed_dim, v_proj.weight);
+        zkFC q_layer(embed_dim, embed_dim, q_proj.weight, q_proj.weight_fp16, q_proj.scaling_factor);
+        zkFC k_layer(embed_dim, embed_dim, k_proj.weight, k_proj.weight_fp16, k_proj.scaling_factor);
+        zkFC v_layer(embed_dim, embed_dim, v_proj.weight, v_proj.weight_fp16, v_proj.scaling_factor);
         Rescaling q_rescale(1 << 16);
         Rescaling k_rescale(1 << 16);
         Rescaling v_rescale(1 << 16);

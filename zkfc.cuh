@@ -5,6 +5,7 @@
 // #include <torch/script.h>
 #include <cstddef>
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 #include <curand_kernel.h>
 #include "fr-tensor.cuh"
 #include "proof.cuh"
@@ -24,8 +25,12 @@ public:
     const uint inputSize, outputSize;
     bool has_bias;
     FrTensor weights, bias;
+    __half* weights_fp16;              // compact fp16 storage for matmul (GPU, may be null)
+    unsigned long scaling_factor;      // quantization scaling factor
 
     zkFC(uint input_size, uint output_size, const FrTensor& weight);
+    zkFC(uint input_size, uint output_size, const FrTensor& weight,
+         __half* weights_fp16, unsigned long scaling_factor);
     zkFC(uint input_size, uint output_size, const FrTensor& weight, const FrTensor& bias);
     FrTensor operator()(const FrTensor& X) const;
     // void prove(const FrTensor& X, const FrTensor& Z, Commitment& generators) const;

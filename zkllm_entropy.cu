@@ -113,7 +113,7 @@ int main(int argc, char* argv[]) {
     Weight final_norm_w = create_weight(
         path("final_norm.weight-int.bin"),
         path("final_norm.weight-gold-commitment.bin"),
-        1, hidden_size);
+        1, hidden_size, 1UL << 16);
 #else
     Weight final_norm_w = create_weight(
         path("input_layernorm.weight-pp.bin"),
@@ -127,7 +127,7 @@ int main(int argc, char* argv[]) {
     Weight lm_head_w = create_weight(
         path("lm_head-weight-int.bin"),
         path("lm_head-weight-gold-commitment.bin"),
-        hidden_size, vocab_size);
+        hidden_size, vocab_size, 1UL << 16);
 #else
     Weight lm_head_w = create_weight(
         path("lm_head-pp.bin"),
@@ -144,7 +144,7 @@ int main(int argc, char* argv[]) {
     Rescaling rs_norm1(1u << 16);  // rescale after weight × rms_inv
     Rescaling rs_norm2(1u << 16);  // rescale after Hadamard with hidden
 
-    zkFC norm_fc(1, hidden_size, final_norm_w.weight);
+    zkFC norm_fc(1, hidden_size, final_norm_w.weight, final_norm_w.weight_fp16, final_norm_w.scaling_factor);
     FrTensor g_inv_rms  = norm_fc(rms_inv);   // seq_len * hidden_size
     FrTensor g_inv_rms_ = rs_norm1(g_inv_rms);
     FrTensor normed     = g_inv_rms_ * hidden; // Hadamard
@@ -154,7 +154,7 @@ int main(int argc, char* argv[]) {
     cout << "Computing lm_head..." << endl;
     Rescaling rs_lm(1u << 16);
 
-    zkFC lm_fc(hidden_size, vocab_size, lm_head_w.weight);
+    zkFC lm_fc(hidden_size, vocab_size, lm_head_w.weight, lm_head_w.weight_fp16, lm_head_w.scaling_factor);
     FrTensor logits_batch  = lm_fc(normed_);   // seq_len * vocab_size
     FrTensor logits_batch_ = rs_lm(logits_batch);
 
