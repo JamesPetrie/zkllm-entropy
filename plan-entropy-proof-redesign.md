@@ -11,7 +11,10 @@ proof that reveals only the aggregate entropy bound H. This fixes:
 - Per-token information leakage (diff_actual, win_prob, total_win, surprise all revealed)
 - Self-reported total_win (soundness gap S2)
 - Missing CDF/log tLookup proofs (no cryptographic binding)
-- Fiat-Shamir not implemented (challenges are prover-chosen)
+
+**Interactive proofs are acceptable.** The verifier sends challenges live, so
+`random_vec()` is sound as-is — no Fiat-Shamir transcript needed. This significantly
+simplifies the implementation (no transcript threading through the call stack).
 
 ## Current Flow (per-position loop, `zkentropy.cu:133-189`)
 
@@ -63,28 +66,6 @@ H:              scalar         sum(surprise_vec)   ← ONLY THIS IS REVEALED
 ```
 
 ## Implementation Steps
-
-### Step 0: Fiat-Shamir Transcript (prerequisite for all steps)
-
-**Files:** new `transcript.cuh/cu`, modify `fr-tensor.cu` (`random_vec`)
-
-Currently all challenges come from `std::random_device` (`fr-tensor.cu:22-36`).
-For the non-interactive proof file to be sound, challenges must be hash-derived
-from the proof transcript so far.
-
-**Implementation:**
-- Create a `Transcript` class wrapping an incremental SHA-256 hash state
-- `transcript.append(data, len)` — absorb field elements or proof polynomials
-- `transcript.challenge()` — squeeze one Fr_t challenge from the hash state
-- Thread a `Transcript&` through all prove functions instead of calling `random_vec()`
-
-**Overlap with kernel fusion:** None — this is a protocol-level change, not a kernel change.
-
-**Effort:** Medium. Mechanical refactoring to thread Transcript through the call stack.
-SHA-256 is already implemented in `merkle.cu` (GPU side) but the transcript hashing
-should be CPU-side (it hashes proof polynomials, not large tensors).
-
----
 
 ### Step 1: GPU-Side Argmax (standalone, no dependencies)
 
@@ -347,49 +328,52 @@ The proof now contains:
 
 Use a tagged section format so the verifier can parse each component independently.
 
-**5b: Verifier rewrite**
+**5b: Interactive verifier**
 
-The Python verifier (`verify_entropy.py`) must:
-1. Reconstruct the Fiat-Shamir transcript to re-derive all challenges
-2. Verify each sumcheck polynomial chain
+Since the proof is interactive, the verifier participates live: it sends challenges
+via `random_vec()` and checks each sumcheck polynomial as it arrives. No transcript
+reconstruction needed.
+
+The verifier must:
+1. Send challenges at each sumcheck round
+2. Verify each sumcheck polynomial chain (p(0) + p(1) == claim)
 3. Verify tLookup proofs (check polynomial identities)
 4. Check the final claim: H matches the committed value
 
-This is the most effort-intensive step but is independent of the prover changes.
+This is simpler than a non-interactive verifier — no Fiat-Shamir replay, no
+transcript ordering concerns. The existing Python verifier (`verify_entropy.py`)
+becomes an interactive protocol participant rather than a proof-file parser.
 
 **Overlap with kernel fusion:** None.
 
-**Effort:** High (especially the verifier).
+**Effort:** Medium.
 
 ---
 
 ## Dependency Graph
 
 ```
-Step 0 (Fiat-Shamir) ──────────────┐
-                                    │
-Step 1 (GPU argmax)                 │
-    │                               │
-    ▼                               ▼
-Step 2 (Tensor reshape) ──────► Step 4 (Batched proofs) ──► Step 5 (Serialize + Verify)
-                                    ▲
-Step 3 (Range-reduced log) ────────┘
+Step 1 (GPU argmax) ───┐
+                       │
+Step 2 (Tensor reshape)┼──► Step 4 (Batched proofs) ──► Step 5 (Serialize + Verify)
+                       │        ▲
+Step 3 (Range-reduced  │        │
+        log) ──────────┘────────┘
 ```
 
-Steps 0, 1, 2, 3 can proceed in parallel. Step 4 depends on 2 and 3. Step 5 depends on 4.
+Steps 1, 2, 3 can proceed in parallel. Step 4 depends on 2 and 3. Step 5 depends on 4.
 
 ## Overlap with Kernel Fusion Work
 
 | Step | Overlap | Coordination needed |
 |------|---------|-------------------|
-| 0 (Fiat-Shamir) | None | — |
 | 1 (GPU argmax) | Low | If fusion adds argmax+diff fused kernel, build on Step 1's reduction |
 | 2 (Tensor reshape) | Medium | Define tensor shapes/interfaces first; fusion optimizes kernels |
 | 3 (Range-reduced log) | Low | New bit-decomp kernels, unlikely to conflict |
 | 4 (Batched proofs) | **High** | tLookup kernel fusion directly affects 4b performance. Agree on tLookup::prove() interface before either side modifies it |
 | 5 (Serialize/verify) | None | — |
 
-**Recommended coordination:** Start with Steps 0, 1, 3 (no overlap). Let the fusion work
+**Recommended coordination:** Start with Steps 1 and 3 (no overlap). Let the fusion work
 proceed on kernel internals. Then integrate at Step 4 once both sides have stabilized.
 
 ## What Gets Dropped
@@ -412,5 +396,4 @@ The following are preserved but modified:
 | tLookup D%N constraint fails for some tensor size | Pad tensors; verify D/N ratios for all cases up front |
 | Range-reduced log introduces rounding that violates upper bound | Always round log(total_win) upward; prove the rounding direction |
 | Batched argmax changes proof structure, breaking compatibility | This is a new proof version — old proofs won't verify with new verifier anyway |
-| Fiat-Shamir transcript ordering matters for soundness | Follow standard practice: append each proof polynomial before deriving next challenge |
 | Memory: T×V = 33M elements × 8 bytes = 256 MB per tensor, multiple tensors needed | H100 has 80 GB; budget ~10 T×V tensors = 2.5 GB. Fine. |
