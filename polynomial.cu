@@ -16,7 +16,6 @@ Fr_t operator+(const Fr_t& a, const Fr_t& b)
     cudaMemcpy(a_cuda, &a, sizeof(Fr_t), cudaMemcpyHostToDevice);
     cudaMemcpy(b_cuda, &b, sizeof(Fr_t), cudaMemcpyHostToDevice);
     addKernel<<<1, 1>>>(a_cuda, b_cuda, c_cuda);
-    cudaDeviceSynchronize();
     Fr_t c;
     cudaMemcpy(&c, c_cuda, sizeof(Fr_t), cudaMemcpyDeviceToHost);
     cudaFree(a_cuda);
@@ -41,7 +40,6 @@ Fr_t operator-(const Fr_t& a, const Fr_t& b)
     cudaMemcpy(a_cuda, &a, sizeof(Fr_t), cudaMemcpyHostToDevice);
     cudaMemcpy(b_cuda, &b, sizeof(Fr_t), cudaMemcpyHostToDevice);
     subKernel<<<1, 1>>>(a_cuda, b_cuda, c_cuda);
-    cudaDeviceSynchronize();
     Fr_t c;
     cudaMemcpy(&c, c_cuda, sizeof(Fr_t), cudaMemcpyDeviceToHost);
     cudaFree(a_cuda);
@@ -63,7 +61,6 @@ Fr_t operator-(const Fr_t& a)
     cudaMalloc((void**)&c_cuda, sizeof(Fr_t));
     cudaMemcpy(a_cuda, &a, sizeof(Fr_t), cudaMemcpyHostToDevice);
     negKernel<<<1, 1>>>(a_cuda, c_cuda);
-    cudaDeviceSynchronize();
     Fr_t c;
     cudaMemcpy(&c, c_cuda, sizeof(Fr_t), cudaMemcpyDeviceToHost);
     cudaFree(a_cuda);
@@ -86,7 +83,6 @@ Fr_t operator*(const Fr_t& a, const Fr_t& b)
     cudaMemcpy(a_cuda, &a, sizeof(Fr_t), cudaMemcpyHostToDevice);
     cudaMemcpy(b_cuda, &b, sizeof(Fr_t), cudaMemcpyHostToDevice);
     mulKernel<<<1, 1>>>(a_cuda, b_cuda, c_cuda);
-    cudaDeviceSynchronize();
     Fr_t c;
     cudaMemcpy(&c, c_cuda, sizeof(Fr_t), cudaMemcpyDeviceToHost);
     cudaFree(a_cuda);
@@ -119,7 +115,6 @@ Fr_t operator/(const Fr_t& a, const Fr_t& b)
     cudaMemcpy(a_cuda, &a, sizeof(Fr_t), cudaMemcpyHostToDevice);
     cudaMemcpy(b_cuda, &b, sizeof(Fr_t), cudaMemcpyHostToDevice);
     divKernel<<<1, 1>>>(a_cuda, b_cuda, c_cuda);
-    cudaDeviceSynchronize();
     Fr_t c;
     cudaMemcpy(&c, c_cuda, sizeof(Fr_t), cudaMemcpyDeviceToHost);
     cudaFree(a_cuda);
@@ -149,7 +144,6 @@ Fr_t inv(const Fr_t& a)
     cudaMalloc((void**)&c_cuda, sizeof(Fr_t));
     cudaMemcpy(a_cuda, &a, sizeof(Fr_t), cudaMemcpyHostToDevice);
     invKernel<<<1, 1>>>(a_cuda, c_cuda);
-    cudaDeviceSynchronize();
     Fr_t c;
     cudaMemcpy(&c, c_cuda, sizeof(Fr_t), cudaMemcpyDeviceToHost);
     cudaFree(a_cuda);
@@ -208,7 +202,6 @@ Polynomial Polynomial::operator+(const Polynomial& other) {
     Polynomial result(resultDegree);
 
     polyAddKernel<<<1, resultDegree + 1>>>(degree_ + 1, other.degree_ + 1, coefficients_, other.coefficients_, result.coefficients_);
-    cudaDeviceSynchronize();
 
     return result;
 }
@@ -231,7 +224,6 @@ Polynomial Polynomial::operator-(const Polynomial& other) {
     Polynomial result(resultDegree);
 
     polySubKernel<<<1, resultDegree + 1>>>(degree_ + 1, other.degree_ + 1, coefficients_, other.coefficients_, result.coefficients_);
-    cudaDeviceSynchronize();
 
     return result;
 }
@@ -251,7 +243,6 @@ Polynomial Polynomial::operator*(const Polynomial& other) {
     Polynomial result(resultDegree);
 
     polyMulKernel<<<1, resultDegree + 1>>>(degree_ + 1, other.degree_ + 1, coefficients_, other.coefficients_, result.coefficients_);
-    cudaDeviceSynchronize();
 
     return result;
 }
@@ -276,7 +267,6 @@ __global__ void polyNegKernel(int n, const Fr_t* a, Fr_t* c) {
 Polynomial Polynomial::operator-() {
     Polynomial result(degree_);
     polyNegKernel<<<1, degree_ + 1>>>(degree_ + 1, coefficients_, result.coefficients_);
-    cudaDeviceSynchronize();
     return result;
 }
 
@@ -316,7 +306,6 @@ Fr_t Polynomial::operator()(const Fr_t& x)
     Fr_t* result_ptr;
     cudaMalloc((void**)&result_ptr, sizeof(Fr_t));
     polyEvalKernel<<<1, 1>>>(degree_, coefficients_, x, result_ptr);
-    cudaDeviceSynchronize();
     Fr_t result;
     cudaMemcpy(&result, result_ptr, sizeof(Fr_t), cudaMemcpyDeviceToHost);
     cudaFree(result_ptr);
@@ -356,7 +345,6 @@ __global__ void eqPolyKernel(Fr_t u, Fr_t* coefs)
 Polynomial Polynomial::eq(const Fr_t& u){
     Polynomial eq(1);
     eqPolyKernel<<<1, 1>>>(u, eq.coefficients_);
-    cudaDeviceSynchronize();
     return eq;
 }
 
@@ -372,7 +360,6 @@ Fr_t Polynomial::eq(const Fr_t& u, const Fr_t& v)
     Fr_t* eval;
     cudaMalloc((void**)&eval, sizeof(Fr_t));
     eqEvalKernel<<<1, 1>>>(u, v, eval);
-    cudaDeviceSynchronize();
     Fr_t result;
     cudaMemcpy(&result, eval, sizeof(Fr_t), cudaMemcpyDeviceToHost);
     cudaFree(eval);

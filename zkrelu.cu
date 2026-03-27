@@ -34,7 +34,6 @@ FrTensor zkReLU::decomp(const FrTensor& X, FrTensor& sign, FrTensor& abs, FrTens
     uint block_size = 256;
     uint grid_size = (N + block_size - 1) / block_size;
     zkrelu_decomp_kernel<<<grid_size, block_size>>>(X.gpu_data, sign.gpu_data, abs.gpu_data, rem.gpu_data, res.gpu_data, static_cast<long>(scaling_factor), N);
-    cudaDeviceSynchronize();
     return res;
 }
 

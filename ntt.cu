@@ -143,7 +143,6 @@ void ntt_forward(Fr_t* data, uint log_n) {
     // Bit-reversal permutation
     uint blocks = (n + NTT_THREADS - 1) / NTT_THREADS;
     ntt_bit_reverse_kernel<<<blocks, NTT_THREADS>>>(data, n, log_n);
-    cudaDeviceSynchronize();
 
     // Get the principal n-th root of unity
     uint64_t omega = get_root_of_unity(log_n).val;
@@ -185,7 +184,6 @@ void ntt_inverse(Fr_t* data, uint log_n) {
     // Bit-reversal permutation
     uint blocks = (n + NTT_THREADS - 1) / NTT_THREADS;
     ntt_bit_reverse_kernel<<<blocks, NTT_THREADS>>>(data, n, log_n);
-    cudaDeviceSynchronize();
 
     // Use the inverse root: omega_inv = omega^(-1)
     uint64_t omega = get_root_of_unity(log_n).val;
