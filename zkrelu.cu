@@ -20,7 +20,7 @@ KERNEL void zkrelu_decomp_kernel(Fr_t* X_ptr, Fr_t* sign_ptr, Fr_t* abs_ptr, Fr_
 
         bool pos = x_rescaled >= 0;
 
-        sign_ptr[tid] = {static_cast<uint>(pos), 0, 0, 0, 0, 0, 0, 0};
+        sign_ptr[tid] = FR_FROM_INT(pos);
         abs_ptr[tid] = pos? long_to_scalar(x_rescaled) : long_to_scalar(-x_rescaled);
         rem_ptr[tid] = long_to_scalar(x_rem);
         res_ptr[tid] = pos? long_to_scalar(x_rescaled) : blstrs__scalar__Scalar_ZERO;

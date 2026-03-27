@@ -3,7 +3,7 @@
 
 DEVICE Fr_t zksoftmax_calculate_table_entry(uint x, double theta_k, double scaling_factor_in, double d, double Bk){
     unsigned long result = static_cast<unsigned long> (exp(log(theta_k) - ( Bk / (scaling_factor_in * sqrt(d))) * x) + 0.5);
-    return {static_cast<uint> (result), static_cast<uint> (result >> 32), 0, 0, 0, 0, 0, 0};
+    return FR_FROM_INT(result);
 }
 
 KERNEL void zksoftmax_calculate_table(Fr_t* table, double theta_k, double scaling_factor_in, double d, double Bk, uint bk){
@@ -96,16 +96,22 @@ KERNEL void zksoftmax_decompose_kernel(const Fr_t* X, const uint* bs, Fr_t* X_de
 {
     uint gid = GET_GLOBAL_ID();
     if (gid >= N) return;
-    auto minus_X = blstrs__scalar__Scalar_sub({0, 0, 0, 0, 0, 0, 0, 0}, X[gid]);
+    auto minus_X = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ZERO, X[gid]);
+#ifdef USE_GOLDILOCKS
+    unsigned long tmp = minus_X.val;
+#else
     if (!minus_X.val[7] && !minus_X.val[6] && !minus_X.val[5] && !minus_X.val[4] && !minus_X.val[3] && !minus_X.val[2])
     {
         unsigned long tmp = (static_cast<unsigned long> (minus_X.val[1]) << 32) | static_cast<unsigned long> (minus_X.val[0]);
+#endif
         for (uint i = 0; i < K; ++ i)
         {
-            X_decomposed[i * N + gid] = {static_cast <uint>(tmp % bs[i]), 0, 0, 0, 0, 0, 0, 0};
+            X_decomposed[i * N + gid] = FR_FROM_INT(tmp % bs[i]);
             tmp /= bs[i];
-        }   
+        }
+#ifndef USE_GOLDILOCKS
     }
+#endif
 }
 
 // input should be m * n
@@ -138,7 +144,7 @@ FrTensor zkSoftmax::compute(const FrTensor& X, FrTensor& shift, FrTensor& X_shif
 
     FrTensor out(m * n);
     cudaMemset(out.gpu_data, 0, out.size * sizeof(Fr_t));
-    out += {1, 0, 0, 0, 0, 0, 0, 0};
+    out += FR_FROM_INT(1);
 
     for (uint i = 0; i < L; ++ i)
     {   
@@ -204,9 +210,9 @@ Fr_t zkSoftmax::prove(const FrTensor& Y, const FrTensor& X, const FrTensor& shif
     for (uint i = L; i < K; ++ i) Y_seg_claims.push_back(Y_segments[i - L](v_Y));
     for (uint i = 0; i < K; ++ i) X_seg_claims.push_back(X_segments[i](v_Y));
 
-    Fr_t minus_X_shifted_claim = {0, 0, 0, 0, 0, 0, 0, 0};
+    Fr_t minus_X_shifted_claim = FR_FROM_INT(0);
     for (int i = bs.size() - 1; i >= 0; -- i ){
-        minus_X_shifted_claim = minus_X_shifted_claim * Fr_t({bs[i], 0, 0, 0, 0, 0, 0, 0}) + X_seg_claims[i];
+        minus_X_shifted_claim = minus_X_shifted_claim * FR_FROM_INT(bs[i]) + X_seg_claims[i];
     }
 
     // auto X_shifted_opening = X_shifted(v_Y);

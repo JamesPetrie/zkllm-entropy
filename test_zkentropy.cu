@@ -13,6 +13,14 @@ static void check(bool cond, const char* msg) {
     cout << "PASS: " << msg << endl;
 }
 
+static unsigned long fr_to_ul(const Fr_t& a) {
+#ifdef USE_GOLDILOCKS
+    return a.val;
+#else
+    return ((unsigned long)a.val[1] << 32) | a.val[0];
+#endif
+}
+
 // Build a vocab_size tensor where logits[winner] is high and all others are low.
 static FrTensor make_logits(uint vocab_size, uint winner, long winner_val, long other_val) {
     vector<long> vals(vocab_size, other_val);
@@ -20,7 +28,7 @@ static FrTensor make_logits(uint vocab_size, uint winner, long winner_val, long 
     Fr_t* cpu = new Fr_t[vocab_size];
     for (uint i = 0; i < vocab_size; i++) {
         unsigned long uv = (unsigned long)vals[i];
-        cpu[i] = {(uint)(uv & 0xFFFFFFFF), (uint)(uv >> 32), 0, 0, 0, 0, 0, 0};
+        cpu[i] = FR_FROM_INT(uv);
     }
     FrTensor t(vocab_size, cpu);
     delete[] cpu;
@@ -52,7 +60,7 @@ int main() {
     {
         auto logits = make_logits(vocab_size, 5, 5000L, 100L);
         Fr_t s = prover.computePosition(logits, /*actual_token=*/5);
-        unsigned long sv = ((unsigned long)s.val[1] << 32) | s.val[0];
+        unsigned long sv = fr_to_ul(s);
         double surprise_bits = (double)sv / log_scale;
         cout << "  greedy surprise = " << surprise_bits << " bits" << endl;
         check(surprise_bits < 2.0, "greedy token has surprise < 2 bits");
@@ -64,7 +72,7 @@ int main() {
         auto logits = make_logits(vocab_size, 5, 5000L, 100L);
         // actual_token=20 has low win_prob → high surprise
         Fr_t s = prover.computePosition(logits, /*actual_token=*/20);
-        unsigned long sv = ((unsigned long)s.val[1] << 32) | s.val[0];
+        unsigned long sv = fr_to_ul(s);
         double surprise_bits = (double)sv / log_scale;
         cout << "  unlikely token surprise = " << surprise_bits << " bits" << endl;
         check(surprise_bits > 1.0, "unlikely token has surprise > 1 bit");
@@ -74,7 +82,7 @@ int main() {
     //    All logits equal → win_probs ≈ equal → q ≈ 1/vocab_size
     //    → surprise ≈ log2(vocab_size)
     {
-        Fr_t one_val = {1000, 0, 0, 0, 0, 0, 0, 0};
+        Fr_t one_val = FR_FROM_INT(1000);
         // Build uniform logits
         Fr_t* cpu = new Fr_t[vocab_size];
         for (uint i = 0; i < vocab_size; i++) cpu[i] = one_val;
@@ -82,7 +90,7 @@ int main() {
         delete[] cpu;
 
         Fr_t s = prover.computePosition(logits, /*actual_token=*/0);
-        unsigned long sv = ((unsigned long)s.val[1] << 32) | s.val[0];
+        unsigned long sv = fr_to_ul(s);
         double surprise_bits = (double)sv / log_scale;
         double expected = log2((double)vocab_size);
         cout << "  uniform surprise = " << surprise_bits << " bits (expected ≈ "
@@ -101,7 +109,7 @@ int main() {
         vector<uint> tokens = {5, 20};  // token 20 is unlikely at position 1
 
         Fr_t total = prover.compute(seq, tokens);
-        unsigned long tv = ((unsigned long)total.val[1] << 32) | total.val[0];
+        unsigned long tv = fr_to_ul(total);
         check(tv > 0, "compute() returns non-zero total entropy for unlikely token");
     }
 
@@ -137,14 +145,14 @@ int main() {
         // All-greedy baseline: every position uses the argmax token.
         vector<uint> greedy_tokens(seq_len, 5u);
         Fr_t entropy_greedy = prover.compute(seq, greedy_tokens);
-        unsigned long eg = ((unsigned long)entropy_greedy.val[1] << 32) | entropy_greedy.val[0];
+        unsigned long eg = fr_to_ul(entropy_greedy);
         double greedy_bits = (double)eg / log_scale;
         cout << "  all-greedy entropy  = " << greedy_bits << " bits" << endl;
 
         // Replace positions 1 and 3 with an unlikely token.
         vector<uint> mixed_tokens = {5u, 20u, 5u, 20u};
         Fr_t entropy_mixed = prover.compute(seq, mixed_tokens);
-        unsigned long em = ((unsigned long)entropy_mixed.val[1] << 32) | entropy_mixed.val[0];
+        unsigned long em = fr_to_ul(entropy_mixed);
         double mixed_bits = (double)em / log_scale;
         cout << "  mixed-token entropy = " << mixed_bits << " bits" << endl;
 

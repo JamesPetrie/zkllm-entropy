@@ -88,8 +88,8 @@ vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y) const
 
 
 // zk inner product
-const Fr_t TEMP_ZERO {0, 0, 0, 0, 0, 0, 0, 0};
-const Fr_t TEMP_ONE {1, 0, 0, 0, 0, 0, 0, 0};
+const Fr_t TEMP_ZERO = FR_FROM_INT(0);
+const Fr_t TEMP_ONE = FR_FROM_INT(1);
 
 KERNEL void zkip_poly_kernel(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint N_in, uint N_out)
 {
@@ -293,7 +293,7 @@ void zkFCStacked::prove(const vector<Fr_t>& u_num, const vector<Fr_t>& v_num, co
         FrTensor broadcasting_ones(batchSize);
         //fill broadcasting_ones with 0s first
         cudaMemset(broadcasting_ones.gpu_data, 0, broadcasting_ones.size * sizeof(Fr_t));
-        broadcasting_ones += {1, 0, 0, 0, 0, 0, 0, 0};
+        broadcasting_ones += FR_FROM_INT(1);
 
         claim = claim - broadcasting_ones(u_batch) * b.multi_dim_me({u_num, u_output}, {num, outputSize});
     }

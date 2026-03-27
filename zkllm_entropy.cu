@@ -163,8 +163,12 @@ int main(int argc, char* argv[]) {
     cout << "Computing conditional entropy..." << endl;
     Fr_t total_entropy = entropy_prover.compute(logits_seq, tokens);
 
+#ifdef USE_GOLDILOCKS
+    unsigned long entropy_val = total_entropy.val;
+#else
     unsigned long entropy_val =
         ((unsigned long)total_entropy.val[1] << 32) | total_entropy.val[0];
+#endif
     double entropy_bits = (double)entropy_val / (double)log_scale;
     cout << "Conditional entropy bound : " << entropy_bits << " bits total" << endl;
     cout << "Average per token         : " << entropy_bits / seq_len << " bits/token" << endl;

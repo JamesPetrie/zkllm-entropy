@@ -15,8 +15,16 @@ static void check(bool cond, const char* msg) {
 }
 
 static FrTensor from_ulong(unsigned long v) {
-    Fr_t f = {(uint)(v & 0xFFFFFFFF), (uint)(v >> 32), 0, 0, 0, 0, 0, 0};
+    Fr_t f = FR_FROM_INT(v);
     return FrTensor(1, &f);
+}
+
+static unsigned long fr_to_ul(const Fr_t& a) {
+#ifdef USE_GOLDILOCKS
+    return a.val;
+#else
+    return ((unsigned long)a.val[1] << 32) | a.val[0];
+#endif
 }
 
 int main() {
@@ -31,7 +39,7 @@ int main() {
         FrTensor probs = from_ulong(p_idx);
         auto [log_probs, m] = lg.compute(probs);
         Fr_t val = log_probs(0u);
-        unsigned long result = ((unsigned long)val.val[1] << 32) | val.val[0];
+        unsigned long result = fr_to_ul(val);
         // -log2(1.0) * scale_out = 0
         check(result == 0, "-log2(1.0) == 0");
     }
@@ -42,7 +50,7 @@ int main() {
         FrTensor probs = from_ulong(p_idx);
         auto [log_probs, m] = lg.compute(probs);
         Fr_t val = log_probs(0u);
-        unsigned long result = ((unsigned long)val.val[1] << 32) | val.val[0];
+        unsigned long result = fr_to_ul(val);
         double expected = 1.0 * scale_out;
         double got = (double)result;
         double err = fabs(got - expected) / expected;
@@ -54,7 +62,7 @@ int main() {
         FrTensor probs = from_ulong(1);  // p_idx = 1 → p = 1/2^precision
         auto [log_probs, m] = lg.compute(probs);
         Fr_t val = log_probs(0u);
-        unsigned long result = ((unsigned long)val.val[1] << 32) | val.val[0];
+        unsigned long result = fr_to_ul(val);
         double expected = (double)precision * scale_out;
         double got = (double)result;
         double err = fabs(got - expected) / expected;
@@ -68,8 +76,8 @@ int main() {
         auto t2 = from_ulong(p2);
         auto [lp1, m1] = lg.compute(t1);
         auto [lp2, m2] = lg.compute(t2);
-        unsigned long v1 = ((unsigned long)lp1(0u).val[1] << 32) | lp1(0u).val[0];
-        unsigned long v2 = ((unsigned long)lp2(0u).val[1] << 32) | lp2(0u).val[0];
+        unsigned long v1 = fr_to_ul(lp1(0u));
+        unsigned long v2 = fr_to_ul(lp2(0u));
         check(v1 > v2, "larger p_idx gives smaller -log2 value");
     }
 

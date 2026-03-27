@@ -9,6 +9,14 @@ zkArgmax::zkArgmax(uint bit_width) : bit_width(bit_width) {}
 // Read Fr_t as signed 64-bit integer (assumes value fits in lower 64 bits;
 // negative numbers have val[2..7] non-zero and are treated as less than positives).
 static bool fr_gt(const Fr_t& a, const Fr_t& b) {
+#ifdef USE_GOLDILOCKS
+    // In Goldilocks (p = 2^64 - 2^32 + 1), "negative" values (p-k for small k)
+    // have val > p/2.
+    bool a_neg = a.val > (GOLDILOCKS_P >> 1);
+    bool b_neg = b.val > (GOLDILOCKS_P >> 1);
+    if (a_neg != b_neg) return b_neg;
+    return a.val > b.val;
+#else
     // Check sign: a field element is "negative" (large mod-p value) when its
     // upper 192 bits (val[2..7]) are non-zero.
     bool a_neg = a.val[2] || a.val[3] || a.val[4] || a.val[5] || a.val[6] || a.val[7];
@@ -20,6 +28,7 @@ static bool fr_gt(const Fr_t& a, const Fr_t& b) {
     // Both negative (p-k form): larger raw value means smaller k, i.e. less
     // negative, i.e. a greater signed value.  So av > bv in both cases.
     return av > bv;
+#endif
 }
 
 uint zkArgmax::compute(const FrTensor& logits) {
@@ -74,11 +83,21 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
         cudaMemcpy(cpu_diffs,  diffs.gpu_data,  N * sizeof(Fr_t), cudaMemcpyDeviceToHost);
         cudaMemcpy(cpu_logits, logits.gpu_data, N * sizeof(Fr_t), cudaMemcpyDeviceToHost);
         unsigned long long max_diff_pos = 0;  // max among small positive diffs
-        uint n_negative = 0;    // diffs with val[2..7] != 0 (genuinely negative)
-        uint n_large64  = 0;    // diffs with val[1] bit-31 set but val[2..7] == 0 (>= 2^63)
+        uint n_negative = 0;    // diffs that are "negative" (large field elements)
+        uint n_large64  = 0;    // diffs >= 2^63 but still "positive"
         uint first_neg_idx = N;
         for (uint i = 0; i < N; i++) {
             const Fr_t& d = cpu_diffs[i];
+#ifdef USE_GOLDILOCKS
+            bool is_neg = d.val > (GOLDILOCKS_P >> 1);
+            if (is_neg) {
+                n_negative++;
+                if (first_neg_idx == N) first_neg_idx = i;
+            } else {
+                if (d.val > max_diff_pos) max_diff_pos = d.val;
+                if (d.val >= (1ULL << 63)) n_large64++;
+            }
+#else
             bool has_high = d.val[2]||d.val[3]||d.val[4]||d.val[5]||d.val[6]||d.val[7];
             if (has_high) {
                 n_negative++;
@@ -88,18 +107,13 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
                 if (d.val[1] >> 31) n_large64++;
                 if (dv > max_diff_pos) max_diff_pos = dv;
             }
+#endif
         }
         cerr << "[zkArgmax] n_negative_diffs=" << n_negative << "  n_large64=" << n_large64
              << "  max_positive_diff=" << max_diff_pos << "  N=" << N << endl;
         if (n_negative > 0) {
             cerr << "[zkArgmax] NEGATIVE DIFFS: v_star < logits[i] for " << n_negative
                  << " elements (argmax bug?). First at i=" << first_neg_idx << endl;
-            // Print first negative diff and corresponding logit
-            const Fr_t& lg = cpu_logits[first_neg_idx];
-            cerr << "  logit[" << first_neg_idx << "] = val[0..3]="
-                 << lg.val[0] << "," << lg.val[1] << "," << lg.val[2] << "," << lg.val[3] << endl;
-            cerr << "  v_star = val[0..3]="
-                 << v_star.val[0] << "," << v_star.val[1] << "," << v_star.val[2] << "," << v_star.val[3] << endl;
         }
         {
             uint needed = 0;
@@ -126,9 +140,9 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
     // 3. Verify reconstruction at challenge point u:
     //    diffs(u) == sum_b 2^b * bits_b(u)
     Fr_t diffs_u = diffs(u);
-    Fr_t recon   = {0, 0, 0, 0, 0, 0, 0, 0};
-    Fr_t pow2    = {1, 0, 0, 0, 0, 0, 0, 0};
-    Fr_t two     = {2, 0, 0, 0, 0, 0, 0, 0};
+    Fr_t recon   = FR_FROM_INT(0);
+    Fr_t pow2    = FR_FROM_INT(1);
+    Fr_t two     = FR_FROM_INT(2);
     for (uint b = 0; b < bit_width; b++) {
         Fr_t bits_b_u = bits_vecs[b](u);
         recon = recon + pow2 * bits_b_u;   // operator+ and operator* are host-accessible

@@ -22,6 +22,13 @@ typedef blstrs__g1__G1Affine_affine G1Affine_t;
 typedef blstrs__g1__G1Affine_jacobian G1Jacobian_t;
 #endif
 
+// Field-portable literal: converts a small integer to Fr_t
+#ifdef USE_GOLDILOCKS
+#define FR_FROM_INT(x) Fr_t{(uint64_t)(x)}
+#else
+#define FR_FROM_INT(x) Fr_t{static_cast<uint>(x), 0, 0, 0, 0, 0, 0, 0}
+#endif
+
 const uint FrNumThread = 256;
 const uint FrSharedMemorySize = 2 * sizeof(Fr_t) * FrNumThread; 
 

@@ -34,6 +34,15 @@ zkConditionalEntropy::zkConditionalEntropy(
 // Field elements are stored without Montgomery form for logit values (val[2..7] == 0
 // for small positive values).  Negative or very large values have val[2..7] != 0.
 
+#ifdef USE_GOLDILOCKS
+static inline unsigned long long fr_to_ull(const Fr_t& a) {
+    return a.val;
+}
+
+static inline bool fr_is_large(const Fr_t& a) {
+    return a.val > (1ULL << 63);
+}
+#else
 static inline unsigned long long fr_to_ull(const Fr_t& a) {
     return ((unsigned long long)a.val[1] << 32) | a.val[0];
 }
@@ -41,6 +50,7 @@ static inline unsigned long long fr_to_ull(const Fr_t& a) {
 static inline bool fr_is_large(const Fr_t& a) {
     return a.val[2] || a.val[3] || a.val[4] || a.val[5] || a.val[6] || a.val[7];
 }
+#endif
 
 Fr_t zkConditionalEntropy::computePosition(const FrTensor& logits, uint actual_token) {
     if (logits.size != vocab_size)
@@ -57,7 +67,7 @@ Fr_t zkConditionalEntropy::computePosition(const FrTensor& logits, uint actual_t
     FrTensor diffs_all = -(logits - v_star);
     auto [cdf_vals_all, m_cdf] = cdf_prover.compute(diffs_all);
     (void)m_cdf;
-    Fr_t cdf_scale_fr = {cdf_scale, 0, 0, 0, 0, 0, 0, 0};
+    Fr_t cdf_scale_fr = FR_FROM_INT(cdf_scale);
     FrTensor win_probs_all = -(cdf_vals_all - cdf_scale_fr);
     Fr_t win_prob    = win_probs_all(actual_token);
     Fr_t total_win_f = win_probs_all.sum();
@@ -72,7 +82,7 @@ Fr_t zkConditionalEntropy::computePosition(const FrTensor& logits, uint actual_t
     if (q_idx > lp) q_idx = lp;
 
     // 5. Log lookup for single element: surprise = -log2(q_idx / 2^lp) * log_scale.
-    Fr_t q_fr = {(uint)(q_idx & 0xFFFFFFFF), (uint)(q_idx >> 32), 0, 0, 0, 0, 0, 0};
+    Fr_t q_fr = FR_FROM_INT(q_idx);
     FrTensor q_1(1, &q_fr);
     auto [surp_1, m_log] = log_prover.compute(q_1);
     (void)m_log;
@@ -88,7 +98,7 @@ Fr_t zkConditionalEntropy::compute(
     if (logits_seq.size() != tokens.size())
         throw std::invalid_argument("compute: logits_seq and tokens must have the same length");
 
-    Fr_t total = {0, 0, 0, 0, 0, 0, 0, 0};
+    Fr_t total = FR_FROM_INT(0);
     for (uint pos = 0; pos < tokens.size(); pos++)
         total = total + computePosition(logits_seq[pos], tokens[pos]);
     return total;
@@ -114,8 +124,8 @@ Fr_t zkConditionalEntropy::prove(
         throw std::invalid_argument("prove: logits_seq and tokens must have the same length");
 
     uint T = tokens.size();
-    Fr_t entropy_sum   = {0, 0, 0, 0, 0, 0, 0, 0};
-    Fr_t logits_claims = {0, 0, 0, 0, 0, 0, 0, 0};
+    Fr_t entropy_sum   = FR_FROM_INT(0);
+    Fr_t logits_claims = FR_FROM_INT(0);
 
     for (uint pos = 0; pos < T; pos++) {
         const FrTensor& logits = logits_seq[pos];
@@ -135,7 +145,7 @@ Fr_t zkConditionalEntropy::prove(
         uint log_N = ceilLog2(vocab_size);
         vector<Fr_t> e_actual(log_N);
         for (uint i = 0; i < log_N; i++)
-            e_actual[i] = {(actual_token >> i) & 1u, 0, 0, 0, 0, 0, 0, 0};
+            e_actual[i] = FR_FROM_INT((actual_token >> i) & 1u);
         Fr_t logit_act = logits(e_actual);   // MLE at one-hot basis = logits[actual_token]
         // Sanity-check against the direct GPU read (catches MLE encoding bugs).
         Fr_t logit_act_direct = logits(actual_token);
@@ -148,7 +158,7 @@ Fr_t zkConditionalEntropy::prove(
         FrTensor diffs_all = -(logits - v_star);
         auto [cdf_vals_all, m_cdf] = cdf_prover.compute(diffs_all);
         (void)m_cdf;
-        Fr_t cdf_scale_fr = {cdf_scale, 0, 0, 0, 0, 0, 0, 0};
+        Fr_t cdf_scale_fr = FR_FROM_INT(cdf_scale);
         FrTensor win_probs_all = -(cdf_vals_all - cdf_scale_fr);
         Fr_t win_prob  = win_probs_all(actual_token);
         Fr_t total_win = win_probs_all.sum();
@@ -168,7 +178,7 @@ Fr_t zkConditionalEntropy::prove(
         if (q_idx < 1)  q_idx = 1;
         if (q_idx > lp) q_idx = lp;
 
-        Fr_t q_fr = {(uint)(q_idx & 0xFFFFFFFF), (uint)(q_idx >> 32), 0, 0, 0, 0, 0, 0};
+        Fr_t q_fr = FR_FROM_INT(q_idx);
         FrTensor q_1(1, &q_fr);
         auto [surp_1, m_log] = log_prover.compute(q_1);
         (void)m_log;

@@ -15,8 +15,16 @@ static void check(bool cond, const char* msg) {
 
 static FrTensor from_long_val(long v) {
     unsigned long uv = (unsigned long)v;
-    Fr_t f = {(uint)(uv & 0xFFFFFFFF), (uint)(uv >> 32), 0, 0, 0, 0, 0, 0};
+    Fr_t f = FR_FROM_INT(uv);
     return FrTensor(1, &f);
+}
+
+static unsigned long fr_to_ul(const Fr_t& a) {
+#ifdef USE_GOLDILOCKS
+    return a.val;
+#else
+    return ((unsigned long)a.val[1] << 32) | a.val[0];
+#endif
 }
 
 int main() {
@@ -32,7 +40,7 @@ int main() {
         FrTensor diffs = from_long_val(0);
         auto [cdf_vals, m] = cdf.compute(diffs);
         Fr_t val = cdf_vals(0u);
-        unsigned long result = ((unsigned long)val.val[1] << 32) | val.val[0];
+        unsigned long result = fr_to_ul(val);
         double got      = (double)result / scale_out;
         double expected = 0.5;
         check(fabs(got - expected) < 0.01, "Phi(0) ≈ 0.5");
@@ -45,7 +53,7 @@ int main() {
         FrTensor diffs = from_long_val(d);
         auto [cdf_vals, m] = cdf.compute(diffs);
         Fr_t val = cdf_vals(0u);
-        unsigned long result = ((unsigned long)val.val[1] << 32) | val.val[0];
+        unsigned long result = fr_to_ul(val);
         double got = (double)result / scale_out;
         check(got > 0.99, "Phi(5*sigma) > 0.99");
     }
@@ -56,7 +64,7 @@ int main() {
         FrTensor diffs = from_long_val(d);
         auto [cdf_vals, m] = cdf.compute(diffs);
         Fr_t val = cdf_vals(0u);
-        unsigned long result = ((unsigned long)val.val[1] << 32) | val.val[0];
+        unsigned long result = fr_to_ul(val);
         double got      = (double)result / scale_out;
         double expected = 0.8413;
         check(fabs(got - expected) < 0.02, "Phi(sigma) ≈ 0.841");
@@ -69,8 +77,8 @@ int main() {
         FrTensor t2 = from_long_val(d2);
         auto [cv1, m1] = cdf.compute(t1);
         auto [cv2, m2] = cdf.compute(t2);
-        unsigned long v1 = ((unsigned long)cv1(0u).val[1] << 32) | cv1(0u).val[0];
-        unsigned long v2 = ((unsigned long)cv2(0u).val[1] << 32) | cv2(0u).val[0];
+        unsigned long v1 = fr_to_ul(cv1(0u));
+        unsigned long v2 = fr_to_ul(cv2(0u));
         check(v2 > v1, "larger diff gives larger CDF value");
     }
 
@@ -83,7 +91,7 @@ int main() {
         FrTensor diffs = from_long_val(d);
         auto [cdf_vals, m] = cdf.compute(diffs);
         Fr_t val = cdf_vals(0u);
-        unsigned long result = ((unsigned long)val.val[1] << 32) | val.val[0];
+        unsigned long result = fr_to_ul(val);
         double got = (double)result / scale_out;
         check(got > 0.0 && got <= 1.0, "CDF at max table index is in [0, 1]");
     }

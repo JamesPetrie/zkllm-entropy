@@ -16,7 +16,7 @@ KERNEL void tlookup_kernel(const uint* indices, const uint D, uint* counts){
 
 KERNEL void count_to_m(uint* counts, Fr_t* m_ptr, uint N){
     const uint tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid < N) m_ptr[tid] = {counts[tid], 0, 0, 0, 0, 0, 0, 0};
+    if (tid < N) m_ptr[tid] = FR_FROM_INT(counts[tid]);
 }
 
 // 
@@ -176,8 +176,13 @@ KERNEL void tLookup_phase2_reduce_kernel(const Fr_t* A_data, const Fr_t* S_data,
 
 // A.size == S.size == D
 // u.size == ceilLog2(D)
+#ifdef USE_GOLDILOCKS
+// 2^(-1) mod p = (p+1)/2 = 9223372034707292161
+const Fr_t TWO_INV {9223372034707292161ULL};
+#else
 // 0x39f6d3a994cebea4199cec0404d0ec02a9ded2017fff2dff7fffffff80000001
 const Fr_t TWO_INV {2147483649, 2147483647, 2147429887, 2849952257, 80800770, 429714436, 2496577188, 972477353};
+#endif
 // const Fr_t TEMP_ZERO {0, 0, 0, 0, 0, 0, 0, 0};
 // const Fr_t TEMP_ONE {1, 0, 0, 0, 0, 0, 0, 0};
 
@@ -285,7 +290,7 @@ Fr_t tLookup_phase2(const Fr_t& claim, const FrTensor& A, const FrTensor& S, con
     auto p = tLookup_phase2_step_poly(A, S, B, T, m, alpha_, beta, inv_size_ratio, alpha_sq, u);
     FrTensor new_A(A.size >> 1), new_S(S.size >> 1), new_B(B.size >> 1), new_T(T.size >> 1), new_m(m.size >> 1);
 
-    if (claim != p({0, 0, 0, 0, 0, 0, 0, 0}) + p({1, 0, 0, 0, 0, 0, 0, 0})) throw std::runtime_error("tLookup_phase2: claim != p(0) + p(1)");
+    if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1))) throw std::runtime_error("tLookup_phase2: claim != p(0) + p(1)");
 
     tLookup_phase2_reduce_kernel<<<((A.size >> 1)+FrNumThread-1)/FrNumThread,FrNumThread>>>(
         A.gpu_data, S.gpu_data, B.gpu_data, T.gpu_data, m.gpu_data,
@@ -309,7 +314,7 @@ Fr_t tLookup_phase1(const Fr_t& claim, const FrTensor& A, const FrTensor& S, con
         auto p = tLookup_phase1_step_poly(A, S, alpha, beta, C, u);
         FrTensor new_A(A.size >> 1), new_S(S.size >> 1);
         
-        if (claim != p({0, 0, 0, 0, 0, 0, 0, 0}) + p({1, 0, 0, 0, 0, 0, 0, 0})) throw std::runtime_error("tLookup_phase1: claim != p(0) + p(1)");
+        if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1))) throw std::runtime_error("tLookup_phase1: claim != p(0) + p(1)");
         
         tLookup_phase1_reduce_kernel<<<(A.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(
             A.gpu_data, S.gpu_data, new_A.gpu_data, new_S.gpu_data, v1.back(), A.size >> 1
@@ -423,7 +428,11 @@ KERNEL void lookuprange_tensor_prep_kernel(const Fr_t* vals, int low, uint* indi
     const uint tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid < N)
     {
+#ifdef USE_GOLDILOCKS
+        uint raw = (uint)blstrs__scalar__Scalar_sub(vals[tid], int_to_scalar(low)).val;
+#else
         uint raw = blstrs__scalar__Scalar_sub(vals[tid], int_to_scalar(low)).val[0];
+#endif
         indices[tid] = (raw < table_bound) ? raw : (table_bound - 1u);
     }
 }

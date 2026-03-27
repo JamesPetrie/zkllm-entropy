@@ -60,7 +60,7 @@ vector<Claim> Rescaling::prove(const FrTensor& X, const FrTensor& X_)
     // cout << m << endl;
     // cout << tl_rem.table << endl;
     
-    if (X(u) != X_(u) * Fr_t({scaling_factor, 0, 0, 0, 0, 0, 0, 0}) + rem(u))
+    if (X(u) != X_(u) * FR_FROM_INT(scaling_factor) + rem(u))
     {
         throw std::runtime_error("Error: the rem is not correct.");
     }

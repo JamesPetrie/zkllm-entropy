@@ -28,8 +28,8 @@ int main(int argc, char *argv[])
 
     // create an all 1 tensor with size embed_dim * embed_dim
     FrTensor all_one(seq_len);
-    all_one *= {0, 0, 0, 0, 0, 0, 0, 0};
-    all_one += {1, 0, 0, 0, 0, 0, 0, 0};
+    all_one *= FR_FROM_INT(0);
+    all_one += FR_FROM_INT(1);
 
     Rescaling rs1(1 << 16), rs2(1 << 16);
 
