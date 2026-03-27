@@ -12,6 +12,12 @@
 
 using namespace std;
 
+// Host-side conversion: Gold_t -> int (for testing)
+static int gold_to_int(Fr_t x) {
+    if (x.val <= (GOLDILOCKS_P >> 1)) return static_cast<int>(x.val);
+    return -static_cast<int>(GOLDILOCKS_P - x.val);
+}
+
 int main() {
     cout << "=== FrTensor + Sumcheck with Goldilocks ===" << endl;
     cout << "sizeof(Fr_t) = " << sizeof(Fr_t) << " bytes" << endl;
@@ -28,16 +34,16 @@ int main() {
         FrTensor t(4, data);
         Fr_t v0 = t(0u);
         Fr_t v3 = t(3u);
-        check(scalar_to_int(v0) == 1, "tensor from int: t[0] == 1");
-        check(scalar_to_int(v3) == 4, "tensor from int: t[3] == 4");
+        check(gold_to_int(v0) == 1, "tensor from int: t[0] == 1");
+        check(gold_to_int(v3) == 4, "tensor from int: t[3] == 4");
     }
 
     // ── Test 2: Negative values ─────────────────────────────────────────
     {
         int data[] = {-5, 10, -3, 7};
         FrTensor t(4, data);
-        check(scalar_to_int(t(0u)) == -5, "negative: t[0] == -5");
-        check(scalar_to_int(t(1u)) == 10, "negative: t[1] == 10");
+        check(gold_to_int(t(0u)) == -5, "negative: t[0] == -5");
+        check(gold_to_int(t(1u)) == 10, "negative: t[1] == 10");
     }
 
     // ── Test 3: Tensor addition ─────────────────────────────────────────
@@ -46,8 +52,8 @@ int main() {
         int b[] = {10, 20, 30, 40};
         FrTensor ta(4, a), tb(4, b);
         FrTensor tc = ta + tb;
-        check(scalar_to_int(tc(0u)) == 11, "add: (1+10) == 11");
-        check(scalar_to_int(tc(3u)) == 44, "add: (4+40) == 44");
+        check(gold_to_int(tc(0u)) == 11, "add: (1+10) == 11");
+        check(gold_to_int(tc(3u)) == 44, "add: (4+40) == 44");
     }
 
     // ── Test 4: Tensor multiplication (Hadamard) ────────────────────────
@@ -58,8 +64,8 @@ int main() {
         FrTensor tc = ta * tb;
         // Hadamard product in mont form: need to unmont
         tc.unmont();
-        check(scalar_to_int(tc(0u)) == 6, "hadamard: 3*2 == 6");
-        check(scalar_to_int(tc(1u)) == 20, "hadamard: 5*4 == 20");
+        check(gold_to_int(tc(0u)) == 6, "hadamard: 3*2 == 6");
+        check(gold_to_int(tc(1u)) == 20, "hadamard: 5*4 == 20");
     }
 
     // ── Test 5: Sum ─────────────────────────────────────────────────────
@@ -67,7 +73,7 @@ int main() {
         int data[] = {1, 2, 3, 4, 5, 6, 7, 8};
         FrTensor t(8, data);
         Fr_t s = t.sum();
-        check(scalar_to_int(s) == 36, "sum: 1+2+...+8 == 36");
+        check(gold_to_int(s) == 36, "sum: 1+2+...+8 == 36");
     }
 
     // ── Test 6: Multilinear evaluation ──────────────────────────────────
@@ -79,7 +85,7 @@ int main() {
         // Evaluate at u = (0, 0) -> should give a0 = 10
         vector<Fr_t> u_zero = {{0ULL}, {0ULL}};
         Fr_t v = t(u_zero);
-        check(scalar_to_int(v) == 10, "MLE at (0,0) == 10");
+        check(gold_to_int(v) == 10, "MLE at (0,0) == 10");
     }
 
     // ── Test 7: Random tensor creation ──────────────────────────────────
@@ -88,7 +94,7 @@ int main() {
         // Just verify it doesn't crash and has the right size
         check(r.size == 1024, "random_int size == 1024");
         // Check the first element is within reasonable range
-        int v = scalar_to_int(r(0u));
+        int v = gold_to_int(r(0u));
         check(v >= -32768 && v < 32768, "random_int value in range");
     }
 
@@ -124,10 +130,10 @@ int main() {
         FrTensor tc = FrTensor::matmul(ta, tb, 2, 3, 2);
         // matmul result is in mont form, need to unmont
         tc.unmont();
-        check(scalar_to_int(tc(0u)) == 58, "matmul: C[0][0] == 58");
-        check(scalar_to_int(tc(1u)) == 64, "matmul: C[0][1] == 64");
-        check(scalar_to_int(tc(2u)) == 139, "matmul: C[1][0] == 139");
-        check(scalar_to_int(tc(3u)) == 154, "matmul: C[1][1] == 154");
+        check(gold_to_int(tc(0u)) == 58, "matmul: C[0][0] == 58");
+        check(gold_to_int(tc(1u)) == 64, "matmul: C[0][1] == 64");
+        check(gold_to_int(tc(2u)) == 139, "matmul: C[1][0] == 139");
+        check(gold_to_int(tc(3u)) == 154, "matmul: C[1][1] == 154");
     }
 
     cout << "\n=== Results: " << (failures == 0 ? "ALL PASSED" : "FAILURES")
