@@ -86,6 +86,21 @@ gold_zkllm_entropy_timed: gold_zkllm_entropy_timed.o $(GOLD_OBJS) gold_timer.o
 gold_test_zkargmax: gold_test_zkargmax.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
+gold_self-attn: gold_self-attn.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_ffn: gold_ffn.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_rmsnorm: gold_rmsnorm.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_skip-connection: gold_skip-connection.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_commit-param: gold_commit-param.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
 # Clean rule
 clean:
 	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS) test_goldilocks test_goldilocks.o goldilocks.o $(GOLD_OBJS) gold_test_gold_tensor.o test_gold_tensor gold_test_ntt.o test_ntt gold_test_merkle.o test_merkle gold_test_fri.o test_fri gold_test_fri_pcs.o test_fri_pcs gold_fri_pcs.o

@@ -8,12 +8,12 @@ zkllm_entropy.
 
 Output files written to <workdir>:
     lm_head-weight-int.bin            int32 quantised weight (hidden × vocab)
-    lm_head-weight-commitment.bin     G1 commitment using lm_head-pp.bin
+    lm_head-weight-commitment.bin     G1 commitment (BLS) or FRI commitment (Goldilocks)
     final_norm.weight-int.bin         int32 quantised norm weight (hidden,)
-    final_norm.weight-commitment.bin  G1 commitment using input_layernorm.weight-pp.bin
+    final_norm.weight-commitment.bin  G1 commitment (BLS) or FRI commitment (Goldilocks)
 
 Usage:
-    python commit_final_layers.py [--model-size 7] [--log-scale 16]
+    python commit_final_layers.py [--model-size 7] [--log-scale 16] [--goldilocks]
 """
 
 import os, sys, argparse
@@ -24,6 +24,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--model-size', type=int, default=7, choices=[7, 13])
 parser.add_argument('--log-scale', type=int, default=16,
                     help='Log2 of fixed-point scale (default 16 → scale=65536)')
+parser.add_argument('--goldilocks', action='store_true',
+                    help='Use Goldilocks field + FRI commitments (no trusted setup)')
 args = parser.parse_args()
 
 WORKDIR    = f'./zkllm-workdir/Llama-2-{args.model_size}b'
@@ -31,9 +33,18 @@ MODEL_CARD = f'meta-llama/Llama-2-{args.model_size}b-hf'
 SCALE      = 1 << args.log_scale
 
 # ── Compile commit-param if needed ───────────────────────────────────────────
-if os.system('make commit-param') != 0:
-    print('ERROR: make commit-param failed', file=sys.stderr)
-    sys.exit(1)
+if args.goldilocks:
+    commit_bin = './gold_commit-param'
+    if os.system('make gold_commit-param') != 0:
+        print('ERROR: make gold_commit-param failed', file=sys.stderr)
+        sys.exit(1)
+else:
+    commit_bin = './commit-param'
+    if os.system('make commit-param') != 0:
+        print('ERROR: make commit-param failed', file=sys.stderr)
+        sys.exit(1)
+
+com_suffix = '-gold-commitment.bin' if args.goldilocks else '-commitment.bin'
 
 # ── Load model ────────────────────────────────────────────────────────────────
 print(f'Loading {MODEL_CARD}...', flush=True)
@@ -46,9 +57,12 @@ model.eval()
 def save_and_commit(w_int: np.ndarray, int_path: str, com_path: str,
                     pp_path: str, rows: int, cols: int):
     w_int.tofile(int_path)
-    ret = os.system(f'./commit-param {pp_path} {int_path} {com_path} {rows} {cols}')
+    if args.goldilocks:
+        ret = os.system(f'{commit_bin} {int_path} {com_path} {rows} {cols}')
+    else:
+        ret = os.system(f'{commit_bin} {pp_path} {int_path} {com_path} {rows} {cols}')
     if ret != 0:
-        print(f'ERROR: commit-param failed for {int_path}', file=sys.stderr)
+        print(f'ERROR: commit failed for {int_path}', file=sys.stderr)
         sys.exit(1)
     print(f'  committed {int_path}  →  {com_path}')
 
@@ -62,9 +76,9 @@ in_dim, out_dim = lm_int.shape  # 4096, 32000
 
 pp_path  = f'{WORKDIR}/lm_head-pp.bin'
 int_path = f'{WORKDIR}/lm_head-weight-int.bin'
-com_path = f'{WORKDIR}/lm_head-weight-commitment.bin'
+com_path = f'{WORKDIR}/lm_head-weight{com_suffix}'
 
-if not os.path.isfile(pp_path):
+if not args.goldilocks and not os.path.isfile(pp_path):
     print(f'ERROR: {pp_path} not found. Run: ./ppgen 32768 {pp_path}', file=sys.stderr)
     sys.exit(1)
 
@@ -81,9 +95,9 @@ norm_int = torch.round(norm_w * SCALE).to(torch.int32).cpu().numpy()
 
 pp_path_norm  = f'{WORKDIR}/input_layernorm.weight-pp.bin'
 int_path_norm = f'{WORKDIR}/final_norm.weight-int.bin'
-com_path_norm = f'{WORKDIR}/final_norm.weight-commitment.bin'
+com_path_norm = f'{WORKDIR}/final_norm.weight{com_suffix}'
 
-if not os.path.isfile(pp_path_norm):
+if not args.goldilocks and not os.path.isfile(pp_path_norm):
     print(f'ERROR: {pp_path_norm} not found. Run llama-commit.py first.', file=sys.stderr)
     sys.exit(1)
 

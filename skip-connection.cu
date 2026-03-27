@@ -2,7 +2,9 @@
 #include "zkfc.cuh"
 #include "fr-tensor.cuh"
 #include "proof.cuh"
+#ifndef USE_GOLDILOCKS
 #include "commitment.cuh"
+#endif
 #include "rescaling.cuh"
 #include <string>
 
