@@ -8,7 +8,9 @@
 
 #include "fri_pcs.cuh"
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
+#include <fstream>
 
 // ── Host-side field arithmetic ───────────────────────────────────────────────
 
@@ -99,4 +101,24 @@ Fr_t FriPcs::multilinear_eval_host(const std::vector<Fr_t>& data,
     }
 
     return Fr_t{vals[0]};
+}
+
+// ── FriPcsCommitment serialization ───────────────────────────────────────────
+
+void FriPcsCommitment::save(const std::string& filename) const {
+    std::ofstream f(filename, std::ios::binary);
+    if (!f) throw std::runtime_error("FriPcsCommitment::save: cannot open " + filename);
+    f.write(reinterpret_cast<const char*>(&root), sizeof(Hash256));
+    f.write(reinterpret_cast<const char*>(&size), sizeof(uint));
+    f.write(reinterpret_cast<const char*>(&log_size), sizeof(uint));
+}
+
+FriPcsCommitment FriPcsCommitment::load(const std::string& filename) {
+    std::ifstream f(filename, std::ios::binary);
+    if (!f) throw std::runtime_error("FriPcsCommitment::load: cannot open " + filename);
+    FriPcsCommitment com;
+    f.read(reinterpret_cast<char*>(&com.root), sizeof(Hash256));
+    f.read(reinterpret_cast<char*>(&com.size), sizeof(uint));
+    f.read(reinterpret_cast<char*>(&com.log_size), sizeof(uint));
+    return com;
 }

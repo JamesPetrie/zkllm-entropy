@@ -48,7 +48,7 @@ int main(int argc, char* argv[]) {
     // Pad to generator size (fill with zeros).
     FrTensor logits_padded = (n_elements == padded)
         ? logits
-        : logits.pad({n_elements}, {0,0,0,0,0,0,0,0});
+        : logits.pad({n_elements}, FR_FROM_INT(0));
 
     // Commit: C = sum_i generators[i] * logits_padded[i]  (single-row commit, m=1).
     G1TensorJacobian com = generators.commit(logits_padded);

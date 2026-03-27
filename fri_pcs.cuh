@@ -24,6 +24,7 @@
 
 #include "merkle.cuh"
 #include <vector>
+#include <string>
 
 // ── FRI PCS commitment ───────────────────────────────────────────────────────
 
@@ -31,6 +32,9 @@ struct FriPcsCommitment {
     Hash256 root;          // Merkle root of the committed elements
     uint size;             // number of committed elements
     uint log_size;         // log2(size)
+
+    void save(const std::string& filename) const;
+    static FriPcsCommitment load(const std::string& filename);
 };
 
 // ── FRI PCS class ────────────────────────────────────────────────────────────

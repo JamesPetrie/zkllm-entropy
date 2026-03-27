@@ -252,8 +252,8 @@ FrTensor FrTensor::from_long_bin(const string& filename)
     auto size = findsize(filename) / sizeof(long);
     FrTensor out(size);
     long* long_gpu_data;
-    cudaMalloc((void **)&long_gpu_data, sizeof(int) * size);
-    loadbin(filename, long_gpu_data, sizeof(int) * size);
+    cudaMalloc((void **)&long_gpu_data, sizeof(long) * size);
+    loadbin(filename, long_gpu_data, sizeof(long) * size);
     long_to_scalar_kernel<<<(size+FrNumThread-1)/FrNumThread,FrNumThread>>>(long_gpu_data, out.gpu_data, size);
     cudaFree(long_gpu_data);
     return out;

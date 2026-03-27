@@ -1,4 +1,5 @@
 #include "proof.cuh"
+#include <fstream>
 
 #ifdef USE_GOLDILOCKS
 void verifyWeightClaim(const Weight& w, const Claim& c)
@@ -14,7 +15,16 @@ Weight create_weight(string weight_filename, string com_filename, uint in_dim, u
 {
     FrTensor weight = FrTensor::from_int_bin(weight_filename);
     auto w_padded = weight.pad({in_dim, out_dim});
-    FriPcsCommitment com = FriPcs::commit(w_padded.gpu_data, w_padded.size);
+    FriPcsCommitment com;
+    // Load saved commitment if available, otherwise compute and save
+    std::ifstream test(com_filename, std::ios::binary);
+    if (test.good()) {
+        test.close();
+        com = FriPcsCommitment::load(com_filename);
+    } else {
+        com = FriPcs::commit(w_padded.gpu_data, w_padded.size);
+        com.save(com_filename);
+    }
     return Weight{weight, com, in_dim, out_dim};
 }
 #else
