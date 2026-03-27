@@ -169,7 +169,7 @@ for layer_idx in range(args.start_layer, args.num_layers):
     # -----------------------------------------------------------------------
     # 3. Skip connection (residual: layer_input + attn_output)
     # -----------------------------------------------------------------------
-    os.system(f'./{BIN_PREFIX}skip-connection {layer_input} {attn_output} {post_attn}')
+    os.system(f'./cpu_skip-connection {layer_input} {attn_output} {post_attn}')
 
     # -----------------------------------------------------------------------
     # 4. RMSNorm (post-attention layernorm)
@@ -190,7 +190,7 @@ for layer_idx in range(args.start_layer, args.num_layers):
     # -----------------------------------------------------------------------
     # 6. Skip connection (residual: post_attn + ffn_output)
     # -----------------------------------------------------------------------
-    os.system(f'./{BIN_PREFIX}skip-connection {post_attn} {ffn_output} {layer_output}')
+    os.system(f'./cpu_skip-connection {post_attn} {ffn_output} {layer_output}')
 
     print(f"Layer {layer_idx} done.", flush=True)
     layer_input = layer_output
