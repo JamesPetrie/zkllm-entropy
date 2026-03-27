@@ -6,7 +6,7 @@ void verifyWeightClaim(const Weight& w, const Claim& c)
 {
     vector<Fr_t> u_cat = concatenate(vector<vector<Fr_t>>({c.u[1], c.u[0]}));
     auto w_padded = w.weight.pad({w.in_dim, w.out_dim});
-    Fr_t opening = FriPcs::open(w_padded.gpu_data, w_padded.size, w.com, u_cat);
+    Fr_t opening = FriPcs::open(w_padded.gpu_data, w_padded.size, w.com, u_cat, true);
     if (opening != c.claim) throw std::runtime_error("verifyWeightClaim: opening != c.claim");
     cout << "Opening complete" << endl;
 }

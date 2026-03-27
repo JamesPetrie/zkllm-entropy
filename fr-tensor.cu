@@ -165,28 +165,54 @@ KERNEL void Fr_broadcast_mul(GLOBAL Fr_t* arr, Fr_t x, GLOBAL Fr_t* arr_out, uin
 }
 
 
+// ── GPU memory pool ─────────────────────────────────────────────────────────
+// Caches freed GPU allocations by size to avoid repeated cudaMalloc/cudaFree.
+// This eliminates the main bottleneck in recursive sumcheck proofs where
+// thousands of temporary FrTensors are created and destroyed.
+
+#include <unordered_map>
+#include <vector>
+
+static std::unordered_map<uint, std::vector<Fr_t*>> gpu_pool;
+
+static Fr_t* pool_alloc(uint size) {
+    auto it = gpu_pool.find(size);
+    if (it != gpu_pool.end() && !it->second.empty()) {
+        Fr_t* ptr = it->second.back();
+        it->second.pop_back();
+        return ptr;
+    }
+    Fr_t* ptr = nullptr;
+    cudaMalloc((void**)&ptr, sizeof(Fr_t) * size);
+    return ptr;
+}
+
+static void pool_free(Fr_t* ptr, uint size) {
+    if (ptr) gpu_pool[size].push_back(ptr);
+}
+
 // implement the class FrTensor
 
 FrTensor::FrTensor(uint size): size(size), gpu_data(nullptr)
 {
-    cudaMalloc((void **)&gpu_data, sizeof(Fr_t) * size);
+    gpu_data = pool_alloc(size);
 }
 
 FrTensor::FrTensor(uint size, const Fr_t* cpu_data): size(size), gpu_data(nullptr)
 {
-    cudaMalloc((void **)&gpu_data, sizeof(Fr_t) * size);
+    gpu_data = pool_alloc(size);
     cudaMemcpy(gpu_data, cpu_data, sizeof(Fr_t) * size, cudaMemcpyHostToDevice);
 }
 
 FrTensor::FrTensor(const FrTensor& t): size(t.size), gpu_data(nullptr)
 {
-    cudaMalloc((void **)&gpu_data, sizeof(Fr_t) * size);
+    gpu_data = pool_alloc(size);
     cudaMemcpy(gpu_data, t.gpu_data, sizeof(Fr_t) * size, cudaMemcpyDeviceToDevice);
 }
 
 FrTensor::~FrTensor()
 {
-    cudaFree(gpu_data);
+    pool_free(gpu_data, size);
     gpu_data = nullptr;
 }
 

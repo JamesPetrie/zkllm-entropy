@@ -139,19 +139,14 @@ Fr_t zkConditionalEntropy::prove(
         logits_claims = logits_claims + lc;
 
         // ── Bind logits[actual_token] to the logit tensor via MLE ─────────
-        // Evaluating the MLE of logits at the binary encoding of actual_token
-        // gives exactly logits[actual_token].  This links diff_actual to the
-        // same tensor that the argmax proof committed to.
         uint log_N = ceilLog2(vocab_size);
         vector<Fr_t> e_actual(log_N);
         for (uint i = 0; i < log_N; i++)
             e_actual[i] = FR_FROM_INT((actual_token >> i) & 1u);
-        Fr_t logit_act = logits(e_actual);   // MLE at one-hot basis = logits[actual_token]
-        // Sanity-check against the direct GPU read (catches MLE encoding bugs).
+        Fr_t logit_act = logits(e_actual);
         Fr_t logit_act_direct = logits(actual_token);
         if (logit_act != logit_act_direct)
             throw std::runtime_error("prove: MLE one-hot eval != direct logit read");
-        // Include the MLE claim in the proof transcript.
         proof.push_back(Polynomial(logit_act));
 
         // ── Full-vocab CDF + win probabilities ────────────────────────────
@@ -163,7 +158,6 @@ Fr_t zkConditionalEntropy::prove(
         Fr_t win_prob  = win_probs_all(actual_token);
         Fr_t total_win = win_probs_all.sum();
 
-        // Record: diff for actual token, its win_prob, and the total.
         Fr_t diff_actual = diffs_all(actual_token);
         proof.push_back(Polynomial(diff_actual));
         proof.push_back(Polynomial(win_prob));
@@ -184,7 +178,6 @@ Fr_t zkConditionalEntropy::prove(
         (void)m_log;
         Fr_t surprise = surp_1(0u);
 
-        // Record claimed values; verifier checks log_table[q_fr] == surprise.
         proof.push_back(Polynomial(q_fr));
         proof.push_back(Polynomial(surprise));
 

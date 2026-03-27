@@ -77,15 +77,15 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
     cudaDeviceSynchronize();
 
     // 2. Diagnostic: check diff values and verify bit_width is sufficient.
+    //    Gated behind ZKARGMAX_DIAGNOSTICS to avoid per-position GPU→CPU copies.
+#ifdef ZKARGMAX_DIAGNOSTICS
     {
         Fr_t* cpu_diffs = new Fr_t[N];
         Fr_t* cpu_logits = new Fr_t[N];
         cudaMemcpy(cpu_diffs,  diffs.gpu_data,  N * sizeof(Fr_t), cudaMemcpyDeviceToHost);
         cudaMemcpy(cpu_logits, logits.gpu_data, N * sizeof(Fr_t), cudaMemcpyDeviceToHost);
-        unsigned long long max_diff_pos = 0;  // max among small positive diffs
-        uint n_negative = 0;    // diffs that are "negative" (large field elements)
-        uint n_large64  = 0;    // diffs >= 2^63 but still "positive"
-        uint first_neg_idx = N;
+        unsigned long long max_diff_pos = 0;
+        uint n_negative = 0, n_large64 = 0, first_neg_idx = N;
         for (uint i = 0; i < N; i++) {
             const Fr_t& d = cpu_diffs[i];
 #ifdef USE_GOLDILOCKS
@@ -124,18 +124,19 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
         delete[] cpu_diffs;
         delete[] cpu_logits;
     }
+#endif
 
     // 2. Bit-decompose each diff into bit_width bits.
     //    bits_vecs[b][i] = (diffs[i] >> b) & 1
+    //    Launch all kernels, then sync once (avoids per-bit synchronization).
     vector<FrTensor> bits_vecs;
     bits_vecs.reserve(bit_width);
     for (uint b = 0; b < bit_width; b++) {
-        FrTensor bits_b(N);
+        bits_vecs.emplace_back(N);
         zkargmax_bit_extract_kernel<<<blocks, FrNumThread>>>(
-            diffs.gpu_data, bits_b.gpu_data, b, N);
-        cudaDeviceSynchronize();
-        bits_vecs.push_back(bits_b);
+            diffs.gpu_data, bits_vecs.back().gpu_data, b, N);
     }
+    cudaDeviceSynchronize();
 
     // 3. Verify reconstruction at challenge point u:
     //    diffs(u) == sum_b 2^b * bits_b(u)
@@ -145,7 +146,7 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
     Fr_t two     = FR_FROM_INT(2);
     for (uint b = 0; b < bit_width; b++) {
         Fr_t bits_b_u = bits_vecs[b](u);
-        recon = recon + pow2 * bits_b_u;   // operator+ and operator* are host-accessible
+        recon = recon + pow2 * bits_b_u;
         pow2  = pow2 * two;
     }
     if (recon != diffs_u)

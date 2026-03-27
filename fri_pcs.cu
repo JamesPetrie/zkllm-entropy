@@ -7,6 +7,7 @@
 // 3. The evaluation point u comes from verifier's random challenges AFTER commitment.
 
 #include "fri_pcs.cuh"
+#include "fr-tensor.cuh"
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -59,18 +60,21 @@ FriPcsCommitment FriPcs::commit(const Fr_t* gpu_data, uint n) {
 
 Fr_t FriPcs::open(const Fr_t* gpu_data, uint n,
                    const FriPcsCommitment& commitment,
-                   const std::vector<Fr_t>& u) {
+                   const std::vector<Fr_t>& u,
+                   bool skip_binding_check) {
     // Step 1: Verify data matches commitment (binding check)
-    MerkleTree tree(gpu_data, n);
-    Hash256 recomputed_root = tree.root();
-    if (recomputed_root != commitment.root) {
-        throw std::runtime_error("FriPcs::open: data does not match commitment");
+    if (!skip_binding_check) {
+        MerkleTree tree(gpu_data, n);
+        Hash256 recomputed_root = tree.root();
+        if (recomputed_root != commitment.root) {
+            throw std::runtime_error("FriPcs::open: data does not match commitment");
+        }
     }
 
-    // Step 2: Compute multilinear evaluation
-    std::vector<Fr_t> data_host(n);
-    cudaMemcpy(data_host.data(), gpu_data, n * sizeof(Fr_t), cudaMemcpyDeviceToHost);
-    return multilinear_eval_host(data_host, u);
+    // Step 2: Compute multilinear evaluation on GPU via FrTensor
+    FrTensor t(n);
+    cudaMemcpy(t.gpu_data, gpu_data, n * sizeof(Fr_t), cudaMemcpyDeviceToDevice);
+    return t(u);
 }
 
 Fr_t FriPcs::multilinear_eval_host(const std::vector<Fr_t>& data,

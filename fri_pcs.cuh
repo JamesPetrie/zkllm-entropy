@@ -48,9 +48,12 @@ public:
     // Open and verify: compute MLE(data, u) and check data matches commitment.
     // Returns the evaluation value.
     // Throws if the Merkle root doesn't match the commitment.
+    // If skip_binding_check is true, skips the Merkle tree rebuild
+    // (use when the commitment was self-computed from the same data).
     static Fr_t open(const Fr_t* gpu_data, uint n,
                      const FriPcsCommitment& commitment,
-                     const std::vector<Fr_t>& u);
+                     const std::vector<Fr_t>& u,
+                     bool skip_binding_check = false);
 
     // Compute multilinear evaluation on host.
     // Evaluates sum_i data[i] * eq(i, u) where eq is the multilinear equality polynomial.
