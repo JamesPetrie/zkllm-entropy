@@ -887,82 +887,8 @@ FrTensor FrTensor::pad(const vector<uint>& shape, const Fr_t& pad_val) const
 }
 
 
-// ── Optimized matmul: 16×16 thread block, 1×4 register blocking ──────────────
-// Each thread computes 4 output elements along the column dimension.
-// Block covers 16×64 output tile using 16×16 shared tiles with 4 B-column loads.
-// This gives 4× more computation per A shared memory load.
 
-#define MM_BK 16     // block dim (threads per dimension)
-#define MM_RJ 4      // register blocking along columns
-#define MM_TILE_M 16               // = MM_BK
-#define MM_TILE_N (MM_BK * MM_RJ)  // = 64
 
-KERNEL void matmul_reg_blocked(const Fr_t* __restrict__ A, const Fr_t* __restrict__ B,
-                               Fr_t* __restrict__ C, int M, int K, int N) {
-    __shared__ Fr_t A_smem[MM_TILE_M][MM_BK];   // 16×16 = 2 KB
-    __shared__ Fr_t B_smem[MM_BK][MM_TILE_N];   // 16×64 = 8 KB
-
-    const int tx = threadIdx.x;  // 0..15
-    const int ty = threadIdx.y;  // 0..15
-
-    const int row = blockIdx.y * MM_TILE_M + ty;
-    const int col_base = blockIdx.x * MM_TILE_N;
-
-    // Each thread accumulates 4 column values
-    Fr_t acc[MM_RJ];
-    #pragma unroll
-    for (int rj = 0; rj < MM_RJ; rj++)
-        acc[rj] = blstrs__scalar__Scalar_ZERO;
-
-    const int num_k_tiles = (K + MM_BK - 1) / MM_BK;
-    for (int kt = 0; kt < num_k_tiles; kt++) {
-        const int k_base = kt * MM_BK;
-
-        // Load A_smem[16][16]: one element per thread (coalesced)
-        if (row < M && k_base + tx < K)
-            A_smem[ty][tx] = A[row * K + k_base + tx];
-        else
-            A_smem[ty][tx] = blstrs__scalar__Scalar_ZERO;
-
-        // Load B_smem[16][64]: each thread loads 4 elements along columns
-        #pragma unroll
-        for (int rj = 0; rj < MM_RJ; rj++) {
-            int col = col_base + tx * MM_RJ + rj;
-            if (k_base + ty < K && col < N)
-                B_smem[ty][tx * MM_RJ + rj] = B[(k_base + ty) * N + col];
-            else
-                B_smem[ty][tx * MM_RJ + rj] = blstrs__scalar__Scalar_ZERO;
-        }
-
-        __syncthreads();
-
-        // Compute: inner loop over K=16
-        #pragma unroll
-        for (int kk = 0; kk < MM_BK; kk++) {
-            Fr_t a_val = A_smem[ty][kk];
-            #pragma unroll
-            for (int rj = 0; rj < MM_RJ; rj++) {
-                acc[rj] = blstrs__scalar__Scalar_add(
-                    acc[rj],
-                    blstrs__scalar__Scalar_mul(a_val, B_smem[kk][tx * MM_RJ + rj]));
-            }
-        }
-
-        __syncthreads();
-    }
-
-    // Write 4 results per thread
-    if (row < M) {
-        #pragma unroll
-        for (int rj = 0; rj < MM_RJ; rj++) {
-            int col = col_base + tx * MM_RJ + rj;
-            if (col < N)
-                C[row * N + col] = blstrs__scalar__Scalar_mont(acc[rj]);
-        }
-    }
-}
-
-// Old 16×16 kernel kept for reference / fallback
 KERNEL void matrixMultiplyOptimized(Fr_t* A, Fr_t* B, Fr_t* C, int rowsA, int colsA, int colsB) {
     __shared__ Fr_t A_tile[TILE_WIDTH][TILE_WIDTH];
     __shared__ Fr_t B_tile[TILE_WIDTH][TILE_WIDTH];
