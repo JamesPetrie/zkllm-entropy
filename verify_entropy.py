@@ -152,17 +152,20 @@ def main():
             poly_values.append(coeffs[0] if coeffs else (0,)*8)
 
         # ── Expected polynomials per position: 6 constants ────────────────────
-        # 0: logit_act   — MLE of logits at one-hot(actual_token)
-        # 1: diff_actual — v_star - logit_act
-        # 2: win_prob    — (1 - Phi(diff/sigma)) * cdf_scale
-        # 3: total_win   — sum of win_probs over all vocab
-        # 4: q_fr        — quantized probability index
-        # 5: surprise    — -log2(q_fr/2^log_precision)*log_scale
+        # Per-position polynomial layout (8 polynomials per position):
+        # 0: ind_sum     — indicator sum (argmax proof, should be 1)
+        # 1: ind_dot     — <ind, diffs> (argmax proof, should be 0)
+        # 2: logit_act   — MLE of logits at one-hot(actual_token)
+        # 3: diff_actual — v_star - logit_act
+        # 4: win_prob    — (1 - Phi(diff/sigma)) * cdf_scale
+        # 5: total_win   — vocab_size * cdf_scale (conservative public bound)
+        # 6: q_fr        — quantized probability index
+        # 7: surprise    — -log2(q_fr/2^log_precision)*log_scale
 
-        POLYS_PER_POS = 6
+        POLYS_PER_POS = 8
         if n_polys != T * POLYS_PER_POS:
             print(f"WARNING: expected {T * POLYS_PER_POS} polynomials for {T} positions "
-                  f"(6 each), got {n_polys}")
+                  f"({POLYS_PER_POS} each), got {n_polys}")
 
         # ── Verify each position ───────────────────────────────────────────────
         entropy_sum = 0
@@ -170,17 +173,20 @@ def main():
         n_fail = 0
         for pos in range(T):
             base = pos * POLYS_PER_POS
-            if base + 5 >= len(poly_values):
+            if base + POLYS_PER_POS - 1 >= len(poly_values):
                 print(f"  pos {pos}: not enough polynomials in proof")
                 n_fail += 1
                 continue
 
-            logit_act_w  = poly_values[base + 0]
-            diff_act_w   = poly_values[base + 1]
-            win_prob_w   = poly_values[base + 2]
-            total_win_w  = poly_values[base + 3]
-            q_fr_w       = poly_values[base + 4]
-            surprise_w   = poly_values[base + 5]
+            # Argmax proof polynomials (checked but not used for entropy verification)
+            ind_sum_w    = poly_values[base + 0]
+            ind_dot_w    = poly_values[base + 1]
+            logit_act_w  = poly_values[base + 2]
+            diff_act_w   = poly_values[base + 3]
+            win_prob_w   = poly_values[base + 4]
+            total_win_w  = poly_values[base + 5]
+            q_fr_w       = poly_values[base + 6]
+            surprise_w   = poly_values[base + 7]
 
             # Extract scalar values (lower 64 bits, all should be non-negative small integers)
             diff_actual = fr_to_ull(diff_act_w)
@@ -191,6 +197,16 @@ def main():
 
             pos_ok = True
             errors = []
+
+            # Check 0: argmax proof — ind_sum must be 1, ind_dot must be 0
+            ind_sum = fr_to_ull(ind_sum_w)
+            ind_dot = fr_to_ull(ind_dot_w)
+            if ind_sum != 1:
+                errors.append(f"argmax: indicator sum={ind_sum}, expected 1")
+                pos_ok = False
+            if ind_dot != 0:
+                errors.append(f"argmax: <ind, diffs>={ind_dot}, expected 0 (v_star not in logits)")
+                pos_ok = False
 
             # Check 1: win_prob == cdf_scale - cdf_table[diff_actual]
             d_clamped = min(diff_actual, cdf_len - 1)
