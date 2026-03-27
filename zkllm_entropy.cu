@@ -17,7 +17,7 @@
 // Usage:
 //   ./zkllm_entropy <workdir> <tokens_file> <proof_output> <sigma_eff>
 //                  [seq_len=1024] [hidden_size=4096] [vocab_size=32000]
-//                  [bit_width=16] [cdf_precision=12] [log_precision=15]
+//                  [bit_width=32] [cdf_precision=12] [log_precision=15]
 //                  [cdf_scale=65536] [log_scale=65536]
 //
 // Required files in <workdir>:
@@ -74,7 +74,7 @@ int main(int argc, char* argv[]) {
         cerr << "Usage: " << argv[0]
              << " <workdir> <tokens_file> <proof_output> <sigma_eff>\n"
              << "       [seq_len=1024] [hidden_size=4096] [vocab_size=32000]\n"
-             << "       [bit_width=16] [cdf_precision=12] [log_precision=15]\n"
+             << "       [bit_width=32] [cdf_precision=12] [log_precision=15]\n"
              << "       [cdf_scale=65536] [log_scale=65536]\n";
         return 1;
     }
