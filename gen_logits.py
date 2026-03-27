@@ -86,38 +86,20 @@ np.savetxt(tokens_path, greedy_tokens.astype(np.int64), fmt='%d')
 print(f"Saved greedy tokens to {tokens_path}", flush=True)
 
 # ---------------------------------------------------------------------------
-# Quantise and save per-position logit tensors as raw int32 (Fr_t layout)
+# Quantise and save per-position logit tensors as raw int32 binary
 # ---------------------------------------------------------------------------
-# Fr_t is 8 x uint32 (256 bits).  For small integers we only use the first
-# two uint32 words (little-endian 64-bit), words 2-7 are zero.
-# We store each logit value as a signed 32-bit integer in the first word,
-# matching the convention in run_proofs.py (int32, scaled by logit_scale).
+# Each logit is a signed 32-bit integer (scaled by logit_scale).
+# The C++ code loads these via FrTensor::from_int_bin() which reads int32
+# values and converts to field elements on the GPU — works for any field.
 logits_scaled = (logits_float * args.logit_scale).round().to(torch.int32).cpu().numpy()
 # Shape: (seq_len, vocab_size)
 
 print(f"Saving {args.seq_len} per-position logit tensors to {OUTPUT_DIR}/...", flush=True)
 
-# We write each as a raw binary of (vocab_size * 8 * 4) bytes so it loads
-# as an FrTensor of size vocab_size.  Each Fr_t word is uint32; we pack:
-#   word0 = (uint32)val  [lower 32 bits of int32]
-#   word1 = 0 if val >= 0 else 0xFFFFFFFF  [sign extension? no — field elements]
-# Actually zkLLM uses non-negative scaled integers for logits (shifted so min=0),
-# but to keep consistent with the existing pipeline we store as int32 in word0
-# with word1..word7 = 0 for positive values, and use field representation p-|x|
-# for negative values (stored naturally as unsigned field elements via modular arith).
-# Simplest correct approach: cast int32 to uint32 bit-pattern in word0, zeros elsewhere.
-# This matches how from_longs() in test_zkargmax.cu encodes values.
-
-FR_T_WORDS = 8
-FR_T_BYTES = FR_T_WORDS * 4  # 32 bytes per Fr_t
-
 for t in range(args.seq_len):
     row = logits_scaled[t]  # shape (vocab_size,) int32
-    # Pack into Fr_t layout: word0 = uint32(val), words 1-7 = 0
-    buf = np.zeros((vocab_size, FR_T_WORDS), dtype=np.uint32)
-    buf[:, 0] = row.view(np.uint32)  # reinterpret int32 bits as uint32
     out_path = os.path.join(OUTPUT_DIR, f"logits_{t}.bin")
-    buf.tofile(out_path)
+    row.tofile(out_path)
 
 print(f"Saved logit tensors.", flush=True)
 

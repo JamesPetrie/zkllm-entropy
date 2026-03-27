@@ -17,7 +17,12 @@ Usage:
 import struct, math, sys, argparse
 
 MAGIC     = 0x5A4B454E54524F50
-FR_T_SIZE = 32  # bytes
+
+# Field element size depends on the field.  Set USE_GOLDILOCKS=True when
+# verifying proofs produced by the Goldilocks build.
+import os
+USE_GOLDILOCKS = os.environ.get("USE_GOLDILOCKS", "0") not in ("0", "")
+FR_T_SIZE = 8 if USE_GOLDILOCKS else 32  # bytes
 
 
 def phi(x):
@@ -40,20 +45,27 @@ def log_table_value(q_fr, log_precision, log_scale):
 
 
 def read_fr(f):
-    """Read one 256-bit field element (8 x uint32, little-endian)."""
+    """Read one field element (Goldilocks: 8 bytes / uint64; BLS12-381: 32 bytes / 8 x uint32)."""
     data = f.read(FR_T_SIZE)
     if len(data) < FR_T_SIZE:
         raise EOFError("Unexpected end of proof file reading Fr_t")
+    if USE_GOLDILOCKS:
+        return struct.unpack('<Q', data)   # 1-tuple of uint64
     return struct.unpack('<8I', data)
 
 
 def fr_to_ull(words):
-    """Lower 64 bits of an Fr_t word array."""
+    """Extract uint64 value from an Fr_t word tuple."""
+    if USE_GOLDILOCKS:
+        return words[0]
     return words[0] | (words[1] << 32)
 
 
 def fr_nonzero_high(words):
-    """True if any of words[2..7] are non-zero (large field element / negative)."""
+    """True if the field element represents a 'negative' (large) value."""
+    if USE_GOLDILOCKS:
+        GOLDILOCKS_P = (1 << 64) - (1 << 32) + 1
+        return words[0] > (GOLDILOCKS_P >> 1)
     return any(words[2:])
 
 
