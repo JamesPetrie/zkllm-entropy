@@ -70,14 +70,14 @@ Fr_t zkConditionalEntropy::computePosition(const FrTensor& logits, uint actual_t
     Fr_t cdf_scale_fr = FR_FROM_INT(cdf_scale);
     FrTensor win_probs_all = -(cdf_vals_all - cdf_scale_fr);
     Fr_t win_prob    = win_probs_all(actual_token);
-    Fr_t total_win_f = win_probs_all.sum();
 
     // 4. q_idx = floor(win_prob[actual] * 2^log_precision / total_win).
+    //    Use conservative total_win = vocab_size * cdf_scale (public constant)
+    //    to match the prove function and avoid soundness gap.
     unsigned long long wp    = fr_to_ull(win_prob);
     unsigned long long lp    = 1ULL << log_precision;
-    unsigned long long denom = fr_to_ull(total_win_f);
-    if (denom == 0) denom = 1;
-    unsigned long long q_idx = (denom > 0) ? (wp * lp) / denom : 1ULL;
+    unsigned long long denom = (unsigned long long)vocab_size * cdf_scale;
+    unsigned long long q_idx = (wp * lp) / denom;
     if (q_idx < 1)  q_idx = 1;
     if (q_idx > lp) q_idx = lp;
 
