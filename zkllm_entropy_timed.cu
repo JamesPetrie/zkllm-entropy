@@ -204,7 +204,7 @@ int main(int argc, char* argv[]) {
             uint32_t n_coeffs = (deg >= 0) ? (uint32_t)(deg + 1) : 0u;
             f.write((char*)&n_coeffs, sizeof(n_coeffs));
             for (uint32_t k = 0; k < n_coeffs; k++) {
-                Fr_t xk = {k, 0, 0, 0, 0, 0, 0, 0};
+                Fr_t xk = FR_FROM_INT(k);
                 Fr_t yk = const_cast<Polynomial&>(poly)(xk);
                 f.write((char*)&yk, sizeof(Fr_t));
             }

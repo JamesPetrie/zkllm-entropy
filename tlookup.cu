@@ -366,8 +366,8 @@ Fr_t tLookup::prove(const FrTensor& S, const FrTensor& m, const Fr_t& alpha, con
     
     Fr_t alpha_sq = alpha * alpha;
     Fr_t claim = alpha + alpha_sq;
-    Fr_t N_Fr = {N, 0, 0, 0, 0, 0, 0, 0};
-    Fr_t D_Fr = {D, 0, 0, 0, 0, 0, 0, 0};
+    Fr_t N_Fr = FR_FROM_INT(N);
+    Fr_t D_Fr = FR_FROM_INT(D);
 
     return tLookup_phase1(claim, A, S, B, table, m, 
         alpha, beta, C, N_Fr / D_Fr, alpha_sq, 
@@ -505,7 +505,7 @@ pair<FrTensor, FrTensor> tLookupRangeMapping::operator()(const FrTensor& vals)
 KERNEL void tlookuprange_pad_m(Fr_t* m_ptr, uint index_padded, uint num_added)
 {
     if (threadIdx.x == 0 && blockIdx.x == 0)
-        m_ptr[index_padded] = blstrs__scalar__Scalar_add(m_ptr[index_padded], {num_added, 0, 0, 0, 0, 0, 0, 0});
+        m_ptr[index_padded] = blstrs__scalar__Scalar_add(m_ptr[index_padded], FR_FROM_INT(num_added));
 }
 
 Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, const FrTensor& m, 
@@ -559,8 +559,8 @@ Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, con
     
     Fr_t alpha_sq = alpha * alpha;
     Fr_t claim = alpha + alpha_sq;
-    Fr_t N_Fr = {N, 0, 0, 0, 0, 0, 0, 0};
-    Fr_t D_Fr = {D, 0, 0, 0, 0, 0, 0, 0};
+    Fr_t N_Fr = FR_FROM_INT(N);
+    Fr_t D_Fr = FR_FROM_INT(D);
 
     return tLookup_phase1(claim, A, S_com, B, T_com, m, 
         alpha, beta, C, N_Fr / D_Fr, alpha_sq, 
