@@ -42,7 +42,7 @@ $(TARGETS): % : %.o $(CU_OBJS) $(CPP_OBJS)
 
 # ── Standalone Goldilocks targets (no BLS12-381 dependency) ──────────────────
 GOLD_FLAG := -DUSE_GOLDILOCKS
-GOLD_SRCS := goldilocks.cu fr-tensor.cu proof.cu polynomial.cu ioutils.cu ntt.cu merkle.cu fri.cu
+GOLD_SRCS := goldilocks.cu fr-tensor.cu proof.cu polynomial.cu ioutils.cu ntt.cu merkle.cu fri.cu fri_pcs.cu
 GOLD_OBJS := $(GOLD_SRCS:%.cu=gold_%.o)
 
 gold_%.o: %.cu
@@ -67,9 +67,12 @@ test_merkle: gold_test_merkle.o $(GOLD_OBJS)
 test_fri: gold_test_fri.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
+test_fri_pcs: gold_test_fri_pcs.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
 # Clean rule
 clean:
-	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS) test_goldilocks test_goldilocks.o goldilocks.o $(GOLD_OBJS) gold_test_gold_tensor.o test_gold_tensor gold_test_ntt.o test_ntt gold_test_merkle.o test_merkle gold_test_fri.o test_fri
+	rm -f $(TARGET_OBJS) $(CU_OBJS) $(CPP_OBJS) $(TARGETS) test_goldilocks test_goldilocks.o goldilocks.o $(GOLD_OBJS) gold_test_gold_tensor.o test_gold_tensor gold_test_ntt.o test_ntt gold_test_merkle.o test_merkle gold_test_fri.o test_fri gold_test_fri_pcs.o test_fri_pcs gold_fri_pcs.o
 
 # Default rule
 all: $(TARGETS)
