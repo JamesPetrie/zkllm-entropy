@@ -1,8 +1,7 @@
 #ifndef TLOOKUP_CUH
 #define TLOOKUP_CUH
 
-#include "bls12-381.cuh"  // adjust this to point to the blstrs header file
-#include "fr-tensor.cuh" 
+#include "fr-tensor.cuh"
 #include "polynomial.cuh"
 #include "proof.cuh"
 

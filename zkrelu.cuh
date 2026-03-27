@@ -3,8 +3,7 @@
 
 #include <cstddef>
 #include <cuda_runtime.h>
-#include "bls12-381.cuh"  // adjust this to point to the blstrs header file
-#include "fr-tensor.cuh" 
+#include "fr-tensor.cuh"
 #include "tlookup.cuh"
 #include "proof.cuh"
 

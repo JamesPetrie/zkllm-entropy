@@ -6,10 +6,11 @@
 #include <cstddef>
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
-#include "bls12-381.cuh"  // adjust this to point to the blstrs header file
 #include "fr-tensor.cuh"
 #include "proof.cuh"
+#ifndef USE_GOLDILOCKS
 #include "commitment.cuh"
+#endif
 #include "polynomial.cuh"
 
 
