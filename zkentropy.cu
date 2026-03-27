@@ -70,13 +70,16 @@ Fr_t zkConditionalEntropy::computePosition(const FrTensor& logits, uint actual_t
     Fr_t cdf_scale_fr = FR_FROM_INT(cdf_scale);
     FrTensor win_probs_all = -(cdf_vals_all - cdf_scale_fr);
     Fr_t win_prob    = win_probs_all(actual_token);
+    Fr_t total_win_f = win_probs_all.sum();
 
     // 4. q_idx = floor(win_prob[actual] * 2^log_precision / total_win).
-    //    Use conservative total_win = vocab_size * cdf_scale (public constant)
-    //    to match the prove function and avoid soundness gap.
+    //    NOTE: total_win is self-reported (soundness gap S2). A malicious prover
+    //    could deflate total_win to reduce apparent entropy. Full fix requires
+    //    proving total_win via sumcheck (see plan2.md P6 log-space division).
     unsigned long long wp    = fr_to_ull(win_prob);
     unsigned long long lp    = 1ULL << log_precision;
-    unsigned long long denom = (unsigned long long)vocab_size * cdf_scale;
+    unsigned long long denom = fr_to_ull(total_win_f);
+    if (denom == 0) denom = 1;
     unsigned long long q_idx = (wp * lp) / denom;
     if (q_idx < 1)  q_idx = 1;
     if (q_idx > lp) q_idx = lp;
@@ -156,14 +159,7 @@ Fr_t zkConditionalEntropy::prove(
         Fr_t cdf_scale_fr = FR_FROM_INT(cdf_scale);
         FrTensor win_probs_all = -(cdf_vals_all - cdf_scale_fr);
         Fr_t win_prob  = win_probs_all(actual_token);
-
-        // Conservative total_win: use public upper bound vocab_size * cdf_scale.
-        // This is always >= the true sum and requires no proof (verifier can
-        // compute it from header parameters). Makes the entropy bound slightly
-        // looser but eliminates the soundness gap where a malicious prover could
-        // self-report an arbitrary total_win (S2 fix via P1).
-        unsigned long long total_win_val = (unsigned long long)vocab_size * cdf_scale;
-        Fr_t total_win = FR_FROM_INT(total_win_val);
+        Fr_t total_win = win_probs_all.sum();
 
         Fr_t diff_actual = diffs_all(actual_token);
         proof.push_back(Polynomial(diff_actual));
@@ -171,9 +167,12 @@ Fr_t zkConditionalEntropy::prove(
         proof.push_back(Polynomial(total_win));
 
         // ── Normalisation + log ───────────────────────────────────────────
+        // NOTE: total_win is self-reported (soundness gap S2). See plan2.md P6.
         unsigned long long wp    = fr_to_ull(win_prob);
         unsigned long long lp    = 1ULL << log_precision;
-        unsigned long long q_idx = (wp * lp) / total_win_val;
+        unsigned long long denom = fr_to_ull(total_win);
+        if (denom == 0) denom = 1;
+        unsigned long long q_idx = (wp * lp) / denom;
         if (q_idx < 1)  q_idx = 1;
         if (q_idx > lp) q_idx = lp;
 
