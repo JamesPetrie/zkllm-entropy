@@ -212,7 +212,17 @@ After correctness is established, optimize for throughput:
 - Poseidon2 over Goldilocks uses native 64-bit field arithmetic (which we already have) — potentially 3–10× faster than SHA-256 on GPU.
 - Drop-in replacement in `merkle.cu` (change leaf/pair hash functions).
 
-**7d. Fiat-Shamir transcript**
+**7d. Compressed weight storage (int8/int16 → Gold_t expansion)**
+- Model weights are quantized to small integers (typically 8-bit or 16-bit range) but stored as full field elements (8 bytes for Goldilocks, 32 bytes for BLS12-381).
+- Optimization: store weights in their native int8/int16 representation and expand to Gold_t (uint64) on the fly via a simple widening cast.
+- This cuts weight memory by 4–8× compared to 8-byte Goldilocks storage.
+- Impact depends on which operations are memory-bandwidth-bound:
+  - **Merkle tree hashing** (read-once, hash): directly bandwidth-bound — would benefit most.
+  - **NTT for FRI commitment**: bandwidth-heavy with poor stride locality at large sizes — moderate benefit.
+  - **Sumcheck/field arithmetic**: compute-bound (many multiplies per element loaded) — minimal benefit.
+- For a 7B-parameter model, this reduces weight storage from ~56 GB (8 bytes × 7B) to ~7–14 GB (1–2 bytes × 7B), making it feasible to hold multiple weight matrices in GPU memory simultaneously.
+
+**7e. Fiat-Shamir transcript**
 - Current: simple hash mixing (placeholder).
 - Target: proper Merlin-style transcript or Poseidon2-based sponge for non-interactive proofs (needed if we want to generate proofs offline).
 
