@@ -3,11 +3,16 @@
 // Communicates with the prover process via pipes.  Receives proof polynomials,
 // checks each one, generates random challenges, and sends them back.
 //
-// The verifier knows the proof structure from public parameters and checks
-// sumcheck round polynomials (p(0) + p(1) == claim) as they arrive.
+// Verification checks performed:
+//   - Sumcheck round: p(0) + p(1) == claim
+//   - IP sumcheck final: a * b == claim
+//   - HP sumcheck: replay non-interactive rounds with pre-recorded challenges,
+//     verify a * b * eq(u, v) == final_claim
+//   - tLookup finals: A == 1/(S+beta), B == 1/(T+beta),
+//     T matches public table MLE at challenge point
 //
 // Build: g++ -std=c++17 -O2 -DUSE_GOLDILOCKS -I verifier -o interactive_verifier verifier/interactive_verifier.cpp -lm
-// Usage: ./interactive_verifier [--verbose] -- ./gold_zkllm_entropy <args...>
+// Usage: ./interactive_verifier [--verbose] [--params T,V,H,cdf_prec,log_prec,cdf_scale,log_scale,sigma] -- <prover_command> [args...]
 
 #include "verifier_utils.h"
 #include "sumcheck_verifier.h"
@@ -93,14 +98,6 @@ struct ProofParams {
 };
 
 // ── Interaction sequence ────────────────────────────────────────────────────
-// Each Interaction = one PipeChallengeSource::next() call = one challenge sent.
-// polys_before = how many 'P' messages arrive before this challenge.
-//
-// For verification, we annotate each interaction:
-//   CHALLENGE_ONLY:  no check, just send a challenge
-//   SUMCHECK_ROUND:  check the LAST poly in the batch: p(0)+p(1)==claim
-//   IP_FINALS:       check the FIRST 2 polys in the batch: claim==a*b
-//                    (may have additional polys after which are the next round)
 
 enum class Tag {
     CHALLENGE_ONLY,
@@ -108,56 +105,73 @@ enum class Tag {
     SUMCHECK_ROUND_FIRST,    // first round of a new sumcheck (record claim, don't check)
     IP_FINALS_ONLY,          // batch contains exactly 2 IP final polys
     IP_FINALS_THEN_ROUND,    // batch starts with 2 IP finals, ends with new round poly
+    HP_SUMCHECK_BATCH,       // batch has hp_rounds round polys + 2 finals
+    TLOOKUP_FINALS,          // batch has 5 tLookup final evaluations (A, S, B, T, m)
 };
 
 struct Interaction {
     uint32_t polys_before;
     Tag tag;
     std::string label;
+    uint32_t hp_rounds;      // only for HP_SUMCHECK_BATCH
 };
 
 // ── ProofSimulator ──────────────────────────────────────────────────────────
 
 class ProofSimulator {
     uint32_t pending_ = 0;
-    bool ip_finals_pending_ = false;  // true if 2 IP final polys are in pending
+    bool ip_finals_pending_ = false;
+    bool hp_batch_pending_ = false;
+    uint32_t hp_batch_rounds_ = 0;
+    bool tlookup_finals_pending_ = false;
 
 public:
     std::vector<Interaction> interactions;
 
     void push_poly() { pending_++; }
 
-    // Record that 2 IP final polys were just pushed (no challenge after them)
     void push_ip_finals() {
         push_poly();
         push_poly();
         ip_finals_pending_ = true;
     }
 
-    void emit(Tag tag, const std::string& label) {
-        interactions.push_back({pending_, tag, label});
-        pending_ = 0;
-        ip_finals_pending_ = false;
+    void push_hp_batch(uint32_t rounds) {
+        for (uint32_t i = 0; i < rounds; i++) push_poly();
+        push_poly(); push_poly();  // finals
+        hp_batch_pending_ = true;
+        hp_batch_rounds_ = rounds;
     }
 
-    // Emit a challenge-only interaction (possibly flushing pending polys)
+    void push_tlookup_finals() {
+        for (int i = 0; i < 5; i++) push_poly();
+        tlookup_finals_pending_ = true;
+    }
+
+    void emit(Tag tag, const std::string& label, uint32_t hp_rounds = 0) {
+        interactions.push_back({pending_, tag, label, hp_rounds});
+        pending_ = 0;
+        ip_finals_pending_ = false;
+        hp_batch_pending_ = false;
+        tlookup_finals_pending_ = false;
+    }
+
     void challenge_only(const std::string& label) {
-        if (ip_finals_pending_ && pending_ == 2) {
+        if (hp_batch_pending_) {
+            emit(Tag::HP_SUMCHECK_BATCH, label, hp_batch_rounds_);
+        } else if (tlookup_finals_pending_ && pending_ == 5) {
+            emit(Tag::TLOOKUP_FINALS, label);
+        } else if (ip_finals_pending_ && pending_ == 2) {
             emit(Tag::IP_FINALS_ONLY, label);
         } else {
-            // If ip_finals_pending_ with extra polys (HP sumcheck case),
-            // the finals are buried in a batch with round polys and can't
-            // be verified without replaying the non-interactive rounds.
-            // Just flush everything without IP final check.
             ip_finals_pending_ = false;
+            tlookup_finals_pending_ = false;
             emit(Tag::CHALLENGE_ONLY, label);
         }
     }
 
-    // Emit a sumcheck round (1 round poly was just pushed, then challenge)
     void sumcheck_round(const std::string& label, bool is_first) {
         if (ip_finals_pending_) {
-            // The pending batch has: 2 IP finals + 1 round poly = 3
             emit(Tag::IP_FINALS_THEN_ROUND, label);
         } else if (is_first) {
             emit(Tag::SUMCHECK_ROUND_FIRST, label);
@@ -184,9 +198,11 @@ public:
         uint32_t p2 = ceil_log2(N);
         for (uint32_t i = 0; i < p2; i++) {
             push_poly();
-            // First round of phase2 is NOT first overall if phase1 had rounds
             sumcheck_round(s + " ph2 r" + std::to_string(i), i == 0 && p1 == 0);
         }
+
+        // 5 final evaluations pushed at phase2 base case (no challenge)
+        push_tlookup_finals();
     }
 
     void simulate_tlookup_range_mapping(uint32_t D, uint32_t N, const std::string& s) {
@@ -214,10 +230,7 @@ public:
             challenge_only(s + " u[" + std::to_string(i) + "]");
         for (uint32_t i = 0; i < rounds; i++)
             challenge_only(s + " v[" + std::to_string(i) + "]");
-        // Non-interactive: rounds polys + 2 finals, all pending
-        for (uint32_t i = 0; i < rounds; i++)
-            push_poly();
-        push_ip_finals();
+        push_hp_batch(rounds);
     }
 
     void simulate_rescaling(uint32_t size, uint32_t sf, const std::string& s) {
@@ -318,6 +331,10 @@ struct Stats {
     uint32_t sc_checks_failed = 0;
     uint32_t ip_checks_passed = 0;
     uint32_t ip_checks_failed = 0;
+    uint32_t hp_checks_passed = 0;
+    uint32_t hp_checks_failed = 0;
+    uint32_t tl_checks_passed = 0;
+    uint32_t tl_checks_failed = 0;
     std::vector<std::string> errors;
 
     void error(const std::string& msg) {
@@ -325,6 +342,211 @@ struct Stats {
         fprintf(stderr, "  FAIL: %s\n", msg.c_str());
     }
 };
+
+// ── tLookup section state ──────────────────────────────────────────────────
+
+struct TLookupState {
+    Fr_t alpha = FR_ZERO;
+    Fr_t beta = FR_ZERO;
+    Fr_t r = FR_ZERO;        // combining challenge for range-mapped
+    bool has_r = false;
+    std::vector<Fr_t> phase2_challenges;
+};
+
+// ── Public table builders ──────────────────────────────────────────────────
+
+// Build the combined table T_com[j] = table_j + r * mapped_j for range-mapped tLookup
+static std::vector<Fr_t> build_combined_table(
+    const std::string& section, Fr_t r, const ProofParams& params)
+{
+    if (section == "CDF") {
+        auto mapped = build_cdf_table(params.cdf_precision, params.cdf_scale, params.sigma_eff);
+        uint32_t N = mapped.size();
+        std::vector<Fr_t> combined(N);
+        for (uint32_t j = 0; j < N; j++) {
+            Fr_t table_j = fr_from_u64(j);  // CDF range starts at 0
+            combined[j] = fr_add(table_j, fr_mul(r, mapped[j]));
+        }
+        return combined;
+    }
+    if (section == "log") {
+        auto mapped = build_log_table(params.log_precision, params.log_scale);
+        uint32_t N = mapped.size();
+        std::vector<Fr_t> combined(N);
+        for (uint32_t j = 0; j < N; j++) {
+            Fr_t table_j = fr_from_u64(j + 1);  // log range starts at 1
+            combined[j] = fr_add(table_j, fr_mul(r, mapped[j]));
+        }
+        return combined;
+    }
+    return {};
+}
+
+// Build the plain range table for rescaling tLookup: [low, low+1, ..., low+N-1]
+static std::vector<Fr_t> build_range_table(int32_t low, uint32_t N) {
+    std::vector<Fr_t> table(N);
+    for (uint32_t j = 0; j < N; j++) {
+        int32_t val = (int32_t)j + low;
+        // Convert signed to field element (wraps modulo p for negative values)
+        if (val >= 0)
+            table[j] = fr_from_u64((uint64_t)val);
+        else
+            table[j] = fr_neg(fr_from_u64((uint64_t)(-val)));
+    }
+    return table;
+}
+
+// Determine which section a tLookup belongs to and get its public table
+static std::vector<Fr_t> get_public_table(
+    const std::string& label, const TLookupState& tl, const ProofParams& params)
+{
+    // Range-mapped tLookups (have r challenge)
+    if (tl.has_r) {
+        if (label.find("CDF") != std::string::npos)
+            return build_combined_table("CDF", tl.r, params);
+        if (label.find("log") != std::string::npos)
+            return build_combined_table("log", tl.r, params);
+    }
+    // Rescaling tLookups (plain range tables)
+    uint32_t sf = params.scaling_factor;
+    uint32_t N = next_pow2(sf);
+    int32_t low = -(int32_t)(sf >> 1);
+    return build_range_table(low, N);
+}
+
+// ── HP sumcheck verification ───────────────────────────────────────────────
+
+static bool verify_hp_batch(
+    const std::vector<std::vector<Fr_t>>& polys,
+    uint32_t hp_rounds,
+    const std::vector<Fr_t>& hp_u,
+    const std::vector<Fr_t>& hp_v,
+    Stats& stats,
+    bool verbose,
+    const std::string& label)
+{
+    if (polys.size() < hp_rounds + 2) {
+        stats.error("HP: expected " + std::to_string(hp_rounds + 2) +
+                    " polys, got " + std::to_string(polys.size()));
+        return false;
+    }
+
+    // First round: initial claim = p(0) + p(1)
+    auto& e0 = polys[0];
+    if (e0.size() < 2) {
+        stats.error("HP: first round poly too short");
+        return false;
+    }
+    Fr_t claim = fr_add(e0[0], e0[1]);
+    if (verbose) printf("  [HP] initial claim=%lu\n", claim.val);
+
+    // Verify each round using pre-recorded v[i] as the challenge
+    bool all_ok = true;
+    for (uint32_t i = 0; i < hp_rounds; i++) {
+        auto& e = polys[i];
+        if (e.size() < 2) {
+            stats.error("HP round " + std::to_string(i) + ": poly too short");
+            return false;
+        }
+        Fr_t sum = fr_add(e[0], e[1]);
+        if (sum != claim) {
+            stats.hp_checks_failed++;
+            stats.error("HP round " + std::to_string(i) + ": p(0)+p(1)=" +
+                        std::to_string(sum.val) + " != claim=" +
+                        std::to_string(claim.val));
+            all_ok = false;
+        } else {
+            stats.hp_checks_passed++;
+            if (verbose) printf("  [HP r%u] p(0)+p(1)==claim OK\n", i);
+        }
+        // Advance claim using v[i] as the folding challenge
+        claim = lagrange_eval(e, hp_v[i]);
+    }
+
+    // Final check: claim == a * b * eq(u, v)
+    Fr_t final_a = polys[hp_rounds].empty() ? FR_ZERO : polys[hp_rounds][0];
+    Fr_t final_b = polys[hp_rounds + 1].empty() ? FR_ZERO : polys[hp_rounds + 1][0];
+    Fr_t eq = eq_eval(hp_u, hp_v);
+    Fr_t expected = fr_mul(fr_mul(final_a, final_b), eq);
+
+    if (expected == claim) {
+        stats.hp_checks_passed++;
+        if (verbose) printf("  [HP] final a*b*eq(u,v)==claim OK\n");
+    } else {
+        stats.hp_checks_failed++;
+        stats.error("HP final: a*b*eq=" + std::to_string(expected.val) +
+                    " != claim=" + std::to_string(claim.val));
+        all_ok = false;
+    }
+
+    return all_ok;
+}
+
+// ── tLookup final verification ─────────────────────────────────────────────
+
+static bool verify_tlookup_finals(
+    const std::vector<std::vector<Fr_t>>& polys,
+    const TLookupState& tl,
+    const ProofParams& params,
+    Stats& stats,
+    bool verbose,
+    const std::string& label)
+{
+    if (polys.size() < 5) {
+        stats.error("tLookup finals: expected 5 polys, got " + std::to_string(polys.size()));
+        return false;
+    }
+
+    Fr_t final_A = polys[0].empty() ? FR_ZERO : polys[0][0];
+    Fr_t final_S = polys[1].empty() ? FR_ZERO : polys[1][0];
+    Fr_t final_B = polys[2].empty() ? FR_ZERO : polys[2][0];
+    Fr_t final_T = polys[3].empty() ? FR_ZERO : polys[3][0];
+    Fr_t final_m = polys[4].empty() ? FR_ZERO : polys[4][0];
+
+    bool all_ok = true;
+
+    // Check A = 1/(S + beta)
+    Fr_t s_plus_beta = fr_add(final_S, tl.beta);
+    Fr_t expected_A = fr_inverse(s_plus_beta);
+    if (expected_A == final_A) {
+        stats.tl_checks_passed++;
+        if (verbose) printf("  [%s] tL A==1/(S+beta) OK\n", label.c_str());
+    } else {
+        stats.tl_checks_failed++;
+        stats.error("tLookup A != 1/(S+beta) at " + label);
+        all_ok = false;
+    }
+
+    // Check B = 1/(T + beta)
+    Fr_t t_plus_beta = fr_add(final_T, tl.beta);
+    Fr_t expected_B = fr_inverse(t_plus_beta);
+    if (expected_B == final_B) {
+        stats.tl_checks_passed++;
+        if (verbose) printf("  [%s] tL B==1/(T+beta) OK\n", label.c_str());
+    } else {
+        stats.tl_checks_failed++;
+        stats.error("tLookup B != 1/(T+beta) at " + label);
+        all_ok = false;
+    }
+
+    // Check T matches public table MLE at phase2 challenge point
+    auto public_table = get_public_table(label, tl, params);
+    if (!public_table.empty() && !tl.phase2_challenges.empty()) {
+        Fr_t expected_T = mle_eval(public_table, tl.phase2_challenges);
+        if (expected_T == final_T) {
+            stats.tl_checks_passed++;
+            if (verbose) printf("  [%s] tL T==table_MLE(v) OK\n", label.c_str());
+        } else {
+            stats.tl_checks_failed++;
+            stats.error("tLookup T != table_MLE at " + label +
+                        ": got " + std::to_string(final_T.val) +
+                        " expected " + std::to_string(expected_T.val));
+            all_ok = false;
+        }
+    }
+
+    return all_ok;
+}
 
 // ── Main verification loop ──────────────────────────────────────────────────
 
@@ -334,11 +556,22 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
     sim.simulate_full_proof(params);
     auto& seq = sim.interactions;
 
-    printf("Interactive verifier started (%zu interactions expected).\n", seq.size());
+    uint32_t total_polys = 0;
+    for (auto& i : seq) total_polys += i.polys_before;
+    printf("Interactive verifier started (%zu interactions, %u polys expected).\n",
+           seq.size(), total_polys);
 
     Stats stats;
-    Fr_t claim = FR_ZERO;         // current sumcheck claim
-    bool claim_valid = false;     // whether we have a claim to check against
+    Fr_t claim = FR_ZERO;
+    bool claim_valid = false;
+
+    // HP sumcheck state
+    std::vector<Fr_t> hp_u, hp_v;
+
+    // tLookup section state
+    TLookupState current_tl;
+    std::string current_tl_section;  // e.g. "CDF", "log", "lm-rs tL"
+    bool in_tl_phase2 = false;
 
     for (size_t idx = 0; idx < seq.size(); idx++) {
         const auto& inter = seq[idx];
@@ -360,11 +593,9 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
         switch (inter.tag) {
 
         case Tag::CHALLENGE_ONLY:
-            // No verification; just send challenge
             break;
 
         case Tag::SUMCHECK_ROUND_FIRST: {
-            // First round of a new sumcheck — record the initial claim
             if (polys.empty() || polys.back().size() < 2) {
                 stats.error("Missing poly for first round at " + inter.label);
                 break;
@@ -396,7 +627,6 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
         }
 
         case Tag::IP_FINALS_ONLY: {
-            // Batch has 2 IP final polys (degree-0)
             if (polys.size() >= 2) {
                 Fr_t a = polys[0].empty() ? FR_ZERO : polys[0][0];
                 Fr_t b = polys[1].empty() ? FR_ZERO : polys[1][0];
@@ -416,7 +646,6 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
         }
 
         case Tag::IP_FINALS_THEN_ROUND: {
-            // First 2 polys are IP finals, last poly is new sumcheck round
             if (polys.size() >= 2) {
                 Fr_t a = polys[0].empty() ? FR_ZERO : polys[0][0];
                 Fr_t b = polys[1].empty() ? FR_ZERO : polys[1][0];
@@ -431,8 +660,6 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
                                 " at " + inter.label);
                 }
             }
-
-            // New sumcheck: last poly is the round poly
             if (!polys.empty() && polys.back().size() >= 2) {
                 auto& e = polys.back();
                 claim = fr_add(e[0], e[1]);
@@ -442,6 +669,23 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
             }
             break;
         }
+
+        case Tag::HP_SUMCHECK_BATCH: {
+            verify_hp_batch(polys, inter.hp_rounds, hp_u, hp_v, stats, verbose, inter.label);
+            claim_valid = false;
+            break;
+        }
+
+        case Tag::TLOOKUP_FINALS: {
+            verify_tlookup_finals(polys, current_tl, params, stats, verbose, current_tl_section);
+            claim_valid = false;
+            // Reset tLookup state for next section
+            current_tl = TLookupState{};
+            current_tl_section.clear();
+            in_tl_phase2 = false;
+            break;
+        }
+
         } // switch
 
         // 3. Generate and send challenge
@@ -458,6 +702,37 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
                 claim = lagrange_eval(e, ch);
                 claim_valid = true;
             }
+        }
+
+        // 5. Track section-specific state from labels
+        const auto& lbl = inter.label;
+
+        // HP challenges
+        if (lbl.find("HP u[") == 0) hp_u.push_back(ch);
+        else if (lbl.find("HP v[") == 0) hp_v.push_back(ch);
+
+        // tLookup challenges — detect section by label patterns
+        // Range-mapped: "CDF r", "CDF alpha", "CDF ph2 r0", etc.
+        // Plain: "lm-rs tL alpha", "lm-rs tL ph2 r0", etc.
+        auto endswith = [](const std::string& s, const std::string& suffix) {
+            return s.size() >= suffix.size() &&
+                   s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+        };
+
+        if (endswith(lbl, " r") && lbl.find(" ph") == std::string::npos &&
+            lbl.find(" r[") == std::string::npos) {
+            // "CDF r" or "log r" — range mapping combining challenge
+            current_tl_section = lbl.substr(0, lbl.size() - 2);
+            current_tl.r = ch;
+            current_tl.has_r = true;
+        } else if (endswith(lbl, " alpha")) {
+            current_tl.alpha = ch;
+            if (current_tl_section.empty())
+                current_tl_section = lbl.substr(0, lbl.size() - 6);
+        } else if (endswith(lbl, " beta")) {
+            current_tl.beta = ch;
+        } else if (lbl.find(" ph2 r") != std::string::npos) {
+            current_tl.phase2_challenges.push_back(ch);
         }
     }
 
@@ -483,6 +758,10 @@ done:
            stats.sc_checks_passed, stats.sc_checks_failed);
     printf("  IP final checks:          %u passed, %u failed\n",
            stats.ip_checks_passed, stats.ip_checks_failed);
+    printf("  HP sumcheck checks:       %u passed, %u failed\n",
+           stats.hp_checks_passed, stats.hp_checks_failed);
+    printf("  tLookup final checks:     %u passed, %u failed\n",
+           stats.tl_checks_passed, stats.tl_checks_failed);
 
     if (stats.errors.empty()) {
         printf("\nVERIFICATION PASSED (interactive)\n");
@@ -493,32 +772,21 @@ done:
     }
 }
 
-// ── Parse prover args to extract proof parameters ───────────────────────────
+// ── Parse parameters ───────────────────────────────────────────────────────
 
-static ProofParams parse_prover_params(int argc, char* argv[], int cmd_start) {
+static ProofParams parse_params_string(const char* s) {
     ProofParams p;
     p.scaling_factor = 1u << 16;
-
-    int nargs = argc - cmd_start;
-    if (nargs < 5) {
-        fprintf(stderr, "Warning: using default proof parameters\n");
-        p.T = 1024; p.V = 32000; p.hidden_size = 4096;
-        p.cdf_precision = 20; p.log_precision = 15;
-        p.cdf_scale = 65536; p.log_scale = 65536;
-        p.sigma_eff = 3277.0;
-        return p;
-    }
-
-    // prover args: binary workdir tokens proof sigma [seq_len] [hidden] [vocab] ...
-    p.sigma_eff    = atof(argv[cmd_start + 4]);
-    p.T            = nargs > 5  ? (uint32_t)atoi(argv[cmd_start + 5])  : 1024u;
-    p.hidden_size  = nargs > 6  ? (uint32_t)atoi(argv[cmd_start + 6])  : 4096u;
-    p.V            = nargs > 7  ? (uint32_t)atoi(argv[cmd_start + 7])  : 32000u;
-    p.cdf_precision= nargs > 8  ? (uint32_t)atoi(argv[cmd_start + 8])  : 20u;
-    p.log_precision= nargs > 9  ? (uint32_t)atoi(argv[cmd_start + 9])  : 15u;
-    p.cdf_scale    = nargs > 10 ? (uint32_t)atoi(argv[cmd_start + 10]) : 65536u;
-    p.log_scale    = nargs > 11 ? (uint32_t)atoi(argv[cmd_start + 11]) : 65536u;
-
+    // Format: T,V,H,cdf_prec,log_prec,cdf_scale,log_scale,sigma
+    unsigned t, v, h, cp, lp, cs, ls;
+    double sigma;
+    int n = sscanf(s, "%u,%u,%u,%u,%u,%u,%u,%lf", &t, &v, &h, &cp, &lp, &cs, &ls, &sigma);
+    if (n >= 3) { p.T = t; p.V = v; p.hidden_size = h; }
+    if (n >= 4) p.cdf_precision = cp; else p.cdf_precision = 20;
+    if (n >= 5) p.log_precision = lp; else p.log_precision = 15;
+    if (n >= 6) p.cdf_scale = cs; else p.cdf_scale = 65536;
+    if (n >= 7) p.log_scale = ls; else p.log_scale = 65536;
+    if (n >= 8) p.sigma_eff = sigma; else p.sigma_eff = 3277.0;
     return p;
 }
 
@@ -527,10 +795,13 @@ static ProofParams parse_prover_params(int argc, char* argv[], int cmd_start) {
 int main(int argc, char* argv[]) {
     bool verbose = false;
     int cmd_start = -1;
+    const char* params_str = nullptr;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
             verbose = true;
+        } else if (strcmp(argv[i], "--params") == 0 && i + 1 < argc) {
+            params_str = argv[++i];
         } else if (strcmp(argv[i], "--") == 0) {
             cmd_start = i + 1;
             break;
@@ -538,14 +809,25 @@ int main(int argc, char* argv[]) {
     }
 
     if (cmd_start < 0 || cmd_start >= argc) {
-        fprintf(stderr, "Usage: %s [--verbose] -- <prover_command> [args...]\n", argv[0]);
-        fprintf(stderr, "\nExample:\n");
-        fprintf(stderr, "  %s -v -- ./gold_zkllm_entropy workdir tokens.txt proof.bin 3277\n",
+        fprintf(stderr, "Usage: %s [--verbose] [--params T,V,H,...] -- <prover_command> [args...]\n", argv[0]);
+        fprintf(stderr, "\nParams format: T,V,H,cdf_prec,log_prec,cdf_scale,log_scale,sigma\n");
+        fprintf(stderr, "Example:\n");
+        fprintf(stderr, "  %s -v --params 1024,32000,4096,20,15,65536,65536,3277 -- ./gold_zkllm_entropy workdir tokens.txt proof.bin 1.0\n",
                 argv[0]);
         return 1;
     }
 
-    ProofParams params = parse_prover_params(argc, argv, cmd_start);
+    ProofParams params;
+    if (params_str) {
+        params = parse_params_string(params_str);
+    } else {
+        // Defaults
+        params.T = 1024; params.V = 32000; params.hidden_size = 4096;
+        params.cdf_precision = 20; params.log_precision = 15;
+        params.cdf_scale = 65536; params.log_scale = 65536;
+        params.sigma_eff = 3277.0;
+        params.scaling_factor = 1u << 16;
+    }
 
     printf("Proof parameters:\n");
     printf("  T=%u V=%u H=%u cdf_prec=%u log_prec=%u\n",
@@ -557,7 +839,10 @@ int main(int argc, char* argv[]) {
     {
         ProofSimulator preview;
         preview.simulate_full_proof(params);
-        printf("  Expected interactions: %zu\n", preview.interactions.size());
+        uint32_t total_polys = 0;
+        for (auto& i : preview.interactions) total_polys += i.polys_before;
+        printf("  Expected: %zu interactions, %u polys\n",
+               preview.interactions.size(), total_polys);
     }
 
     int pipe_to_prover[2], pipe_from_prover[2];

@@ -302,7 +302,15 @@ Fr_t tLookup_phase2_interactive(const Fr_t& claim, const FrTensor& A, const FrTe
     const Fr_t& alpha_, const Fr_t& beta, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq,
     vector<Fr_t>& u, vector<Polynomial>& proof)
 {
-    if (u.empty()) return claim;
+    if (u.empty()) {
+        // Push final evaluations so verifier can check consistency
+        proof.push_back(Polynomial(A(0)));  // A_final = 1/(S_final + beta)
+        proof.push_back(Polynomial(S(0)));  // S_final (witness value at reduced point)
+        proof.push_back(Polynomial(B(0)));  // B_final = 1/(T_final + beta)
+        proof.push_back(Polynomial(T(0)));  // T_final (table value at reduced point)
+        proof.push_back(Polynomial(m(0)));  // m_final (multiplicity at reduced point)
+        return claim;
+    }
     auto p = tLookup_phase2_step_poly(A, S, B, T, m, alpha_, beta, inv_size_ratio, alpha_sq, u);
     proof.push_back(p);
 
