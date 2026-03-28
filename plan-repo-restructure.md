@@ -1,14 +1,57 @@
 # Repo Restructuring Plan
 
 **Status:** Proposal only — no files have been moved yet.
-**Date:** 2026-03-27
+**Date:** 2026-03-28 (updated)
 
 ## Problem
 
-The repo currently has ~50 `.cu`, `.cpp`, and `.h` files in a single flat directory.
-This makes it hard to understand the architecture, find related files, or onboard
-new contributors. Files serving very different purposes (field arithmetic, neural
-network layers, benchmarks, tests, build targets) are all interleaved.
+The repo currently has 70+ source files (`.cu`, `.cpp`, `.cuh`, `.h`) plus
+20+ Python scripts, 10+ shell scripts, and 15+ documentation files — all in a
+single flat directory. This makes it hard to understand the architecture, find
+related files, or onboard new contributors.
+
+## Current File Inventory
+
+Source files by category (as of 2026-03-28):
+
+- **Field arithmetic (4):** `bls12-381.cu/.cuh`, `goldilocks.cu/.cuh`
+- **Polynomial (4):** `polynomial.cu/.cuh`, `ntt.cu/.cuh`
+- **Commitment (8):** `commitment.cu/.cuh`, `merkle.cu/.cuh`, `fri.cu/.cuh`, `fri_pcs.cu/.cuh`
+- **Proof infra (2):** `proof.cu/.cuh`
+- **Tensors (4):** `fr-tensor.cu/.cuh`, `g1-tensor.cu/.cuh`
+- **ZK neural-net layers (16):** `zkrelu.cu/.cuh`, `zkfc.cu/.cuh`, `zksoftmax.cu/.cuh`,
+  `zkargmax.cu/.cuh`, `zklog.cu/.cuh`, `zknormalcdf.cu/.cuh`, `rescaling.cu/.cuh`,
+  `tlookup.cu/.cuh`
+- **Entropy (2):** `zkentropy.cu/.cuh`
+- **LLM layers (5):** `self-attn.cu`, `ffn.cu`, `rmsnorm.cu`, `rmsnorm_linear.cu`,
+  `post_attn.cu`, `skip-connection.cu`
+- **Utilities (3):** `ioutils.cu/.cuh`, `timer.cpp/.hpp`
+- **CPU verifier (4):** `verifier.cpp`, `verifier_utils.h`, `sumcheck_verifier.h`,
+  `tlookup_verifier.h`
+- **CPU support (1):** `skip_connection_cpu.cpp`
+- **Entry points (7):** `main.cu`, `ppgen.cu`, `commit-param.cu`, `commit_logits.cu`,
+  `zkllm_entropy.cu`, `zkllm_entropy_timed.cu`, `layer_server.cu`
+- **Tests (10):** `test_goldilocks.cu`, `test_gold_tensor.cu`, `test_ntt.cu`,
+  `test_merkle.cu`, `test_fri.cu`, `test_fri_pcs.cu`, `test_zkargmax.cu`,
+  `test_zklog.cu`, `test_zknormalcdf.cu`, `test_zkentropy.cu`, `test_verifier.cpp`
+- **Benchmarks (4):** `bench_field.cu`, `bench_field_arith.cu`, `bench_commitment.cu`,
+  `bench_matmul.cu`
+- **Python scripts (14):** `verify_entropy.py`, `gen_entropy_inputs.py`, `gen_logits.py`,
+  `gen_initial_input.py`, `calibrate_sigma.py`, `quantization_accuracy.py`,
+  `overflow_check.py`, `run_proofs.py`, `download-models.py`, `fileio_utils.py`,
+  `commit_final_layers.py`, `generate_swiglu_table.py`, `llama-*.py` (6 files)
+- **Shell scripts (9):** `build_zkllm.sh`, `run_setup.sh`, `run_e2e.sh`,
+  `run_e2e_resume.sh`, `run_proofs.sh`, `run_ppgen_logits.sh`, `run_test_entropy.sh`,
+  `run_tests.sh`, `run_calibrate.sh`
+- **Documentation (15):** `README.md`, `security-review.md`, `plan-full-verifier.md`,
+  `plan-fp16-weights.md`, `plan-goldilocks-fri.md`, `plan-entropy-proof-redesign.md`,
+  `plan-repo-restructure.md` (this file), `plan.md`, `plan2.md`, `design-goals.md`,
+  `contributions.md`, `status.md`, `gpu-latency-reduction-plan.md`,
+  `improvement-opportunities.md`, `int32-throughput-analysis.md`,
+  `zkllm-entropy-scaling-analysis.md`, `zkml-efficiency-comparison.md`,
+  `collect_nondeterminism_instructions.md`, `report-nondeterminism-sigma.md`,
+  `bench-goldilocks-results.md`, `bench-results-2026-03-27.md`,
+  `bench-results-2026-03-28.md`, `references.md`
 
 ## Proposed Directory Structure
 
@@ -16,19 +59,19 @@ network layers, benchmarks, tests, build targets) are all interleaved.
 zkllm-entropy/
 ├── src/
 │   ├── field/              # Finite field arithmetic
-│   │   ├── bls12-381.cu    #   BLS12-381 field & curve ops
+│   │   ├── bls12-381.cu
 │   │   ├── bls12-381.cuh
-│   │   ├── goldilocks.cu   #   Goldilocks field (p = 2^64 - 2^32 + 1)
+│   │   ├── goldilocks.cu
 │   │   └── goldilocks.cuh
 │   │
 │   ├── poly/               # Polynomial operations
-│   │   ├── polynomial.cu   #   Polynomial evaluation, interpolation
+│   │   ├── polynomial.cu
 │   │   ├── polynomial.cuh
-│   │   ├── ntt.cu          #   Number Theoretic Transform
+│   │   ├── ntt.cu
 │   │   └── ntt.cuh
 │   │
 │   ├── commit/             # Commitment schemes
-│   │   ├── commitment.cu   #   KZG / Pedersen commitments (BLS12-381)
+│   │   ├── commitment.cu   #   KZG / Pedersen (BLS12-381)
 │   │   ├── commitment.cuh
 │   │   ├── merkle.cu       #   SHA-256 Merkle tree (Goldilocks/FRI)
 │   │   ├── merkle.cuh
@@ -48,33 +91,36 @@ zkllm-entropy/
 │   │   └── g1-tensor.cuh
 │   │
 │   ├── zknn/               # ZK neural-network layer proofs
-│   │   ├── zkrelu.cu       #   ReLU
-│   │   ├── zkfc.cu         #   Fully connected
-│   │   ├── zksoftmax.cu    #   Softmax
-│   │   ├── zkargmax.cu     #   Argmax
-│   │   ├── zklog.cu        #   Log lookup
-│   │   ├── zknormalcdf.cu  #   Normal CDF lookup
-│   │   ├── rescaling.cu    #   Fixed-point rescaling
-│   │   └── tlookup.cu      #   Table lookup (LogUp argument)
+│   │   ├── zkrelu.cu/.cuh
+│   │   ├── zkfc.cu/.cuh
+│   │   ├── zksoftmax.cu/.cuh
+│   │   ├── zkargmax.cu/.cuh
+│   │   ├── zklog.cu/.cuh
+│   │   ├── zknormalcdf.cu/.cuh
+│   │   ├── rescaling.cu/.cuh
+│   │   └── tlookup.cu/.cuh
 │   │
 │   ├── entropy/            # Entropy-specific proving logic
-│   │   ├── zkentropy.cu    #   Entropy proof generation
+│   │   ├── zkentropy.cu
 │   │   └── zkentropy.cuh
 │   │
 │   ├── llm/                # LLM layer proofs
 │   │   ├── self-attn.cu
 │   │   ├── ffn.cu
 │   │   ├── rmsnorm.cu
-│   │   └── skip-connection.cu
+│   │   ├── rmsnorm_linear.cu
+│   │   ├── post_attn.cu
+│   │   ├── skip-connection.cu
+│   │   └── skip_connection_cpu.cpp
 │   │
 │   └── util/               # Shared utilities
-│       ├── ioutils.cu      #   File I/O helpers
+│       ├── ioutils.cu
 │       ├── ioutils.cuh
-│       ├── timer.cpp        #   Wall-clock timer
-│       └── timer.h
+│       ├── timer.cpp
+│       └── timer.hpp
 │
 ├── verifier/               # CPU-only verifier (no CUDA dependency)
-│   ├── verifier.cpp        #   Main verifier entry point
+│   ├── verifier.cpp        #   Main entry point
 │   ├── verifier_utils.h    #   Field arithmetic, parsing, SHA-256
 │   ├── sumcheck_verifier.h #   Sumcheck protocol verification
 │   └── tlookup_verifier.h  #   tLookup verification
@@ -99,7 +145,7 @@ zkllm-entropy/
 │   ├── test_zklog.cu
 │   ├── test_zknormalcdf.cu
 │   ├── test_zkentropy.cu
-│   └── test_verifier.cpp   #   CPU-only verifier tests
+│   └── test_verifier.cpp
 │
 ├── bench/                  # Benchmark programs
 │   ├── bench_field.cu
@@ -108,17 +154,62 @@ zkllm-entropy/
 │   └── bench_matmul.cu
 │
 ├── scripts/                # Build and run scripts
-│   └── ...
+│   ├── build_zkllm.sh
+│   ├── run_setup.sh
+│   ├── run_e2e.sh
+│   ├── run_e2e_resume.sh
+│   ├── run_proofs.sh
+│   ├── run_ppgen_logits.sh
+│   ├── run_test_entropy.sh
+│   ├── run_tests.sh
+│   └── run_calibrate.sh
 │
-├── python/                 # Python verification / analysis tools
-│   ├── verify_entropy.py
-│   └── ...
+├── python/                 # Python tools
+│   ├── verify_entropy.py   #   Proof verification
+│   ├── gen_entropy_inputs.py
+│   ├── gen_logits.py
+│   ├── gen_initial_input.py
+│   ├── calibrate_sigma.py
+│   ├── quantization_accuracy.py
+│   ├── overflow_check.py
+│   ├── run_proofs.py
+│   ├── download-models.py
+│   ├── fileio_utils.py
+│   ├── commit_final_layers.py
+│   ├── generate_swiglu_table.py
+│   ├── llama-commit.py
+│   ├── llama-ffn.py
+│   ├── llama-ppgen.py
+│   ├── llama-rmsnorm.py
+│   ├── llama-self-attn.py
+│   └── llama-skip-connection.py
 │
 ├── docs/                   # Documentation and plans
-│   ├── security-review.md
-│   ├── plan-full-verifier.md
-│   ├── plan-fp16-weights.md
-│   └── plan-repo-restructure.md  # (this file)
+│   ├── plans/
+│   │   ├── plan-full-verifier.md
+│   │   ├── plan-fp16-weights.md
+│   │   ├── plan-goldilocks-fri.md
+│   │   ├── plan-entropy-proof-redesign.md
+│   │   ├── plan-repo-restructure.md   # (this file)
+│   │   ├── plan.md
+│   │   ├── plan2.md
+│   │   └── gpu-latency-reduction-plan.md
+│   ├── analysis/
+│   │   ├── security-review.md
+│   │   ├── improvement-opportunities.md
+│   │   ├── int32-throughput-analysis.md
+│   │   ├── zkllm-entropy-scaling-analysis.md
+│   │   ├── zkml-efficiency-comparison.md
+│   │   └── report-nondeterminism-sigma.md
+│   ├── benchmarks/
+│   │   ├── bench-goldilocks-results.md
+│   │   ├── bench-results-2026-03-27.md
+│   │   └── bench-results-2026-03-28.md
+│   ├── design-goals.md
+│   ├── contributions.md
+│   ├── status.md
+│   ├── collect_nondeterminism_instructions.md
+│   └── references.md
 │
 ├── Makefile
 └── README.md
@@ -128,12 +219,14 @@ zkllm-entropy/
 
 | Concern | Current state | After restructure |
 |---------|--------------|-------------------|
-| Finding related code | Scroll through 50+ files | Navigate to the relevant `src/` subdirectory |
+| Finding related code | Scroll through 70+ files | Navigate to the relevant `src/` subdirectory |
 | Understanding architecture | Read file names and guess | Directory names map to architectural layers |
 | Build targets vs libraries | Mixed together | `bin/` for executables, `src/` for libraries |
 | Tests and benchmarks | Mixed with source | `test/` and `bench/` separated |
 | CPU verifier | Mixed with GPU code | `verifier/` stands alone, no CUDA dependency |
-| Documentation | Top-level clutter | `docs/` directory |
+| Python tools | Mixed with C++/CUDA | `python/` directory |
+| Shell scripts | Mixed with everything | `scripts/` directory |
+| Documentation | 20+ .md files at top level | `docs/` with subdirectories |
 
 ## Key Design Decisions
 
@@ -155,12 +248,23 @@ zkllm-entropy/
 5. **Header files stay next to their `.cu` files.** No separate `include/` directory,
    since most headers are tightly coupled to a single `.cu` file.
 
+6. **`docs/` has subdirectories** for plans, analysis, and benchmark results. This
+   keeps the 20+ documentation files organized without requiring readers to scan
+   a flat list.
+
+7. **`skip_connection_cpu.cpp` goes in `src/llm/`** alongside the GPU version. It's
+   a CPU fallback for the same layer, so co-location makes sense.
+
 ## Migration Notes
 
 - **Makefile must be updated** to reference new paths. The pattern rules (`%.o: %.cu`)
   will need `VPATH` or explicit per-directory rules.
 - **`#include` paths** will change. Use `-I src/` in compiler flags so includes like
   `#include "field/goldilocks.cuh"` work.
+- **Python imports:** `fileio_utils.py` is imported by other scripts. After moving to
+  `python/`, update `sys.path` or add an `__init__.py`.
+- **Shell script paths:** Scripts reference binaries and data files by relative path.
+  These need updating, or the scripts should `cd` to the repo root.
 - **Do this in one atomic PR** so there's no half-migrated state.
 - **Run full test suite after migration** — `make -j64 all` plus all `test_*` and
   `gold_*` targets.
