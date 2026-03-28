@@ -392,14 +392,28 @@ Fr_t zkConditionalEntropy::prove(
 
     // ── 2b. CDF tLookup proof (T*V tensor → T*V values) ────────────────────
     // Cryptographically binds all CDF values to the public CDF table.
+    // Pads to satisfy D % N == 0 constraint (N = 2^cdf_precision).
     std::cout << "  Proving CDF lookup (" << TV << " elements)..." << std::endl;
     {
+        uint cdf_N = 1u << cdf_precision;
+        uint D_cdf = cdf_N;
+        while (D_cdf < TV) D_cdf *= 2;
+
+        // Pad diffs with 0 (valid table input) and re-compute CDF for consistency
+        Fr_t* d_cpu = new Fr_t[D_cdf];
+        cudaMemcpy(d_cpu, diffs_all.gpu_data, TV * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+        for (uint i = TV; i < D_cdf; i++) d_cpu[i] = FR_FROM_INT(0);
+        FrTensor diffs_padded(D_cdf, d_cpu);
+        delete[] d_cpu;
+
+        auto [cdf_padded, m_cdf_padded] = cdf_prover.compute(diffs_padded);
+
         auto r_cdf = random_vec(1)[0];
         auto alpha = random_vec(1)[0];
         auto beta  = random_vec(1)[0];
-        auto u_cdf = random_vec(ceilLog2(TV));
-        auto v_cdf = random_vec(ceilLog2(TV));
-        cdf_prover.prove(diffs_all, cdf_all, m_cdf,
+        auto u_cdf = random_vec(ceilLog2(D_cdf));
+        auto v_cdf = random_vec(ceilLog2(D_cdf));
+        cdf_prover.prove(diffs_padded, cdf_padded, m_cdf_padded,
                          r_cdf, alpha, beta, u_cdf, v_cdf, proof);
     }
 
