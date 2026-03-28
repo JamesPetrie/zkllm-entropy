@@ -80,8 +80,18 @@ DEVICE inline Gold_t gold_double(Gold_t a) {
 
 DEVICE inline Gold_t gold_mul(Gold_t a, Gold_t b) {
     // 128-bit product: (hi, lo) = a * b
-    uint64_t lo = a.val * b.val;
-    uint64_t hi = UMUL64HI(a.val, b.val);
+    uint64_t lo, hi;
+#ifdef __CUDA_ARCH__
+    // Use PTX mul.lo/mul.hi which the compiler can fuse and share partial products
+    asm("mul.lo.u64 %0, %2, %3;\n\t"
+        "mul.hi.u64 %1, %2, %3;"
+        : "=l"(lo), "=l"(hi)
+        : "l"(a.val), "l"(b.val));
+#else
+    __uint128_t prod = (__uint128_t)a.val * b.val;
+    lo = (uint64_t)prod;
+    hi = (uint64_t)(prod >> 64);
+#endif
 
     // Plonky2-style Goldilocks reduction.
     // For p = 2^64 - 2^32 + 1, eps = 2^32 - 1:
