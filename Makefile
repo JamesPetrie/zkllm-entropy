@@ -130,3 +130,6 @@ gold_rmsnorm_linear: gold_rmsnorm_linear.o $(GOLD_OBJS)
 
 gold_post_attn: gold_post_attn.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
+gold_layer_server: gold_layer_server.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@

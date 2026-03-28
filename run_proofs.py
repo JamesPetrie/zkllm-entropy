@@ -29,7 +29,34 @@ parser.add_argument('--initial_input', type=str, default=None,
                     help='Path to layer-0-input.bin. Auto-generated if absent or wrong size.')
 parser.add_argument('--goldilocks', action='store_true',
                     help='Use Goldilocks field + FRI commitments (gold_* binaries).')
+parser.add_argument('--server', action='store_true',
+                    help='Use persistent CUDA server (requires --goldilocks). Eliminates all CUDA init overhead.')
 args = parser.parse_args()
+
+# Launch persistent CUDA server if requested
+server_proc = None
+if args.server:
+    if not args.goldilocks:
+        print("--server requires --goldilocks")
+        sys.exit(1)
+    import subprocess
+    server_proc = subprocess.Popen(
+        ['./gold_layer_server'],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        bufsize=0, text=True
+    )
+    # Wait for READY signal
+    ready = server_proc.stdout.readline().strip()
+    assert ready == 'READY', f'Server failed to start: {ready}'
+    print('CUDA layer server started.')
+
+def server_cmd(cmd_str):
+    """Send command to server and wait for DONE response."""
+    server_proc.stdin.write(cmd_str + '\n')
+    server_proc.stdin.flush()
+    resp = server_proc.stdout.readline().strip()
+    assert resp == 'DONE', f'Server error: {resp}'
+
 
 BIN_PREFIX = "gold_" if args.goldilocks else ""
 
@@ -126,7 +153,10 @@ for layer_idx in range(args.start_layer, args.num_layers):
     # -----------------------------------------------------------------------
     # 1. RMSNorm (input) + Self-attention linear
     # -----------------------------------------------------------------------
-    if args.goldilocks:
+    if args.server:
+        # Persistent server: no CUDA init overhead
+        server_cmd(f'RMSNORM_LINEAR {layer_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_input} {attn_output}')
+    elif args.goldilocks:
         # Combined binary: computes rms_inv internally, no torch needed
         os.system(f'./gold_rmsnorm_linear {layer_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_input} {attn_output}')
     else:
@@ -163,7 +193,10 @@ for layer_idx in range(args.start_layer, args.num_layers):
     attn_out = attn_out.transpose(0, 1).reshape(args.seq_len, embed_dim)
     save_int(attn_out, 1 << VALUE_LOGSF, attn_output)
 
-    if args.goldilocks:
+    if args.server:
+        # Persistent server: no CUDA init overhead
+        server_cmd(f'POST_ATTN {attn_input} {args.seq_len} {embed_dim} {hidden_dim} {WORKDIR} {layer_prefix} {layer_input} {attn_output} {layer_output}')
+    elif args.goldilocks:
         # Combined binary: attn proof + skip + rmsnorm post-attn + ffn + skip
         os.system(f'./gold_post_attn {attn_input} {args.seq_len} {embed_dim} {hidden_dim} {WORKDIR} {layer_prefix} {layer_input} {attn_output} {layer_output}')
     else:
@@ -184,6 +217,12 @@ for layer_idx in range(args.start_layer, args.num_layers):
     layer_input = layer_output
 
 os.remove('swiglu-table.bin')
+
+if server_proc:
+    server_proc.stdin.write('QUIT\n')
+    server_proc.stdin.flush()
+    server_proc.wait()
+    print('CUDA server shut down.')
 
 print(f"\n=== All {args.num_layers} layers complete ===")
 print(datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
