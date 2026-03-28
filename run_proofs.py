@@ -46,16 +46,25 @@ if args.server:
         bufsize=0, text=True
     )
     # Wait for READY signal
-    ready = server_proc.stdout.readline().strip()
-    assert ready == 'READY', f'Server failed to start: {ready}'
+    while True:
+        ready = server_proc.stdout.readline().strip()
+        if ready == 'READY':
+            break
+        elif ready == '':
+            raise RuntimeError('Server process died')
     print('CUDA layer server started.')
 
 def server_cmd(cmd_str):
     """Send command to server and wait for DONE response."""
     server_proc.stdin.write(cmd_str + '\n')
     server_proc.stdin.flush()
-    resp = server_proc.stdout.readline().strip()
-    assert resp == 'DONE', f'Server error: {resp}'
+    while True:
+        resp = server_proc.stdout.readline().strip()
+        if resp == 'DONE':
+            break
+        elif resp == 'ERROR' or resp == '':
+            raise RuntimeError(f'Server error or EOF: {resp}')
+        # Skip proof progress lines (Rescaling, Opening, etc.)
 
 
 BIN_PREFIX = "gold_" if args.goldilocks else ""
