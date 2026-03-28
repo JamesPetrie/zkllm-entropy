@@ -314,15 +314,16 @@ Fr_t zkConditionalEntropy::prove(
         win_probs_all.gpu_data, total_win_vec.gpu_data, T, V);
     cudaDeviceSynchronize();
 
-    // 5. Extract actual-token win probs
+    // 5. Extract actual-token win probs (unclamped, for indicator proof)
     uint* tgpu = upload_tokens(tokens);
-    FrTensor actual_wp_vec(T);
+    FrTensor actual_wp_raw(T);
     extract_by_index_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
-        win_probs_all.gpu_data, tgpu, actual_wp_vec.gpu_data, T, V);
+        win_probs_all.gpu_data, tgpu, actual_wp_raw.gpu_data, T, V);
     cudaDeviceSynchronize();
     cudaFree(tgpu);
 
-    // 6. Clamp win probs and total_win to >= 1
+    // 6. Clamp for quotient-remainder (copies, not in-place on raw)
+    FrTensor actual_wp_vec(actual_wp_raw);
     clamp_min_one_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
         actual_wp_vec.gpu_data, T);
     clamp_min_one_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
@@ -454,9 +455,9 @@ Fr_t zkConditionalEntropy::prove(
         FrTensor indicator(TV, ind_cpu);
         delete[] ind_cpu;
 
-        // Verify consistency
+        // Verify consistency (uses unclamped values to match win_probs_all)
         Fr_t ip = (win_probs_all * indicator).sum();
-        Fr_t wp_sum = actual_wp_vec.sum();
+        Fr_t wp_sum = actual_wp_raw.sum();
         if (ip != wp_sum)
             throw std::runtime_error("prove: indicator extraction mismatch");
 
@@ -465,7 +466,7 @@ Fr_t zkConditionalEntropy::prove(
         inner_product_sumcheck(win_probs_all, indicator, u_ext);
 
         auto u_T = random_vec(ceilLog2(T));
-        Fr_t wp_at_u = actual_wp_vec(u_T);
+        Fr_t wp_at_u = actual_wp_raw(u_T);
         proof.push_back(Polynomial(wp_at_u));
     }
 
