@@ -522,45 +522,16 @@ Fr_t zkConditionalEntropy::prove(
     {
         auto u_qr = random_vec(ceilLog2(T));
 
-        // 1. Division relation at random point: q(u)*tw(u) + r(u) = wp_scaled(u)
-        Fr_t q_u  = q_vec(u_qr);
-        Fr_t tw_u = total_win_vec(u_qr);
+        // 1. Division relation at random point using MLE of Hadamard product:
+        //    MLE(q*tw, u) + MLE(r, u) = MLE(wp_scaled, u)
+        //    Note: MLE(q,u)*MLE(tw,u) != MLE(q*tw,u) in general (MLE is not
+        //    multiplicative), so we must evaluate the Hadamard product's MLE directly.
+        FrTensor q_tw_vec = q_vec * total_win_vec;  // Hadamard product
+        Fr_t q_tw_u = q_tw_vec(u_qr);
         Fr_t r_u  = r_vec(u_qr);
         Fr_t wp_scaled_u = wp_scaled_vec(u_qr);
-        Fr_t lhs = q_u * tw_u + r_u;
-        if (lhs != wp_scaled_u) {
-            fprintf(stderr, "QR debug: q(u)=%lu tw(u)=%lu r(u)=%lu wp_scaled(u)=%lu lhs=%lu\n",
-                    fr_to_ull(q_u), fr_to_ull(tw_u), fr_to_ull(r_u),
-                    fr_to_ull(wp_scaled_u), fr_to_ull(lhs));
-            // Check pointwise relation for first few elements
-            // Check ALL elements to find mismatches
-            Fr_t* dbg_q = new Fr_t[T]; Fr_t* dbg_tw = new Fr_t[T];
-            Fr_t* dbg_r = new Fr_t[T]; Fr_t* dbg_wps = new Fr_t[T];
-            cudaMemcpy(dbg_q, q_vec.gpu_data, T*sizeof(Fr_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(dbg_tw, total_win_vec.gpu_data, T*sizeof(Fr_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(dbg_r, r_vec.gpu_data, T*sizeof(Fr_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(dbg_wps, wp_scaled_vec.gpu_data, T*sizeof(Fr_t), cudaMemcpyDeviceToHost);
-            uint mismatch_count = 0;
-            for (uint i = 0; i < T; i++) {
-                Fr_t chk = dbg_q[i] * dbg_tw[i] + dbg_r[i];
-                if (chk != dbg_wps[i]) {
-                    if (mismatch_count < 5)
-                        fprintf(stderr, "  MISMATCH[%u] q=%lu tw=%lu r=%lu wps=%lu chk=%lu\n",
-                                i, fr_to_ull(dbg_q[i]), fr_to_ull(dbg_tw[i]),
-                                fr_to_ull(dbg_r[i]), fr_to_ull(dbg_wps[i]),
-                                fr_to_ull(chk));
-                    mismatch_count++;
-                }
-            }
-            fprintf(stderr, "  Total mismatches: %u / %u\n", mismatch_count, T);
-            if (mismatch_count == 0) {
-                fprintf(stderr, "  All pointwise OK but MLE fails — checking tensor sizes:\n");
-                fprintf(stderr, "  q_vec.size=%u tw.size=%u r_vec.size=%u wps.size=%u u_qr.size=%zu\n",
-                        q_vec.size, total_win_vec.size, r_vec.size, wp_scaled_vec.size, u_qr.size());
-            }
-            delete[] dbg_q; delete[] dbg_tw; delete[] dbg_r; delete[] dbg_wps;
+        if (q_tw_u + r_u != wp_scaled_u)
             throw std::runtime_error("prove: division relation failed at challenge u");
-        }
 
         // 2. Non-negativity via bit decomposition
         //    - q in [0, 2^(log_precision+1)): log_precision+1 bits (q can equal 2^p)
