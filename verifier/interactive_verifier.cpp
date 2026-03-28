@@ -431,35 +431,37 @@ static bool verify_hp_batch(
         return false;
     }
 
-    // First round: initial claim = p(0) + p(1)
+    // HP sumcheck uses p(u[i]) == claim (not p(0)+p(1)) because the eq
+    // polynomial is baked into the MLE evaluation at the remaining u points.
+    // Round 0: set claim = p(v[0]) (initial claim is implicit)
+    // Round i>0: check p(u[i]) == claim, then advance claim = p(v[i])
+
     auto& e0 = polys[0];
     if (e0.size() < 2) {
         stats.error("HP: first round poly too short");
         return false;
     }
-    Fr_t claim = fr_add(e0[0], e0[1]);
-    if (verbose) printf("  [HP] initial claim=%lu\n", claim.val);
+    Fr_t claim = lagrange_eval(e0, hp_v[0]);
+    if (verbose) printf("  [HP r0] initial, advance to claim=%lu\n", claim.val);
 
-    // Verify each round using pre-recorded v[i] as the challenge
     bool all_ok = true;
-    for (uint32_t i = 0; i < hp_rounds; i++) {
+    for (uint32_t i = 1; i < hp_rounds; i++) {
         auto& e = polys[i];
         if (e.size() < 2) {
             stats.error("HP round " + std::to_string(i) + ": poly too short");
             return false;
         }
-        Fr_t sum = fr_add(e[0], e[1]);
-        if (sum != claim) {
+        Fr_t check = lagrange_eval(e, hp_u[i]);
+        if (check != claim) {
             stats.hp_checks_failed++;
-            stats.error("HP round " + std::to_string(i) + ": p(0)+p(1)=" +
-                        std::to_string(sum.val) + " != claim=" +
-                        std::to_string(claim.val));
+            stats.error("HP round " + std::to_string(i) + ": p(u[" +
+                        std::to_string(i) + "])=" + std::to_string(check.val) +
+                        " != claim=" + std::to_string(claim.val));
             all_ok = false;
         } else {
             stats.hp_checks_passed++;
-            if (verbose) printf("  [HP r%u] p(0)+p(1)==claim OK\n", i);
+            if (verbose) printf("  [HP r%u] p(u[%u])==claim OK\n", i, i);
         }
-        // Advance claim using v[i] as the folding challenge
         claim = lagrange_eval(e, hp_v[i]);
     }
 
