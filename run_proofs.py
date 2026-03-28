@@ -124,20 +124,20 @@ for layer_idx in range(args.start_layer, args.num_layers):
     print(datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"), flush=True)
 
     # -----------------------------------------------------------------------
-    # 1. RMSNorm (input layernorm)
+    # 1. RMSNorm (input) + Self-attention linear
     # -----------------------------------------------------------------------
-    variance_epsilon = layer.input_layernorm.variance_epsilon
-    X = torch.tensor(np.fromfile(layer_input, dtype=np.int32).reshape(args.seq_len, embed_dim),
-                     device=0, dtype=torch.float64) / (1 << VALUE_LOGSF)
-    rms_inv = 1 / torch.sqrt(torch.mean(X.float() ** 2, dim=1) + variance_epsilon)
-    save_int(rms_inv, 1 << VALUE_LOGSF, 'rms_inv_temp.bin')
-    os.system(f'./{BIN_PREFIX}rmsnorm input {layer_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_input}')
-    os.remove('rms_inv_temp.bin')
-
-    # -----------------------------------------------------------------------
-    # 2. Self-attention
-    # -----------------------------------------------------------------------
-    os.system(f'./{BIN_PREFIX}self-attn linear {attn_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_output}')
+    if args.goldilocks:
+        # Combined binary: computes rms_inv internally, no torch needed
+        os.system(f'./gold_rmsnorm_linear {layer_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_input} {attn_output}')
+    else:
+        variance_epsilon = layer.input_layernorm.variance_epsilon
+        X = torch.tensor(np.fromfile(layer_input, dtype=np.int32).reshape(args.seq_len, embed_dim),
+                         device=0, dtype=torch.float64) / (1 << VALUE_LOGSF)
+        rms_inv = 1 / torch.sqrt(torch.mean(X.float() ** 2, dim=1) + variance_epsilon)
+        save_int(rms_inv, 1 << VALUE_LOGSF, 'rms_inv_temp.bin')
+        os.system(f'./{BIN_PREFIX}rmsnorm input {layer_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_input}')
+        os.remove('rms_inv_temp.bin')
+        os.system(f'./{BIN_PREFIX}self-attn linear {attn_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_output}')
 
     Q = load_int('temp_Q.bin').reshape(args.seq_len, embed_dim) / (1 << VALUE_LOGSF)
     K = load_int('temp_K.bin').reshape(args.seq_len, embed_dim) / (1 << VALUE_LOGSF)
@@ -163,34 +163,22 @@ for layer_idx in range(args.start_layer, args.num_layers):
     attn_out = attn_out.transpose(0, 1).reshape(args.seq_len, embed_dim)
     save_int(attn_out, 1 << VALUE_LOGSF, attn_output)
 
-    os.system(f'./{BIN_PREFIX}self-attn attn {attn_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_output}')
-    os.system('rm -f ./temp_Q.bin ./temp_K.bin ./temp_V.bin ./temp_head_Y.bin ./temp_head_out.bin')
-
-    # -----------------------------------------------------------------------
-    # 3. Skip connection (residual: layer_input + attn_output)
-    # -----------------------------------------------------------------------
-    os.system(f'./cpu_skip-connection {layer_input} {attn_output} {post_attn}')
-
-    # -----------------------------------------------------------------------
-    # 4. RMSNorm (post-attention layernorm)
-    # -----------------------------------------------------------------------
-    variance_epsilon2 = layer.post_attention_layernorm.variance_epsilon
-    X2 = torch.tensor(np.fromfile(post_attn, dtype=np.int32).reshape(args.seq_len, embed_dim),
-                      device=0, dtype=torch.float64) / (1 << VALUE_LOGSF)
-    rms_inv2 = 1 / torch.sqrt(torch.mean(X2.float() ** 2, dim=1) + variance_epsilon2)
-    save_int(rms_inv2, 1 << VALUE_LOGSF, 'rms_inv_temp.bin')
-    os.system(f'./{BIN_PREFIX}rmsnorm post_attention {post_attn} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {ffn_input}')
-    os.remove('rms_inv_temp.bin')
-
-    # -----------------------------------------------------------------------
-    # 5. FFN
-    # -----------------------------------------------------------------------
-    os.system(f'./{BIN_PREFIX}ffn {ffn_input} {args.seq_len} {embed_dim} {hidden_dim} {WORKDIR} {layer_prefix} {ffn_output}')
-
-    # -----------------------------------------------------------------------
-    # 6. Skip connection (residual: post_attn + ffn_output)
-    # -----------------------------------------------------------------------
-    os.system(f'./cpu_skip-connection {post_attn} {ffn_output} {layer_output}')
+    if args.goldilocks:
+        # Combined binary: attn proof + skip + rmsnorm post-attn + ffn + skip
+        os.system(f'./gold_post_attn {attn_input} {args.seq_len} {embed_dim} {hidden_dim} {WORKDIR} {layer_prefix} {layer_input} {attn_output} {layer_output}')
+    else:
+        os.system(f'./{BIN_PREFIX}self-attn attn {attn_input} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {attn_output}')
+        os.system('rm -f ./temp_Q.bin ./temp_K.bin ./temp_V.bin ./temp_head_Y.bin ./temp_head_out.bin')
+        os.system(f'./cpu_skip-connection {layer_input} {attn_output} {post_attn}')
+        variance_epsilon2 = layer.post_attention_layernorm.variance_epsilon
+        X2 = torch.tensor(np.fromfile(post_attn, dtype=np.int32).reshape(args.seq_len, embed_dim),
+                          device=0, dtype=torch.float64) / (1 << VALUE_LOGSF)
+        rms_inv2 = 1 / torch.sqrt(torch.mean(X2.float() ** 2, dim=1) + variance_epsilon2)
+        save_int(rms_inv2, 1 << VALUE_LOGSF, 'rms_inv_temp.bin')
+        os.system(f'./{BIN_PREFIX}rmsnorm post_attention {post_attn} {args.seq_len} {embed_dim} {WORKDIR} {layer_prefix} {ffn_input}')
+        os.remove('rms_inv_temp.bin')
+        os.system(f'./{BIN_PREFIX}ffn {ffn_input} {args.seq_len} {embed_dim} {hidden_dim} {WORKDIR} {layer_prefix} {ffn_output}')
+        os.system(f'./cpu_skip-connection {post_attn} {ffn_output} {layer_output}')
 
     print(f"Layer {layer_idx} done.", flush=True)
     layer_input = layer_output
