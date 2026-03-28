@@ -276,8 +276,6 @@ The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The 
 
 ### Other issues
 
-- Binary sumcheck proofs in zkArgmax are computed but written to a local vector that is discarded (one-line fix)
-- `cdf_precision` defaults differ between prover (15) and verifier (12)
 - Negative diffs produce warnings but not errors
 
 ---
@@ -286,35 +284,27 @@ The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The 
 
 Planned improvements, roughly in priority order.
 
-### 1. Fix binary sumcheck serialization
-
-One-line change: pass `proof` instead of `bin_proof` to `Fr_bin_sc()` in zkargmax.cu. Immediate soundness improvement.
-
-### 2. Store all proof parameters in header
-
-Add `cdf_precision`, `cdf_scale`, `bit_width` to the proof file header so the verifier reads them rather than using potentially-mismatched defaults.
-
-### 3. Merge argmax into CDF lookup
+### 1. Merge argmax into CDF lookup
 
 The CDF tLookup proof already implicitly proves non-negativity of all diffs (and therefore argmax correctness), because the LogUp identity operates on the original field elements — a negative diff (near p) cannot match any table entry. Making the CDF table large enough to cover the full diff range (e.g., `cdf_precision = 20`, table = 8 MB) eliminates the need for the separate zkArgmax bit-decomposition proof entirely, replacing 32 binary sumchecks with zero additional work.
 
-### 4. Build a cryptographic verifier
+### 2. Build a cryptographic verifier
 
 Replace `verify_entropy.py` with a verifier that checks sumcheck polynomials, tLookup proofs, FRI openings, and commitment bindings. This is the largest remaining engineering effort.
 
-### 5. Serialize weight-binding proofs
+### 3. Serialize weight-binding proofs
 
 Write `verifyWeightClaim`, `zkFC`, and `Rescaling` proof elements into the proof file. Required for a third-party verifier to confirm that logits derive from committed weights.
 
-### 6. Goldilocks field range validation
+### 4. Goldilocks field range validation
 
 Verify that no intermediate value in the proof pipeline overflows the 64-bit Goldilocks modulus (p ≈ 1.8 × 10¹⁹). The entropy layer values (logits, diffs, CDF, win_probs) are comfortably within range (~30–33 bits). The concern is `zkFC` matmul accumulation: summing `in_dim` (4096) products of two ~2³² quantized values gives ~2⁷⁶, which exceeds p. The sumcheck *proof* is valid regardless (it never forms the full accumulation), but the *compute* path that produces logits may wrap. Empirical validation on Llama-2-7B (see `python/overflow_check.py`) shows no overflows in quantized inference — the tightest headroom is 21.2 bits at layer 30 `down_proj`, well within the Goldilocks modulus.
 
-### 7. Port setup tooling to Goldilocks
+### 5. Port setup tooling to Goldilocks
 
 The weight commitment scripts (`llama-commit.py`, `commit_final_layers.py`, `ppgen`) and per-layer proof orchestration (`run_proofs.py`, `llama-*.py`) currently only support BLS12-381 / Pedersen. These need Goldilocks + FRI PCS equivalents for full end-to-end proving.
 
-### 8. Performance optimization (Phase 7)
+### 6. Performance optimization
 
 - Poseidon2 hash to replace SHA-256 for faster GPU Merkle trees
 - NTT optimization (single-kernel launch, precomputed twiddles)

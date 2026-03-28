@@ -192,16 +192,17 @@ int main(int argc, char* argv[]) {
     verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
 
     // ── Serialise proof ───────────────────────────────────────────────────────
-    // Format (v2 — adds cdf_precision, log_precision, cdf_scale to header):
+    // Format (v3 — adds bit_width to header):
     //   [8 bytes]  magic "ZKENTROP"
     //   [8 bytes]  entropy_val (uint64, in log_scale units)
     //   [4 bytes]  seq_len
     //   [4 bytes]  vocab_size
     //   [8 bytes]  sigma_eff (double)
     //   [4 bytes]  log_scale
-    //   [4 bytes]  cdf_precision    (NEW)
-    //   [4 bytes]  log_precision    (NEW)
-    //   [4 bytes]  cdf_scale        (NEW)
+    //   [4 bytes]  cdf_precision
+    //   [4 bytes]  log_precision
+    //   [4 bytes]  cdf_scale
+    //   [4 bytes]  bit_width
     //   [4 bytes]  n_polys
     //   For each polynomial:
     //     [4 bytes] n_coeffs
@@ -220,6 +221,7 @@ int main(int argc, char* argv[]) {
         f.write((char*)&cdf_precision, sizeof(cdf_precision));
         f.write((char*)&log_precision, sizeof(log_precision));
         f.write((char*)&cdf_scale,     sizeof(cdf_scale));
+        f.write((char*)&bit_width,     sizeof(bit_width));
 
         uint32_t n_polys = (uint32_t)proof.size();
         f.write((char*)&n_polys, sizeof(n_polys));

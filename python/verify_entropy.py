@@ -95,23 +95,34 @@ def main():
             print(f"ERROR: bad magic {magic:#x}, expected {MAGIC:#x}")
             sys.exit(1)
 
-        # Try reading v2 header fields (cdf_precision, log_precision, cdf_scale).
-        # If the file was written by the old prover, these 12 bytes are actually
-        # the start of the polynomial data. We detect this by checking whether
-        # the remaining file size is consistent with v2 header.
+        # Try reading v2/v3 header fields.
+        # v2: cdf_precision, log_precision, cdf_scale (12 bytes)
+        # v3: cdf_precision, log_precision, cdf_scale, bit_width (16 bytes)
+        # v1: none of these (old prover)
         header_pos = f.tell()  # should be 36
-        remaining = f.read(12)
-        if len(remaining) == 12:
-            hdr_cdf_prec, hdr_log_prec, hdr_cdf_scale = struct.unpack('<III', remaining)
-            # Heuristic: v2 header has cdf_precision in [1,30], log_precision in [1,30],
-            # cdf_scale > 0. If values look reasonable, treat as v2.
+        remaining = f.read(16)
+        if len(remaining) >= 12:
+            hdr_cdf_prec, hdr_log_prec, hdr_cdf_scale = struct.unpack('<III', remaining[:12])
+            # Heuristic: v2+ header has cdf_precision in [1,30], log_precision in [1,30],
+            # cdf_scale > 0. If values look reasonable, treat as v2+.
             if 1 <= hdr_cdf_prec <= 30 and 1 <= hdr_log_prec <= 30 and hdr_cdf_scale > 0:
                 v2_header = True
+                if len(remaining) >= 16:
+                    hdr_bit_width, = struct.unpack('<I', remaining[12:16])
+                    if 1 <= hdr_bit_width <= 64:
+                        v3_header = True
+                    else:
+                        v3_header = False
+                        f.seek(header_pos + 12)
+                else:
+                    v3_header = False
             else:
                 v2_header = False
+                v3_header = False
                 f.seek(header_pos)
         else:
             v2_header = False
+            v3_header = False
             f.seek(header_pos)
 
         if v2_header:
@@ -123,19 +134,21 @@ def main():
             if args.log_precision is not None and args.log_precision != hdr_log_prec:
                 print(f"WARNING: --log-precision={args.log_precision} overrides proof header value {hdr_log_prec}")
         else:
-            # v1 header: fall back to defaults or CLI args
             cdf_precision = args.cdf_precision if args.cdf_precision is not None else 15
             log_precision = args.log_precision if args.log_precision is not None else 15
             cdf_scale     = args.cdf_scale     if args.cdf_scale     is not None else 65536
             print("NOTE: v1 proof header (no cdf_precision/log_precision/cdf_scale); using defaults")
 
+        bit_width = hdr_bit_width if v3_header else 32
+
         n_polys, = struct.unpack('<I', f.read(4))
 
+        hdr_version = "v3" if v3_header else ("v2" if v2_header else "v1")
         print(f"Proof: T={T}, vocab_size={vocab_size}, sigma_eff={sigma_eff:.4f}")
-        print(f"       log_scale={log_scale}, n_polys={n_polys}")
+        print(f"       log_scale={log_scale}, n_polys={n_polys}, header={hdr_version}")
         print(f"Params: cdf_precision={cdf_precision}, cdf_scale={cdf_scale}, "
-              f"log_precision={log_precision}"
-              + (" (from proof header)" if v2_header else " (defaults/CLI)"))
+              f"log_precision={log_precision}, bit_width={bit_width}"
+              + (f" (from proof header)" if v2_header else " (defaults/CLI)"))
         print()
 
         cdf_len = 1 << cdf_precision

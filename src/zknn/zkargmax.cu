@@ -186,9 +186,19 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
     if (ce_u != FR_FROM_INT(0))
         throw std::runtime_error("zkArgmax::prove: batched binary check failed");
 
-    // 6. Add proof elements for indicator constraints.
+    // 6. Serialize proof elements.
+    //    The verifier needs:
+    //    a) bits_b(u) for each bit plane — to check reconstruction: diffs(u) == sum_b 2^b * bits_b(u)
+    //    b) combined_error(u) — to check batched binary constraint (must be 0)
+    //    c) indicator scalars — ind_sum (must be 1), ind_dot_diffs (must be 0)
+    //    d) ind(u) — for the verifier to check the binary constraint includes the indicator
+    for (uint b = 0; b < bit_width; b++) {
+        proof.push_back(Polynomial(bits_vecs[b](u)));
+    }
+    proof.push_back(Polynomial(ce_u));
     proof.push_back(Polynomial(ind_sum));
     proof.push_back(Polynomial(ind_dot_diffs));
+    proof.push_back(Polynomial(ind(u)));
 
     // 7. Return MLE claim on logits at u: logits(u) = v_star - diffs(u).
     return v_star - diffs_u;
