@@ -126,14 +126,18 @@ zkConditionalEntropy(logits, tokens, σ_eff) → entropy bound H
 
 The hidden state from layer 31 comes from the existing zkLLM layer proof pipeline. The entropy layer proves the final RMSNorm, lm_head linear layer, and per-token conditional entropy.
 
-### Per-position entropy pipeline (inside zkConditionalEntropy)
+### Batched entropy proof pipeline (inside zkConditionalEntropy)
 
-1. **zkArgmax** — bit-decomposition range proof that t\* is the argmax
-2. **GPU diffs** — `diffs[i] = v* − logits[i]` (all non-negative)
-3. **zkNormalCDF** — CDF lookup: `win_probs[i] = (1 − Φ(diff_i/σ)) × cdf_scale`
-4. **Normalize** — `total_win = sum(win_probs)`; `q_idx = floor(win_prob[actual] × 2^log_precision / total_win)`
-5. **zkLog** — surprise = `−log₂(q_idx / 2^log_precision) × log_scale`
-6. **Accumulate** over sequence → total entropy bound H
+All T positions are processed as a single T×V tensor. Only the aggregate entropy H is revealed — no per-token scalars leak.
+
+1. **zkArgmax** — per-position bit-decomposition range proof that t\* is the argmax
+2. **GPU diffs** — `diffs[t,i] = v*[t] − logits[t,i]` (T×V tensor, all non-negative)
+3. **zkNormalCDF** — CDF tLookup: `win_probs[t,i] = (1 − Φ(diff/σ)) × cdf_scale` (one proof over T×V)
+4. **Row-sum sumcheck** — proves `total_win[t] = Σ_i win_probs[t,i]` via partial MLE + inner product sumcheck
+5. **Indicator extraction** — proves `wp[t] = win_probs[t, token[t]]` via inner product with indicator tensor
+6. **Quotient-remainder** — proves `q[t] = floor(wp[t] × 2^p / total_win[t])` via division relation `q·tw + r = wp·2^p` with bit-decomposition range proofs on q, r, and (tw−r−1)
+7. **Surprise lookup** — `surprise[t] = −log₂(q[t] / 2^p) × log_scale` via tLookup
+8. **Accumulate** — `H = Σ_t surprise[t]`
 
 ### Proof protocol
 
@@ -145,25 +149,26 @@ Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-intera
 
 | Module | File | Role |
 |---|---|---|
-| Goldilocks field | `goldilocks.cu/cuh` | 64-bit prime field arithmetic |
-| NTT | `ntt.cu/cuh` | Number-theoretic transform (domains up to 2³²) |
-| Merkle tree | `merkle.cu/cuh` | GPU SHA-256 Merkle commitment |
-| FRI | `fri.cu/cuh` | FRI polynomial commitment protocol |
-| FRI PCS | `fri_pcs.cu/cuh` | Integration layer: commit, open, MLE |
-| Sumchecks | `proof.cu/cuh` | Inner product, Hadamard, binary sumchecks |
-| tLookup | `tlookup.cu/cuh` | LogUp lookup argument (range + mapping) |
-| zkArgmax | `zkargmax.cu/cuh` | Argmax via bit-decomposition range proof |
-| zkNormalCDF | `zknormalcdf.cu/cuh` | Normal CDF via lookup table |
-| zkLog | `zklog.cu/cuh` | −log₂ via lookup table |
-| zkEntropy | `zkentropy.cu/cuh` | Per-token entropy pipeline |
-| zkFC | `zkfc.cu/cuh` | Fully connected layer proof |
-| Rescaling | `rescaling.cu/cuh` | Fixed-point rescaling proof |
-| zkReLU | `zkrelu.cu/cuh` | ReLU proof |
-| zkSoftmax | `zksoftmax.cu/cuh` | Softmax proof (segmented exponential) |
+| Goldilocks field | `src/field/goldilocks.cu/cuh` | 64-bit prime field arithmetic |
+| NTT | `src/poly/ntt.cu/cuh` | Number-theoretic transform (domains up to 2³²) |
+| Commitment | `src/commit/commitment.cu/cuh` | Commitment interface (Pedersen / Merkle) |
+| Merkle tree | `src/commit/merkle.cu/cuh` | GPU SHA-256 Merkle commitment |
+| FRI | `src/commit/fri.cu/cuh` | FRI polynomial commitment protocol |
+| FRI PCS | `src/commit/fri_pcs.cu/cuh` | Integration layer: commit, open, MLE |
+| Sumchecks | `src/proof/proof.cu/cuh` | Inner product, Hadamard, binary sumchecks |
+| tLookup | `src/zknn/tlookup.cu/cuh` | LogUp lookup argument (range + mapping) |
+| zkArgmax | `src/zknn/zkargmax.cu/cuh` | Argmax via bit-decomposition range proof |
+| zkNormalCDF | `src/zknn/zknormalcdf.cu/cuh` | Normal CDF via lookup table |
+| zkLog | `src/zknn/zklog.cu/cuh` | −log₂ via lookup table |
+| zkEntropy | `src/entropy/zkentropy.cu/cuh` | Batched conditional entropy proof |
+| zkFC | `src/zknn/zkfc.cu/cuh` | Fully connected layer proof |
+| Rescaling | `src/zknn/rescaling.cu/cuh` | Fixed-point rescaling proof |
+| zkReLU | `src/zknn/zkrelu.cu/cuh` | ReLU proof |
+| zkSoftmax | `src/zknn/zksoftmax.cu/cuh` | Softmax proof (segmented exponential) |
 
 ### Test suite
 
-92 tests pass across 6 Goldilocks test binaries:
+101+ tests pass across 8 Goldilocks test binaries:
 
 | Binary | Tests | Coverage |
 |---|---|---|
@@ -173,8 +178,10 @@ Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-intera
 | `test_merkle` | 9 | Deterministic root, proof verification, tamper detection |
 | `test_fri` | 6 | Small/medium/large polynomial commit-prove-verify |
 | `test_fri_pcs` | 17 | MLE evaluation, binding check, sumcheck integration, Weight |
+| `gold_test_zkargmax` | 6 | Argmax via bit-decomposition range proof |
+| `gold_test_zkentropy` | 9 | Batched entropy: argmax, surprise, proof generation, consistency |
 
-Additional BLS12-381 test binaries: `test_zkargmax` (6), `test_zklog` (5), `test_zknormalcdf` (5), `test_zkentropy` (6).
+Additional BLS12-381 test binaries: `test_zkargmax` (6), `test_zklog` (5), `test_zknormalcdf` (5), `test_zkentropy` (9).
 
 ### Performance (H100 PCIe, Llama-2-7B, 1024 tokens)
 
@@ -204,13 +211,13 @@ Requires an NVIDIA GPU (sm_90 / H100 recommended) and CUDA 13+.
 
 ```bash
 cd zkllm-entropy
-make clean && make -j64 gold_zkllm_entropy test_goldilocks test_gold_tensor test_ntt test_merkle test_fri test_fri_pcs
+make clean && make -j64 gold_zkllm_entropy test_goldilocks test_gold_tensor test_ntt test_merkle test_fri test_fri_pcs gold_test_zkargmax gold_test_zkentropy
 ```
 
 ### Run tests
 
 ```bash
-./test_goldilocks && ./test_gold_tensor && ./test_ntt && ./test_merkle && ./test_fri && ./test_fri_pcs
+./test_goldilocks && ./test_gold_tensor && ./test_ntt && ./test_merkle && ./test_fri && ./test_fri_pcs && ./gold_test_zkargmax && ./gold_test_zkentropy
 ```
 
 ### Run the entropy prover (Goldilocks)
@@ -233,10 +240,10 @@ make clean && make -j64 all
 
 ```bash
 # Goldilocks
-USE_GOLDILOCKS=1 python verify_entropy.py proof.bin
+USE_GOLDILOCKS=1 python python/verify_entropy.py proof.bin
 
 # BLS12-381
-python verify_entropy.py proof.bin
+python python/verify_entropy.py proof.bin
 ```
 
 ---
@@ -252,82 +259,62 @@ The noise parameter σ should be calibrated empirically:
 Target: ~97% exact match rate. For Llama-2-7B, σ ≈ 0.05 (σ_eff = 3277 with 65536 scaling).
 
 ```bash
-python calibrate_sigma.py --target-match-rate 0.97
+python python/calibrate_sigma.py --target-match-rate 0.97
 ```
 
 ---
 
 ## Known Soundness Gaps
 
-The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The implementation has engineering gaps that are fixable without changing the cryptographic design. These are documented in detail in `plan2.md`.
+The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The implementation has engineering gaps that are fixable without changing the cryptographic design.
 
 ### Proof completeness gaps
 
-1. **Weight-binding proofs not serialized.** The prover runs `verifyWeightClaim` and `zkFC` locally, but these proofs are not written to the proof file. The proof currently shows that *some* logits yield entropy H, but doesn't prove those logits came from committed weights. (Tracked as S3 in plan2.md.)
+1. **Weight-binding proofs not serialized.** The prover runs `verifyWeightClaim` and `zkFC` locally, but these proofs are not written to the proof file. The proof currently shows that *some* logits yield entropy H, but doesn't prove those logits came from committed weights.
 
-2. **Verifier is arithmetic-only.** `verify_entropy.py` recomputes CDF/log/quantization from scalar proof values and checks consistency. It does not verify any sumcheck, commitment opening, tLookup proof, or argmax range proof. A full cryptographic verifier has not been implemented. (Tracked as S1 in plan2.md.)
-
-### Per-token information leakage
-
-The current proof format emits 6 scalar values per token position (logit of actual token, logit gap, win probability, total win, quantized probability, surprise). These reveal the model's per-position confidence — not the full logit vector or the weights, but more than a true zero-knowledge proof should reveal.
-
-A planned redesign (P6 in plan2.md) eliminates all per-token leakage by moving the normalization step to log-space (avoiding the variable-denominator division) and batching all intermediate values as committed tensors. Only the aggregate entropy bound H would be revealed. See "Next Steps" below.
+2. **Verifier is arithmetic-only.** `verify_entropy.py` recomputes CDF/log/quantization from scalar proof values and checks consistency. It does not verify any sumcheck, commitment opening, tLookup proof, or argmax range proof. A full cryptographic verifier has not been implemented.
 
 ### Other issues
 
-- Binary sumcheck proofs in zkArgmax are computed but written to a local vector that is discarded (one-line fix, tracked as S5)
-- `cdf_precision` defaults differ between prover (15) and verifier (12) (tracked as S4)
-- Negative diffs produce warnings but not errors (tracked as S6)
+- Binary sumcheck proofs in zkArgmax are computed but written to a local vector that is discarded (one-line fix)
+- `cdf_precision` defaults differ between prover (15) and verifier (12)
+- Negative diffs produce warnings but not errors
 
 ---
 
 ## Next Steps
 
-Planned improvements, roughly in priority order. See `plan2.md` for detailed designs.
+Planned improvements, roughly in priority order.
 
-### 1. Fix binary sumcheck serialization (S5)
+### 1. Fix binary sumcheck serialization
 
 One-line change: pass `proof` instead of `bin_proof` to `Fr_bin_sc()` in zkargmax.cu. Immediate soundness improvement.
 
-### 2. Store all proof parameters in header (S4 + P2)
+### 2. Store all proof parameters in header
 
 Add `cdf_precision`, `cdf_scale`, `bit_width` to the proof file header so the verifier reads them rather than using potentially-mismatched defaults.
 
-### 3. Prove total_win via sumcheck (S2)
-
-Add an inner-product sumcheck proving `total_win = sum(win_probs_all)`. Interim fix: use the conservative constant `vocab_size × cdf_scale` as the denominator (always valid, slightly looser bound).
-
-### 4. Merge argmax into CDF lookup
+### 3. Merge argmax into CDF lookup
 
 The CDF tLookup proof already implicitly proves non-negativity of all diffs (and therefore argmax correctness), because the LogUp identity operates on the original field elements — a negative diff (near p) cannot match any table entry. Making the CDF table large enough to cover the full diff range (e.g., `cdf_precision = 20`, table = 8 MB) eliminates the need for the separate zkArgmax bit-decomposition proof entirely, replacing 32 binary sumchecks with zero additional work.
 
-### 5. Log-space division trick for true ZK (P6)
-
-Replace the problematic division `q = win_prob / total_win` with a log-space subtraction:
-
-```
-surprise = −log₂(win_prob) + log₂(total_win)
-```
-
-Two log lookups, no division. This eliminates all 6 per-token scalar emissions — intermediate values stay committed but unopened, and only the aggregate H is revealed. Uses existing `tLookupRangeMapping` infrastructure; the only new component is a second `zkLog` instance with a larger table for `total_win` values.
-
-### 6. Build a cryptographic verifier (S1)
+### 4. Build a cryptographic verifier
 
 Replace `verify_entropy.py` with a verifier that checks sumcheck polynomials, tLookup proofs, FRI openings, and commitment bindings. This is the largest remaining engineering effort.
 
-### 7. Serialize weight-binding proofs (S3)
+### 5. Serialize weight-binding proofs
 
 Write `verifyWeightClaim`, `zkFC`, and `Rescaling` proof elements into the proof file. Required for a third-party verifier to confirm that logits derive from committed weights.
 
-### 8. Goldilocks field range validation (P7)
+### 6. Goldilocks field range validation
 
-Verify that no intermediate value in the proof pipeline overflows the 64-bit Goldilocks modulus (p ≈ 1.8 × 10¹⁹). The entropy layer values (logits, diffs, CDF, win_probs) are comfortably within range (~30–33 bits). The concern is `zkFC` matmul accumulation: summing `in_dim` (4096) products of two ~2³² quantized values gives ~2⁷⁶, which exceeds p. The sumcheck *proof* is valid regardless (it never forms the full accumulation), but the *compute* path that produces logits may wrap. Needs empirical validation on real model weights and a comparison of quantized vs FP16 logit rankings. See P7 in plan2.md for the full analysis.
+Verify that no intermediate value in the proof pipeline overflows the 64-bit Goldilocks modulus (p ≈ 1.8 × 10¹⁹). The entropy layer values (logits, diffs, CDF, win_probs) are comfortably within range (~30–33 bits). The concern is `zkFC` matmul accumulation: summing `in_dim` (4096) products of two ~2³² quantized values gives ~2⁷⁶, which exceeds p. The sumcheck *proof* is valid regardless (it never forms the full accumulation), but the *compute* path that produces logits may wrap. Empirical validation on Llama-2-7B (see `python/overflow_check.py`) shows no overflows in quantized inference — the tightest headroom is 21.2 bits at layer 30 `down_proj`, well within the Goldilocks modulus.
 
-### 9. Port setup tooling to Goldilocks
+### 7. Port setup tooling to Goldilocks
 
 The weight commitment scripts (`llama-commit.py`, `commit_final_layers.py`, `ppgen`) and per-layer proof orchestration (`run_proofs.py`, `llama-*.py`) currently only support BLS12-381 / Pedersen. These need Goldilocks + FRI PCS equivalents for full end-to-end proving.
 
-### 10. Performance optimization (Phase 7)
+### 8. Performance optimization (Phase 7)
 
 - Poseidon2 hash to replace SHA-256 for faster GPU Merkle trees
 - NTT optimization (single-kernel launch, precomputed twiddles)
@@ -338,33 +325,30 @@ The weight commitment scripts (`llama-commit.py`, `commit_final_layers.py`, `ppg
 
 ## Repository Structure
 
-| Path | Description |
-|---|---|
-| `goldilocks.cu/cuh` | Goldilocks field arithmetic |
-| `bls12-381.cu/cuh` | BLS12-381 field arithmetic (legacy) |
-| `ntt.cu/cuh` | Number-theoretic transform |
-| `merkle.cu/cuh` | SHA-256 Merkle tree |
-| `fri.cu/cuh` | FRI protocol |
-| `fri_pcs.cu/cuh` | FRI polynomial commitment scheme |
-| `fr-tensor.cu/cuh` | GPU tensor operations over any field |
-| `proof.cu/cuh` | Sumcheck protocols, Weight struct |
-| `tlookup.cu/cuh` | LogUp lookup argument |
-| `zkentropy.cu/cuh` | Conditional entropy proof |
-| `zkargmax.cu/cuh` | Argmax proof |
-| `zknormalcdf.cu/cuh` | Normal CDF lookup proof |
-| `zklog.cu/cuh` | Log₂ lookup proof |
-| `zkfc.cu/cuh` | Fully connected layer proof |
-| `zksoftmax.cu/cuh` | Softmax proof |
-| `rescaling.cu/cuh` | Fixed-point rescaling proof |
-| `zkrelu.cu/cuh` | ReLU proof |
-| `zkllm_entropy.cu` | Main prover binary |
-| `verify_entropy.py` | Python verifier (arithmetic-only) |
-| `calibrate_sigma.py` | Sigma calibration tool |
-| `plan2.md` | Security review and implementation plan |
-| `design-goals.md` | Design principles and threat model |
-| `bench-results-*.md` | Performance benchmarks |
-| `test_*.cu` | Test binaries |
-| `Makefile` | Build system (BLS12-381 and Goldilocks targets) |
+```
+src/
+  field/          goldilocks.cu/cuh, bls12-381.cu/cuh — field arithmetic
+  tensor/         fr-tensor.cu/cuh, g1-tensor.cu/cuh — GPU tensor operations
+  poly/           polynomial.cu/cuh, ntt.cu/cuh — polynomials and NTT
+  commit/         merkle.cu/cuh, fri.cu/cuh, fri_pcs.cu/cuh — commitments
+  proof/          proof.cu/cuh — sumcheck protocols, Weight struct
+  zknn/           tlookup, zkargmax, zknormalcdf, zklog, zkfc,
+                  zksoftmax, rescaling, zkrelu — proof modules
+  entropy/        zkentropy.cu/cuh — conditional entropy proof
+  llm/            rmsnorm, ffn, self-attn, etc. — LLM layer proofs
+  util/           ioutils, timer — I/O and timing helpers
+test/
+  test_*.cu       Test binaries (Goldilocks and BLS12-381)
+python/
+  verify_entropy.py       Python verifier (arithmetic-only)
+  calibrate_sigma.py      Sigma calibration tool
+  overflow_check.py       Goldilocks field overflow analysis (Llama-2-7B)
+  commit_final_layers.py  Weight commitment scripts
+  run_proofs.py           Per-layer proof orchestration
+  llama-*.py              Llama-2 layer proof runners
+Makefile                        Build system (BLS12-381 and Goldilocks targets)
+plan-remaining-proofs.md        Security review and implementation plan
+```
 
 ---
 
