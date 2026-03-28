@@ -179,19 +179,29 @@ int main(int argc, char* argv[]) {
 
     // ── Step 6: Prove lm_head — links logits to committed W_lm ───────────────
     cout << "Proving lm_head (zkFC)..." << endl;
-    rs_lm.prove(logits_batch, logits_batch_);
-    verifyWeightClaim(lm_head_w, lm_fc.prove(normed_, logits_batch)[0]);
+    rs_lm.prove(logits_batch, logits_batch_, proof);
+    verifyWeightClaim(lm_head_w, lm_fc.prove(normed_, logits_batch, proof)[0]);
 
     // ── Step 7: Prove final RMSNorm — links normed_hidden to committed W_norm ─
     cout << "Proving final RMSNorm..." << endl;
-    rs_norm2.prove(normed, normed_);
+    rs_norm2.prove(normed, normed_, proof);
     auto u_hp = random_vec(ceilLog2(normed.size));
-    hadamard_product_sumcheck(g_inv_rms_, hidden, u_hp, random_vec(ceilLog2(normed.size)));
-    rs_norm1.prove(g_inv_rms, g_inv_rms_);
-    verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
+    auto hp_vals = hadamard_product_sumcheck(g_inv_rms_, hidden, u_hp, random_vec(ceilLog2(normed.size)));
+    // Convert hadamard sumcheck Fr_t triples to Polynomial objects.
+    // Each round produces 3 values (degree-2 polynomial evals at 0,1,2);
+    // the base case appends 2 final openings a(0), b(0).
+    for (size_t i = 0; i + 2 < hp_vals.size(); i += 3) {
+        proof.push_back(Polynomial({hp_vals[i], hp_vals[i+1], hp_vals[i+2]}));
+    }
+    if (hp_vals.size() % 3 == 2) {
+        proof.push_back(Polynomial(hp_vals[hp_vals.size() - 2]));
+        proof.push_back(Polynomial(hp_vals[hp_vals.size() - 1]));
+    }
+    rs_norm1.prove(g_inv_rms, g_inv_rms_, proof);
+    verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms, proof)[0]);
 
     // ── Serialise proof ───────────────────────────────────────────────────────
-    // Format (v4 — argmax merged into CDF, bit_width removed):
+    // Format (v5 — includes weight-binding proofs):
     //   [8 bytes]  magic "ZKENTROP"
     //   [8 bytes]  entropy_val (uint64, in log_scale units)
     //   [4 bytes]  seq_len

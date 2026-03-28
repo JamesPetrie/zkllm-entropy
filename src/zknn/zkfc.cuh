@@ -36,6 +36,7 @@ public:
     // void prove(const FrTensor& X, const FrTensor& Z, Commitment& generators) const;
 
     vector<Claim> prove(const FrTensor& X, const FrTensor& Y) const;
+    vector<Claim> prove(const FrTensor& X, const FrTensor& Y, vector<Polynomial>& proof) const;
 
     static zkFC from_float_gpu_ptr (uint input_size, uint output_size, unsigned long scaling_factor, float* weight_ptr, float* bias_ptr);
     static zkFC from_float_gpu_ptr (uint input_size, uint output_size, unsigned long scaling_factor, float* weight_ptr);

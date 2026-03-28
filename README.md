@@ -269,9 +269,7 @@ The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The 
 
 ### Proof completeness gaps
 
-1. **Weight-binding proofs not serialized.** The prover runs `verifyWeightClaim` and `zkFC` locally, but these proofs are not written to the proof file. The proof currently shows that *some* logits yield entropy H, but doesn't prove those logits came from committed weights.
-
-2. **Verifier is arithmetic-only.** `verify_entropy.py` recomputes CDF/log/quantization from scalar proof values and checks consistency. It does not verify any sumcheck, commitment opening, tLookup proof, or argmax range proof. A full cryptographic verifier has not been implemented.
+1. **Verifier is arithmetic-only.** `verify_entropy.py` recomputes CDF/log/quantization from scalar proof values and checks consistency. It does not verify any sumcheck, commitment opening, tLookup proof, or FRI opening. A full cryptographic verifier has not been implemented.
 
 ---
 
@@ -283,19 +281,15 @@ Planned improvements, roughly in priority order.
 
 Replace `verify_entropy.py` with a verifier that checks sumcheck polynomials, tLookup proofs, FRI openings, and commitment bindings. This is the largest remaining engineering effort.
 
-### 2. Serialize weight-binding proofs
-
-Write `verifyWeightClaim`, `zkFC`, and `Rescaling` proof elements into the proof file. Required for a third-party verifier to confirm that logits derive from committed weights.
-
-### 3. Goldilocks field range validation
+### 2. Goldilocks field range validation
 
 Verify that no intermediate value in the proof pipeline overflows the 64-bit Goldilocks modulus (p ≈ 1.8 × 10¹⁹). The entropy layer values (logits, diffs, CDF, win_probs) are comfortably within range (~30–33 bits). The concern is `zkFC` matmul accumulation: summing `in_dim` (4096) products of two ~2³² quantized values gives ~2⁷⁶, which exceeds p. The sumcheck *proof* is valid regardless (it never forms the full accumulation), but the *compute* path that produces logits may wrap. Empirical validation on Llama-2-7B (see `python/overflow_check.py`) shows no overflows in quantized inference — the tightest headroom is 21.2 bits at layer 30 `down_proj`, well within the Goldilocks modulus.
 
-### 4. Port setup tooling to Goldilocks
+### 3. Port setup tooling to Goldilocks
 
 The weight commitment scripts (`llama-commit.py`, `commit_final_layers.py`, `ppgen`) and per-layer proof orchestration (`run_proofs.py`, `llama-*.py`) currently only support BLS12-381 / Pedersen. These need Goldilocks + FRI PCS equivalents for full end-to-end proving.
 
-### 5. Performance optimization
+### 4. Performance optimization
 
 - Poseidon2 hash to replace SHA-256 for faster GPU Merkle trees
 - NTT optimization (single-kernel launch, precomputed twiddles)

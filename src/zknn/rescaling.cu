@@ -39,40 +39,27 @@ Rescaling::~Rescaling()
 
 vector<Claim> Rescaling::prove(const FrTensor& X, const FrTensor& X_)
 {
+    vector<Polynomial> unused_proof;
+    return prove(X, X_, unused_proof);
+}
+
+vector<Claim> Rescaling::prove(const FrTensor& X, const FrTensor& X_, vector<Polynomial>& proof)
+{
     if (X.size != X_.size)
-    {
         throw std::runtime_error("Error: the size of X and X_ should be the same.");
-    }
 
     auto u = random_vec(ceilLog2(X.size));
     auto v = random_vec(ceilLog2(X.size));
-    
     auto rand_temp = random_vec(2);
-    vector<Polynomial> proof;
 
-    auto rem = rem_tensor_ptr -> pad({rem_tensor_ptr -> size});
+    auto rem = rem_tensor_ptr->pad({rem_tensor_ptr->size});
     auto m = tl_rem.prep(rem);
 
-    // cout << X << endl;
-    // cout << X_ << endl;
-    // cout << rem << endl;
-    // cout << m << endl;
-    // cout << tl_rem.table << endl;
-    
     if (X(u) != X_(u) * FR_FROM_INT(scaling_factor) + rem(u))
-    {
         throw std::runtime_error("Error: the rem is not correct.");
-    }
-    // cout << rem << endl;
-    // cout << rem.sum() << endl;
-    // cout << m << endl;
-    // cout << tl_rem.table << endl;
-    // cout << m*tl_rem.table << endl;
-    // cout << (m*tl_rem.table).sum() << endl;
+
     tl_rem.prove(rem, m, rand_temp[0], rand_temp[1], u, v, proof);
 
-    
-    
     cout << "Rescaling proof complete." << endl;
     return {};
 }

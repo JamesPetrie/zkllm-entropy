@@ -72,19 +72,22 @@ FrTensor zkFC::operator()(const FrTensor& X) const { // X.size is batch_size * i
 
 vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y) const
 {
+    vector<Polynomial> unused_proof;
+    return prove(X, Y, unused_proof);
+}
+
+vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y, vector<Polynomial>& proof) const
+{
     if (has_bias) throw std::runtime_error("Cleaned-up version not implemented for zkFC with bias. Use zkFCStacked instead.");
     uint batchSize = X.size / inputSize;
     auto u_batch = random_vec(ceilLog2(batchSize));
     auto u_input = random_vec(ceilLog2(inputSize));
     auto u_output = random_vec(ceilLog2(outputSize));
 
-    
-
     auto claim = Y.multi_dim_me({u_batch, u_output}, {batchSize, outputSize});
 
     auto X_reduced = X.partial_me(u_batch, batchSize, inputSize);
-    auto W_reduced = weights.partial_me(u_output, outputSize, 1); // Y_reduced: num * inputSize
-    vector<Polynomial> proof;
+    auto W_reduced = weights.partial_me(u_output, outputSize, 1);
     auto final_claim = zkip(claim, X_reduced, W_reduced, u_input, proof);
     auto claim_X = X.multi_dim_me({u_batch, u_input}, {batchSize, inputSize});
     auto claim_W = weights.multi_dim_me({u_input, u_output}, {inputSize, outputSize});
@@ -92,10 +95,8 @@ vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y) const
         throw std::runtime_error("Claim does not match");
     }
     vector<Claim> claims;
-    //Claim output_claim = {claim_W, &weights, vector<vector<Fr_t>>({u_input, u_output}), vector<uint>({inputSize, outputSize})};
     claims.push_back({claim_W, vector<vector<Fr_t>>({u_input, u_output}), vector<uint>({inputSize, outputSize})});
     return claims;
-
 }
 
 
