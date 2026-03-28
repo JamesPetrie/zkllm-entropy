@@ -47,7 +47,7 @@ int main(int argc, char* argv[]) {
         cerr << "Usage: " << argv[0]
              << " <workdir> <tokens_file> <proof_output> <sigma_eff>\n"
              << "       [seq_len=1024] [hidden_size=4096] [vocab_size=32000]\n"
-             << "       [bit_width=32] [cdf_precision=12] [log_precision=15]\n"
+             << "       [cdf_precision=20] [log_precision=15]\n"
              << "       [cdf_scale=65536] [log_scale=65536]\n";
         return 1;
     }
@@ -60,11 +60,10 @@ int main(int argc, char* argv[]) {
     uint seq_len      = argc > 5  ? (uint)atoi(argv[5])  : 1024u;
     uint hidden_size  = argc > 6  ? (uint)atoi(argv[6])  : 4096u;
     uint vocab_size   = argc > 7  ? (uint)atoi(argv[7])  : 32000u;
-    uint bit_width    = argc > 8  ? (uint)atoi(argv[8])  : 32u;
-    uint cdf_precision= argc > 9  ? (uint)atoi(argv[9])  : 15u;
-    uint log_precision= argc > 10 ? (uint)atoi(argv[10]) : 15u;
-    uint cdf_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
-    uint log_scale    = argc > 12 ? (uint)atoi(argv[12]) : 65536u;
+    uint cdf_precision= argc > 8  ? (uint)atoi(argv[8])  : 20u;
+    uint log_precision= argc > 9  ? (uint)atoi(argv[9])  : 15u;
+    uint cdf_scale    = argc > 10 ? (uint)atoi(argv[10]) : 65536u;
+    uint log_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
 
     auto path = [&](const string& f) { return workdir + "/" + f; };
 
@@ -154,7 +153,7 @@ int main(int argc, char* argv[]) {
     t_entropy_compute.start();
     cout << "Building entropy lookup tables..." << endl;
     zkConditionalEntropy entropy_prover(
-        vocab_size, bit_width, cdf_precision, log_precision,
+        vocab_size, cdf_precision, log_precision,
         cdf_scale, log_scale, sigma_eff);
 
     cout << "Computing conditional entropy..." << endl;

@@ -7,20 +7,17 @@
 
 zkConditionalEntropy::zkConditionalEntropy(
     uint vocab_size,
-    uint bit_width,
     uint cdf_precision,
     uint log_precision,
     uint cdf_scale,
     uint log_scale,
     double sigma_eff
 ) : vocab_size(vocab_size),
-    bit_width(bit_width),
     cdf_precision(cdf_precision),
     log_precision(log_precision),
     cdf_scale(cdf_scale),
     log_scale(log_scale),
     sigma_eff(sigma_eff),
-    argmax_prover(bit_width),
     cdf_prover(cdf_precision, cdf_scale, sigma_eff),
     log_prover(log_precision, log_scale)
 {}
@@ -36,6 +33,37 @@ static inline unsigned long long fr_to_ull(const Fr_t& a) {
     return ((unsigned long long)a.val[1] << 32) | a.val[0];
 }
 #endif
+
+// ── Host-side argmax scan ────────────────────────────────────────────────────
+// Finds the index of the maximum element (treating field elements as signed).
+
+static bool fr_gt(const Fr_t& a, const Fr_t& b) {
+#ifdef USE_GOLDILOCKS
+    bool a_neg = a.val > (GOLDILOCKS_P >> 1);
+    bool b_neg = b.val > (GOLDILOCKS_P >> 1);
+    if (a_neg != b_neg) return b_neg;
+    return a.val > b.val;
+#else
+    bool a_neg = a.val[2] || a.val[3] || a.val[4] || a.val[5] || a.val[6] || a.val[7];
+    bool b_neg = b.val[2] || b.val[3] || b.val[4] || b.val[5] || b.val[6] || b.val[7];
+    if (a_neg != b_neg) return b_neg;
+    unsigned long long av = ((unsigned long long)a.val[1] << 32) | a.val[0];
+    unsigned long long bv = ((unsigned long long)b.val[1] << 32) | b.val[0];
+    return av > bv;
+#endif
+}
+
+static uint find_argmax(const FrTensor& logits) {
+    uint N = logits.size;
+    Fr_t* cpu = new Fr_t[N];
+    cudaMemcpy(cpu, logits.gpu_data, N * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+    uint best = 0;
+    for (uint i = 1; i < N; i++) {
+        if (fr_gt(cpu[i], cpu[best])) best = i;
+    }
+    delete[] cpu;
+    return best;
+}
 
 // ── GPU kernels for batched operations ───────────────────────────────────────
 
@@ -194,7 +222,7 @@ Fr_t zkConditionalEntropy::compute(
     Fr_t* v_star_cpu = new Fr_t[T];
     for (uint t = 0; t < T; t++) {
         FrTensor row = tensor_row(logits_all, t, V);
-        uint t_star = argmax_prover.compute(row);
+        uint t_star = find_argmax(row);
         v_star_cpu[t] = row(t_star);
     }
     FrTensor v_star_vec(T, v_star_cpu);
@@ -282,19 +310,17 @@ Fr_t zkConditionalEntropy::prove(
         throw std::invalid_argument("prove: tokens.size() != T");
 
     uint TV = T * V;
-    Fr_t logits_claims = FR_FROM_INT(0);
 
     // ════════════════════════════════════════════════════════════════════════
     // Phase 1: Compute all intermediate tensors
     // ════════════════════════════════════════════════════════════════════════
 
-    // 1. Argmax per row
-    vector<uint> t_star_vec(T);
+    // 1. Argmax per row (find max logit for each position)
     Fr_t* v_star_cpu = new Fr_t[T];
     for (uint t = 0; t < T; t++) {
         FrTensor row = tensor_row(logits_all, t, V);
-        t_star_vec[t] = argmax_prover.compute(row);
-        v_star_cpu[t] = row(t_star_vec[t]);
+        uint t_star = find_argmax(row);
+        v_star_cpu[t] = row(t_star);
     }
     FrTensor v_star_vec_t(T, v_star_cpu);
     delete[] v_star_cpu;
@@ -381,18 +407,11 @@ Fr_t zkConditionalEntropy::prove(
     // Phase 2: Proofs
     // ════════════════════════════════════════════════════════════════════════
 
-    // ── 2a. Argmax proofs (one per position) ────────────────────────────────
-    std::cout << "  Proving argmax (" << T << " positions)..." << std::endl;
-    for (uint t = 0; t < T; t++) {
-        FrTensor row = tensor_row(logits_all, t, V);
-        Fr_t v_star = row(t_star_vec[t]);
-        auto u_arg = random_vec(ceilLog2(V));
-        Fr_t lc = argmax_prover.prove(row, t_star_vec[t], v_star, u_arg, proof);
-        logits_claims = logits_claims + lc;
-    }
-
-    // ── 2b. CDF tLookup proof (T*V tensor → T*V values) ────────────────────
+    // ── 2a. CDF tLookup proof (T*V tensor → T*V values) ──────────────────────
     // Cryptographically binds all CDF values to the public CDF table.
+    // Implicitly proves non-negativity of all diffs: a negative diff (near p)
+    // cannot match any table entry in [0, 2^cdf_precision), so the LogUp
+    // identity would fail.  This replaces the separate zkArgmax proof.
     // Pads to satisfy D % N == 0 constraint (N = 2^cdf_precision).
     std::cout << "  Proving CDF lookup (" << TV << " elements)..." << std::endl;
     {
@@ -418,7 +437,7 @@ Fr_t zkConditionalEntropy::prove(
                          r_cdf, alpha, beta, u_cdf, v_cdf, proof);
     }
 
-    // ── 2c. total_win row-sum proof ────────────────────────────────────────
+    // ── 2b. total_win row-sum proof ────────────────────────────────────────
     // Proves total_win_vec[t] = sum_i win_probs_all[t*V + i] via
     // partial MLE + inner product sumcheck with all-ones vector.
     std::cout << "  Proving total_win row sums..." << std::endl;
@@ -443,7 +462,7 @@ Fr_t zkConditionalEntropy::prove(
         inner_product_sumcheck(wp_partial, ones_V, u_v);
     }
 
-    // ── 2d. Actual-token extraction proof ───────────────────────────────────
+    // ── 2c. Actual-token extraction proof ───────────────────────────────────
     // Proves actual_wp_vec[t] = win_probs_all[t*V + tokens[t]] via
     // inner product with indicator tensor.
     std::cout << "  Proving actual-token extraction..." << std::endl;
@@ -470,7 +489,7 @@ Fr_t zkConditionalEntropy::prove(
         proof.push_back(Polynomial(wp_at_u));
     }
 
-    // ── 2e. Quotient-remainder proof ───────────────────────────────────────
+    // ── 2d. Quotient-remainder proof ───────────────────────────────────────
     // Proves surprise[t] = log_table(q[t]) where q[t] = floor(wp[t]*2^p/tw[t]).
     // Division relation: q*tw + r = wp*2^p, with 0 <= q < 2^p, 0 <= r < tw.
     std::cout << "  Proving quotient-remainder division..." << std::endl;
@@ -516,7 +535,7 @@ Fr_t zkConditionalEntropy::prove(
             throw std::runtime_error("prove: batched binary check failed for q/r/gap");
     }
 
-    // ── 2f. Surprise log lookup proof ───────────────────────────────────────
+    // ── 2e. Surprise log lookup proof ───────────────────────────────────────
     // Proves surprise[t] = log_table(q[t]) via tLookup on the padded q tensor.
     std::cout << "  Proving surprise log lookup..." << std::endl;
     {
@@ -533,7 +552,7 @@ Fr_t zkConditionalEntropy::prove(
               << T << " positions, " << proof.size() << " polynomials)."
               << std::endl;
 
-    return logits_claims;
+    return H;
 }
 
 // ── Legacy per-position interface ───────────────────────────────────────────

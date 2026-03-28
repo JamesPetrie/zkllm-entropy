@@ -130,14 +130,13 @@ The hidden state from layer 31 comes from the existing zkLLM layer proof pipelin
 
 All T positions are processed as a single T×V tensor. Only the aggregate entropy H is revealed — no per-token scalars leak.
 
-1. **zkArgmax** — per-position bit-decomposition range proof that t\* is the argmax
-2. **GPU diffs** — `diffs[t,i] = v*[t] − logits[t,i]` (T×V tensor, all non-negative)
-3. **zkNormalCDF** — CDF tLookup: `win_probs[t,i] = (1 − Φ(diff/σ)) × cdf_scale` (one proof over T×V)
-4. **Row-sum sumcheck** — proves `total_win[t] = Σ_i win_probs[t,i]` via partial MLE + inner product sumcheck
-5. **Indicator extraction** — proves `wp[t] = win_probs[t, token[t]]` via inner product with indicator tensor
-6. **Quotient-remainder** — proves `q[t] = floor(wp[t] × 2^p / total_win[t])` via division relation `q·tw + r = wp·2^p` with bit-decomposition range proofs on q, r, and (tw−r−1)
-7. **Surprise lookup** — `surprise[t] = −log₂(q[t] / 2^p) × log_scale` via tLookup
-8. **Accumulate** — `H = Σ_t surprise[t]`
+1. **GPU diffs** — `diffs[t,i] = v*[t] − logits[t,i]` (T×V tensor, all non-negative)
+2. **zkNormalCDF** — CDF tLookup: `win_probs[t,i] = (1 − Φ(diff/σ)) × cdf_scale` (one proof over T×V). Implicitly proves non-negativity of all diffs (and thus argmax correctness) — a negative diff cannot match any CDF table entry in the LogUp identity.
+3. **Row-sum sumcheck** — proves `total_win[t] = Σ_i win_probs[t,i]` via partial MLE + inner product sumcheck
+4. **Indicator extraction** — proves `wp[t] = win_probs[t, token[t]]` via inner product with indicator tensor
+5. **Quotient-remainder** — proves `q[t] = floor(wp[t] × 2^p / total_win[t])` via division relation `q·tw + r = wp·2^p` with bit-decomposition range proofs on q, r, and (tw−r−1)
+6. **Surprise lookup** — `surprise[t] = −log₂(q[t] / 2^p) × log_scale` via tLookup
+7. **Accumulate** — `H = Σ_t surprise[t]`
 
 ### Proof protocol
 
@@ -157,7 +156,7 @@ Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-intera
 | FRI PCS | `src/commit/fri_pcs.cu/cuh` | Integration layer: commit, open, MLE |
 | Sumchecks | `src/proof/proof.cu/cuh` | Inner product, Hadamard, binary sumchecks |
 | tLookup | `src/zknn/tlookup.cu/cuh` | LogUp lookup argument (range + mapping) |
-| zkArgmax | `src/zknn/zkargmax.cu/cuh` | Argmax via bit-decomposition range proof |
+| zkArgmax | `src/zknn/zkargmax.cu/cuh` | Argmax via bit-decomposition range proof (standalone; not used in entropy pipeline) |
 | zkNormalCDF | `src/zknn/zknormalcdf.cu/cuh` | Normal CDF via lookup table |
 | zkLog | `src/zknn/zklog.cu/cuh` | −log₂ via lookup table |
 | zkEntropy | `src/entropy/zkentropy.cu/cuh` | Batched conditional entropy proof |
@@ -168,7 +167,7 @@ Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-intera
 
 ### Test suite
 
-101+ tests pass across 8 Goldilocks test binaries:
+100+ tests pass across 8 Goldilocks test binaries:
 
 | Binary | Tests | Coverage |
 |---|---|---|
@@ -179,9 +178,9 @@ Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-intera
 | `test_fri` | 6 | Small/medium/large polynomial commit-prove-verify |
 | `test_fri_pcs` | 17 | MLE evaluation, binding check, sumcheck integration, Weight |
 | `gold_test_zkargmax` | 6 | Argmax via bit-decomposition range proof |
-| `gold_test_zkentropy` | 9 | Batched entropy: argmax, surprise, proof generation, consistency |
+| `gold_test_zkentropy` | 8 | Batched entropy: surprise, proof generation, consistency |
 
-Additional BLS12-381 test binaries: `test_zkargmax` (6), `test_zklog` (5), `test_zknormalcdf` (5), `test_zkentropy` (9).
+Additional BLS12-381 test binaries: `test_zkargmax` (6), `test_zklog` (5), `test_zknormalcdf` (5), `test_zkentropy` (8).
 
 ### Performance (H100 PCIe, Llama-2-7B, 1024 tokens)
 
@@ -274,37 +273,29 @@ The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The 
 
 2. **Verifier is arithmetic-only.** `verify_entropy.py` recomputes CDF/log/quantization from scalar proof values and checks consistency. It does not verify any sumcheck, commitment opening, tLookup proof, or argmax range proof. A full cryptographic verifier has not been implemented.
 
-### Other issues
-
-- Negative diffs produce warnings but not errors
-
 ---
 
 ## Next Steps
 
 Planned improvements, roughly in priority order.
 
-### 1. Merge argmax into CDF lookup
-
-The CDF tLookup proof already implicitly proves non-negativity of all diffs (and therefore argmax correctness), because the LogUp identity operates on the original field elements — a negative diff (near p) cannot match any table entry. Making the CDF table large enough to cover the full diff range (e.g., `cdf_precision = 20`, table = 8 MB) eliminates the need for the separate zkArgmax bit-decomposition proof entirely, replacing 32 binary sumchecks with zero additional work.
-
-### 2. Build a cryptographic verifier
+### 1. Build a cryptographic verifier
 
 Replace `verify_entropy.py` with a verifier that checks sumcheck polynomials, tLookup proofs, FRI openings, and commitment bindings. This is the largest remaining engineering effort.
 
-### 3. Serialize weight-binding proofs
+### 2. Serialize weight-binding proofs
 
 Write `verifyWeightClaim`, `zkFC`, and `Rescaling` proof elements into the proof file. Required for a third-party verifier to confirm that logits derive from committed weights.
 
-### 4. Goldilocks field range validation
+### 3. Goldilocks field range validation
 
 Verify that no intermediate value in the proof pipeline overflows the 64-bit Goldilocks modulus (p ≈ 1.8 × 10¹⁹). The entropy layer values (logits, diffs, CDF, win_probs) are comfortably within range (~30–33 bits). The concern is `zkFC` matmul accumulation: summing `in_dim` (4096) products of two ~2³² quantized values gives ~2⁷⁶, which exceeds p. The sumcheck *proof* is valid regardless (it never forms the full accumulation), but the *compute* path that produces logits may wrap. Empirical validation on Llama-2-7B (see `python/overflow_check.py`) shows no overflows in quantized inference — the tightest headroom is 21.2 bits at layer 30 `down_proj`, well within the Goldilocks modulus.
 
-### 5. Port setup tooling to Goldilocks
+### 4. Port setup tooling to Goldilocks
 
 The weight commitment scripts (`llama-commit.py`, `commit_final_layers.py`, `ppgen`) and per-layer proof orchestration (`run_proofs.py`, `llama-*.py`) currently only support BLS12-381 / Pedersen. These need Goldilocks + FRI PCS equivalents for full end-to-end proving.
 
-### 6. Performance optimization
+### 5. Performance optimization
 
 - Poseidon2 hash to replace SHA-256 for faster GPU Merkle trees
 - NTT optimization (single-kernel launch, precomputed twiddles)

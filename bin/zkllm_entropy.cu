@@ -17,7 +17,7 @@
 // Usage:
 //   ./zkllm_entropy <workdir> <tokens_file> <proof_output> <sigma_eff>
 //                  [seq_len=1024] [hidden_size=4096] [vocab_size=32000]
-//                  [bit_width=32] [cdf_precision=12] [log_precision=15]
+//                  [cdf_precision=20] [log_precision=15]
 //                  [cdf_scale=65536] [log_scale=65536]
 //
 // Required files in <workdir>:
@@ -64,7 +64,7 @@ int main(int argc, char* argv[]) {
         cerr << "Usage: " << argv[0]
              << " <workdir> <tokens_file> <proof_output> <sigma_eff>\n"
              << "       [seq_len=1024] [hidden_size=4096] [vocab_size=32000]\n"
-             << "       [bit_width=32] [cdf_precision=12] [log_precision=15]\n"
+             << "       [cdf_precision=20] [log_precision=15]\n"
              << "       [cdf_scale=65536] [log_scale=65536]\n";
         return 1;
     }
@@ -77,11 +77,10 @@ int main(int argc, char* argv[]) {
     uint seq_len      = argc > 5  ? (uint)atoi(argv[5])  : 1024u;
     uint hidden_size  = argc > 6  ? (uint)atoi(argv[6])  : 4096u;
     uint vocab_size   = argc > 7  ? (uint)atoi(argv[7])  : 32000u;
-    uint bit_width    = argc > 8  ? (uint)atoi(argv[8])  : 32u; // logit_scale=65536 * max_gap; 2^32/65536 covers any realistic range
-    uint cdf_precision= argc > 9  ? (uint)atoi(argv[9])  : 15u; // 2^15=32768 > 6*sigma_eff(5223)=31338, covers Phi≈1 at boundary
-    uint log_precision= argc > 10 ? (uint)atoi(argv[10]) : 15u;
-    uint cdf_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
-    uint log_scale    = argc > 12 ? (uint)atoi(argv[12]) : 65536u;
+    uint cdf_precision= argc > 8  ? (uint)atoi(argv[8])  : 20u; // 2^20 covers diffs up to ~1M (logit gap ~16 in float units)
+    uint log_precision= argc > 9  ? (uint)atoi(argv[9])  : 15u;
+    uint cdf_scale    = argc > 10 ? (uint)atoi(argv[10]) : 65536u;
+    uint log_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
 
     auto path = [&](const string& f) { return workdir + "/" + f; };
 
@@ -156,7 +155,7 @@ int main(int argc, char* argv[]) {
 
     cout << "Building entropy lookup tables..." << endl;
     zkConditionalEntropy entropy_prover(
-        vocab_size, bit_width, cdf_precision, log_precision,
+        vocab_size, cdf_precision, log_precision,
         cdf_scale, log_scale, sigma_eff);
 
     // ── Step 4: Compute entropy (batched, flat T×V tensor) ───────────────────
@@ -192,7 +191,7 @@ int main(int argc, char* argv[]) {
     verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
 
     // ── Serialise proof ───────────────────────────────────────────────────────
-    // Format (v3 — adds bit_width to header):
+    // Format (v4 — argmax merged into CDF, bit_width removed):
     //   [8 bytes]  magic "ZKENTROP"
     //   [8 bytes]  entropy_val (uint64, in log_scale units)
     //   [4 bytes]  seq_len
@@ -202,7 +201,6 @@ int main(int argc, char* argv[]) {
     //   [4 bytes]  cdf_precision
     //   [4 bytes]  log_precision
     //   [4 bytes]  cdf_scale
-    //   [4 bytes]  bit_width
     //   [4 bytes]  n_polys
     //   For each polynomial:
     //     [4 bytes] n_coeffs
@@ -221,7 +219,6 @@ int main(int argc, char* argv[]) {
         f.write((char*)&cdf_precision, sizeof(cdf_precision));
         f.write((char*)&log_precision, sizeof(log_precision));
         f.write((char*)&cdf_scale,     sizeof(cdf_scale));
-        f.write((char*)&bit_width,     sizeof(bit_width));
 
         uint32_t n_polys = (uint32_t)proof.size();
         f.write((char*)&n_polys, sizeof(n_polys));

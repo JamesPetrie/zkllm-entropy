@@ -51,24 +51,16 @@ static FrTensor make_flat_logits(uint T, uint V,
 
 int main() {
     const uint vocab_size    = 32;   // small vocab for testing
-    const uint bit_width     = 16;
     const uint cdf_precision = 16;
     const uint log_precision = 16;   // 65536 entries; must be >= ceil(log2(V*cdf_scale))
     const uint cdf_scale     = 1u << 16;
     const uint log_scale     = 1u << 16;
     const double sigma_eff   = 500.0;
 
-    zkConditionalEntropy prover(vocab_size, bit_width, cdf_precision, log_precision,
+    zkConditionalEntropy prover(vocab_size, cdf_precision, log_precision,
                                 cdf_scale, log_scale, sigma_eff);
 
-    // ── Test 1: argmax correctly identifies winner (legacy interface) ─────
-    {
-        auto logits = make_logits(vocab_size, /*winner=*/5, 1000L, 100L);
-        uint t = prover.argmax_prover.compute(logits);
-        check(t == 5, "argmax identifies correct winner");
-    }
-
-    // ── Test 2: greedy token has low surprise (legacy interface) ──────────
+    // ── Test 1: greedy token has low surprise (legacy interface) ──────────
     {
         auto logits = make_logits(vocab_size, 5, 5000L, 100L);
         Fr_t s = prover.computePosition(logits, /*actual_token=*/5);
@@ -78,7 +70,7 @@ int main() {
         check(surprise_bits < 2.0, "greedy token has surprise < 2 bits");
     }
 
-    // ── Test 3: unlikely token has high surprise (legacy interface) ───────
+    // ── Test 2: unlikely token has high surprise (legacy interface) ───────
     {
         auto logits = make_logits(vocab_size, 5, 5000L, 100L);
         Fr_t s = prover.computePosition(logits, /*actual_token=*/20);
@@ -88,7 +80,7 @@ int main() {
         check(surprise_bits > 1.0, "unlikely token has surprise > 1 bit");
     }
 
-    // ── Test 4: uniform logits → moderate surprise ───────────────────────
+    // ── Test 3: uniform logits → moderate surprise ───────────────────────
     {
         Fr_t* cpu = new Fr_t[vocab_size];
         for (uint i = 0; i < vocab_size; i++) cpu[i] = FR_FROM_INT(1000);
@@ -105,7 +97,7 @@ int main() {
               "uniform distribution surprise ~ log2(vocab_size)");
     }
 
-    // ── Test 5: batched compute (flat tensor) ────────────────────────────
+    // ── Test 4: batched compute (flat tensor) ────────────────────────────
     {
         uint T = 4;
         vector<uint> winners = {5, 3, 5, 5};
@@ -118,7 +110,7 @@ int main() {
         cout << "  batched entropy = " << (double)tv / log_scale << " bits" << endl;
     }
 
-    // ── Test 6: batched compute matches legacy ──────────────────────────
+    // ── Test 5: batched compute matches legacy ──────────────────────────
     {
         uint T = 2;
         auto logits0 = make_logits(vocab_size, 5, 5000L, 100L);
@@ -147,7 +139,7 @@ int main() {
               "batched compute matches legacy per-position compute");
     }
 
-    // ── Test 7: prove() does not throw for correct entropy ──────────────
+    // ── Test 6: prove() does not throw for correct entropy ──────────────
     {
         uint T = 2;
         vector<uint> winners = {5, 3};
@@ -167,7 +159,7 @@ int main() {
         cout << "  proof has " << proof.size() << " polynomials" << endl;
     }
 
-    // ── Test 8: replacing greedy with unlikely tokens increases entropy ──
+    // ── Test 7: replacing greedy with unlikely tokens increases entropy ──
     {
         uint T = 4;
         vector<uint> winners(T, 5u);
@@ -187,9 +179,9 @@ int main() {
               "replacing greedy tokens with unlikely ones increases entropy");
     }
 
-    // ── Test 9: no per-position values leaked in proof ──────────────────
+    // ── Test 8: no per-position values leaked in proof ──────────────────
     //    The proof should NOT contain per-position win_prob, total_win, etc.
-    //    Check that the number of proof polynomials is reasonable for batched.
+    //    With argmax merged into CDF, the proof has no per-position proofs at all.
     {
         uint T = 4;
         vector<uint> winners(T, 5u);
@@ -200,9 +192,8 @@ int main() {
         vector<Polynomial> proof;
         prover.prove(logits, T, vocab_size, tokens, claimed, proof);
 
-        // Old proof: 6 constants per position = 24 for T=4 + argmax polys.
-        // New proof: argmax polys + CDF tLookup + 3 constants + log tLookup.
-        // The proof should not scale as 6*T.
+        // Proof: CDF tLookup + row-sum + extraction + quotient-remainder + log tLookup.
+        // No per-position argmax proofs (implicit in CDF lookup).
         cout << "  proof size = " << proof.size() << " polynomials for T=" << T << endl;
         check(true, "proof generated without per-position scalar leakage");
     }

@@ -1,7 +1,6 @@
 #ifndef ZKENTROPY_CUH
 #define ZKENTROPY_CUH
 
-#include "zknn/zkargmax.cuh"
 #include "zknn/zknormalcdf.cuh"
 #include "zknn/zklog.cuh"
 #include "tensor/fr-tensor.cuh"
@@ -15,17 +14,23 @@
 // per-token scalars (diff, win_prob, total_win, surprise) leak.
 //
 // Proof structure:
-//   1. Batched argmax (bit-decomp range proof on T x V diffs tensor)
-//   2. CDF tLookup proof  (T x V -> T x V, one proof)
-//   3. total_win row-sum proof (partial MLE + inner product sumcheck)
-//   4. Actual-token extraction proof (indicator inner product)
-//   5. Quotient-remainder proof for surprise computation:
+//   1. CDF tLookup proof  (T x V -> T x V, one proof)
+//      — implicitly proves non-negativity of all diffs (negative diffs
+//        cannot match any table entry in the LogUp identity)
+//   2. total_win row-sum proof (partial MLE + inner product sumcheck)
+//   3. Actual-token extraction proof (indicator inner product)
+//   4. Quotient-remainder proof for surprise computation:
 //      q*tw + r = wp*2^p, with bit-decomp range proofs on q, r, (tw-r-1)
-//   6. Surprise log lookup proof (tLookup on padded q tensor)
+//   5. Surprise log lookup proof (tLookup on padded q tensor)
+//
+// Non-negativity of diffs implies argmax correctness: if any logit[i] > v_star,
+// then diff[i] = v_star - logit[i] wraps to near p (~1.8e19), which cannot
+// match any CDF table entry (max = 2^cdf_precision - 1).  A prover who
+// inflates v_star above the true max only increases the entropy bound,
+// which is against their interest.
 //
 // Parameters:
 //   vocab_size    : number of tokens (e.g. 32000 for LLaMA)
-//   bit_width     : bits for argmax diff range proof
 //   cdf_precision : bits for CDF table input range [0, 2^cdf_precision)
 //   log_precision : bits for log table input range [1, 2^log_precision]
 //   cdf_scale     : fixed-point output scale for CDF values (e.g. 1<<16)
@@ -34,20 +39,17 @@
 class zkConditionalEntropy {
 public:
     uint vocab_size;
-    uint bit_width;
     uint cdf_precision;
     uint log_precision;
     uint cdf_scale;
     uint log_scale;
     double sigma_eff;
 
-    zkArgmax    argmax_prover;
     zkNormalCDF cdf_prover;
     zkLog       log_prover;
 
     zkConditionalEntropy(
         uint vocab_size,
-        uint bit_width,
         uint cdf_precision,
         uint log_precision,
         uint cdf_scale,
