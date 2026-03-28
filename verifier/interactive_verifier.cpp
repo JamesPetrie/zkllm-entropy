@@ -27,6 +27,7 @@
 #include <climits>
 #include <vector>
 #include <string>
+#include <algorithm>
 
 // ── Wire protocol ───────────────────────────────────────────────────────────
 
@@ -507,34 +508,26 @@ static bool verify_tlookup_finals(
 
     bool all_ok = true;
 
-    // Check A = 1/(S + beta)
-    Fr_t s_plus_beta = fr_add(final_S, tl.beta);
-    Fr_t expected_A = fr_inverse(s_plus_beta);
-    if (expected_A == final_A) {
-        stats.tl_checks_passed++;
-        if (verbose) printf("  [%s] tL A==1/(S+beta) OK\n", label.c_str());
-    } else {
-        stats.tl_checks_failed++;
-        stats.error("tLookup A != 1/(S+beta) at " + label);
-        all_ok = false;
+    // NOTE: A == 1/(S+beta) and B == 1/(T+beta) hold element-wise for the
+    // original tensors, but NOT after MLE reduction (MLE is linear, inverse
+    // is not).  These checks require a PCS to verify openings of the committed
+    // polynomials.  Without PCS, we can only verify the public table T.
+
+    if (verbose) {
+        printf("  [%s] tL finals: A=%lu S=%lu B=%lu T=%lu m=%lu\n",
+               label.c_str(), final_A.val, final_S.val, final_B.val,
+               final_T.val, final_m.val);
     }
 
-    // Check B = 1/(T + beta)
-    Fr_t t_plus_beta = fr_add(final_T, tl.beta);
-    Fr_t expected_B = fr_inverse(t_plus_beta);
-    if (expected_B == final_B) {
-        stats.tl_checks_passed++;
-        if (verbose) printf("  [%s] tL B==1/(T+beta) OK\n", label.c_str());
-    } else {
-        stats.tl_checks_failed++;
-        stats.error("tLookup B != 1/(T+beta) at " + label);
-        all_ok = false;
-    }
-
-    // Check T matches public table MLE at phase2 challenge point
+    // Check T matches public table MLE at phase2 challenge point.
+    // Phase2 reduces highest bit first (pairs [j] with [j+N/2]), but
+    // mle_eval folds lowest bit first (pairs [2j] with [2j+1]).
+    // Reverse the challenge order to compensate.
     auto public_table = get_public_table(label, tl, params);
     if (!public_table.empty() && !tl.phase2_challenges.empty()) {
-        Fr_t expected_T = mle_eval(public_table, tl.phase2_challenges);
+        auto rev_challenges = tl.phase2_challenges;
+        std::reverse(rev_challenges.begin(), rev_challenges.end());
+        Fr_t expected_T = mle_eval(public_table, rev_challenges);
         if (expected_T == final_T) {
             stats.tl_checks_passed++;
             if (verbose) printf("  [%s] tL T==table_MLE(v) OK\n", label.c_str());
