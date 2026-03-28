@@ -167,7 +167,7 @@ Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-intera
 
 ### Test suite
 
-100+ tests pass across 8 Goldilocks test binaries:
+108 tests pass across 8 Goldilocks test binaries:
 
 | Binary | Tests | Coverage |
 |---|---|---|
@@ -176,8 +176,8 @@ Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-intera
 | `test_ntt` | 6 | Forward/inverse/coset NTT, root of unity, round-trip |
 | `test_merkle` | 9 | Deterministic root, proof verification, tamper detection |
 | `test_fri` | 6 | Small/medium/large polynomial commit-prove-verify |
-| `test_fri_pcs` | 17 | MLE evaluation, binding check, sumcheck integration, Weight |
-| `gold_test_zkargmax` | 6 | Argmax via bit-decomposition range proof |
+| `test_fri_pcs` | 18 | MLE evaluation, binding check, sumcheck integration, Weight |
+| `gold_test_zkargmax` | 7 | Argmax via bit-decomposition range proof |
 | `gold_test_zkentropy` | 8 | Batched entropy: surprise, proof generation, consistency |
 
 Additional BLS12-381 test binaries: `test_zkargmax` (6), `test_zklog` (5), `test_zknormalcdf` (5), `test_zkentropy` (8).
@@ -285,9 +285,9 @@ The interactive verifier infrastructure exists (`interactive_verifier`, `pipe_ch
 
 Verify that no intermediate value in the proof pipeline overflows the 64-bit Goldilocks modulus (p ≈ 1.8 × 10¹⁹). The entropy layer values (logits, diffs, CDF, win_probs) are comfortably within range (~30–33 bits). The concern is `zkFC` matmul accumulation: summing `in_dim` (4096) products of two ~2³² quantized values gives ~2⁷⁶, which exceeds p. The sumcheck *proof* is valid regardless (it never forms the full accumulation), but the *compute* path that produces logits may wrap. Empirical validation on Llama-2-7B (see `python/overflow_check.py`) shows no overflows in quantized inference — the tightest headroom is 21.2 bits at layer 30 `down_proj`, well within the Goldilocks modulus.
 
-### 3. Port setup tooling to Goldilocks
+### 3. Port remaining setup tooling to Goldilocks
 
-The weight commitment scripts (`llama-commit.py`, `commit_final_layers.py`, `ppgen`) and per-layer proof orchestration (`run_proofs.py`, `llama-*.py`) currently only support BLS12-381 / Pedersen. These need Goldilocks + FRI PCS equivalents for full end-to-end proving.
+The main orchestration scripts (`run_proofs.py`, `llama-commit.py`, `commit_final_layers.py`) already support `--goldilocks` and use the correct `gold_*` binaries and FRI PCS commitment paths. The remaining work is limited to standalone per-layer debugging scripts (`llama-self-attn.py`, `llama-ffn.py`, `llama-rmsnorm.py`) which hardcode BLS12-381 binary names — these need trivial binary-name changes to support Goldilocks.
 
 ### 4. Performance optimization
 

@@ -484,4 +484,48 @@ static inline uint32_t ceil_log2(uint32_t n) {
     return r;
 }
 
+static inline uint32_t next_pow2(uint32_t n) {
+    return 1u << ceil_log2(n);
+}
+
+// ── Lagrange interpolation ──────────────────────────────────────────────────
+// Given evaluations evals[k] = p(k) for k = 0, 1, ..., n-1, evaluate p(x).
+// Uses the Lagrange basis: p(x) = sum_i evals[i] * prod_{j!=i} (x-j)/(i-j)
+
+static inline Fr_t lagrange_eval(const std::vector<Fr_t>& evals, Fr_t x) {
+    uint32_t n = evals.size();
+    if (n == 0) return FR_ZERO;
+    if (n == 1) return evals[0];
+
+    // Fast path for degree-2 (3 evaluations) — the common sumcheck case
+    if (n == 3) {
+        // p(x) = e0*(x-1)(x-2)/2 - e1*x*(x-2) + e2*x*(x-1)/2
+        Fr_t x_minus_0 = x;
+        Fr_t x_minus_1 = fr_sub(x, FR_ONE);
+        Fr_t x_minus_2 = fr_sub(x, fr_from_u64(2));
+        Fr_t inv2 = fr_inverse(fr_from_u64(2));
+
+        Fr_t t0 = fr_mul(fr_mul(x_minus_1, x_minus_2), inv2);           // (x-1)(x-2)/2
+        Fr_t t1 = fr_neg(fr_mul(x_minus_0, x_minus_2));                 // -x(x-2)
+        Fr_t t2 = fr_mul(fr_mul(x_minus_0, x_minus_1), inv2);           // x(x-1)/2
+
+        return fr_add(fr_add(fr_mul(evals[0], t0), fr_mul(evals[1], t1)),
+                      fr_mul(evals[2], t2));
+    }
+
+    // General case
+    Fr_t result = FR_ZERO;
+    for (uint32_t i = 0; i < n; i++) {
+        Fr_t basis = FR_ONE;
+        Fr_t xi = fr_from_u64(i);
+        for (uint32_t j = 0; j < n; j++) {
+            if (j == i) continue;
+            Fr_t xj = fr_from_u64(j);
+            basis = fr_mul(basis, fr_mul(fr_sub(x, xj), fr_inverse(fr_sub(xi, xj))));
+        }
+        result = fr_add(result, fr_mul(evals[i], basis));
+    }
+    return result;
+}
+
 #endif // VERIFIER_UTILS_H
