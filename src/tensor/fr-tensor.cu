@@ -1014,6 +1014,134 @@ KERNEL void matrixMultiplyGoldV2(Fr_t* A, Fr_t* B, Fr_t* C,
         C[row * colsB + col] = Fr_t{sum};
     }
 }
+// ── V3: Skip per-multiply reduction, accumulate raw 128-bit products ─────────
+//
+// gold_mul spends ~18 SASS instructions on Plonky2 reduction per call.
+// With 16 calls per tile, that's ~288 SASS just for reductions.
+// V3 computes only the 128-bit product (lo, hi) and accumulates them separately:
+//   sum_lo += lo, sum_hi += hi  (with overflow counters)
+// Then does ONE Plonky2 reduction per tile pass.
+//
+// Correctness: each product a*b where a,b < p < 2^64 yields (lo, hi) with
+// true value = hi * 2^64 + lo. Accumulating 16 such products:
+//   total = sum(hi_k) * 2^64 + sum(lo_k)
+// We track sum_lo, sum_hi as wrapping uint64_t with overflow counters.
+// Final: total = (ov_hi * 2^64 + sum_hi) * 2^64 + (ov_lo * 2^64 + sum_lo)
+//              = ov_hi * 2^128 + (sum_hi + ov_lo) * 2^64 + sum_lo
+// Reduce mod p using: 2^64 ≡ eps, 2^128 ≡ -2^32 (mod p).
+
+KERNEL void matrixMultiplyGoldV3(Fr_t* A, Fr_t* B, Fr_t* C,
+                                  int rowsA, int colsA, int colsB) {
+    __shared__ Fr_t A_tile[TILE_WIDTH][TILE_WIDTH];
+    __shared__ Fr_t B_tile[TILE_WIDTH][TILE_WIDTH];
+
+    int row = blockIdx.y * TILE_WIDTH + threadIdx.y;
+    int col = blockIdx.x * TILE_WIDTH + threadIdx.x;
+    int ty = threadIdx.y;
+    int tx = threadIdx.x;
+
+    int numTiles = (colsA - 1) / TILE_WIDTH + 1;
+
+    // Running sum in fully-reduced form [0, p)
+    uint64_t sum = 0;
+
+    for (int t = 0; t < numTiles; ++t) {
+        // Load tile
+        if (row < rowsA && t * TILE_WIDTH + tx < colsA) {
+            A_tile[ty][tx] = A[row * colsA + t * TILE_WIDTH + tx];
+        } else {
+            A_tile[ty][tx] = Fr_t{0ULL};
+        }
+        if (t * TILE_WIDTH + ty < colsA && col < colsB) {
+            B_tile[ty][tx] = B[(t * TILE_WIDTH + ty) * colsB + col];
+        } else {
+            B_tile[ty][tx] = Fr_t{0ULL};
+        }
+        __syncthreads();
+
+        // Accumulate raw 128-bit products without per-multiply reduction
+        uint64_t tile_lo = 0, tile_hi = 0;
+        uint32_t ov_lo = 0, ov_hi = 0;
+
+        for (int k = 0; k < TILE_WIDTH; ++k) {
+            uint64_t a = A_tile[ty][k].val;
+            uint64_t b = B_tile[k][tx].val;
+
+            // 128-bit product only — no Plonky2 reduction
+            uint64_t lo = a * b;
+            uint64_t hi = UMUL64HI(a, b);
+
+            // Accumulate lo
+            uint64_t new_lo = tile_lo + lo;
+            if (new_lo < tile_lo) ov_lo++;
+            tile_lo = new_lo;
+
+            // Accumulate hi
+            uint64_t new_hi = tile_hi + hi;
+            if (new_hi < tile_hi) ov_hi++;
+            tile_hi = new_hi;
+        }
+
+        // ── Single reduction per tile ──────────────────────────────────
+        // total = (ov_hi * 2^64 + tile_hi) * 2^64 + (ov_lo * 2^64 + tile_lo)
+        //       = ov_hi * 2^128 + (tile_hi + ov_lo) * 2^64 + tile_lo
+        //
+        // Modular equivalences (p = 2^64 - 2^32 + 1, eps = 2^32 - 1):
+        //   2^64  ≡ eps (mod p)
+        //   2^128 ≡ eps^2 = 2^64 - 2^33 + 1 ≡ eps - 2^33 + 1 = -(2^32) (mod p)
+        //
+        // result ≡ tile_lo + (tile_hi + ov_lo) * eps - ov_hi * 2^32 (mod p)
+
+        // Step 1: Plonky2-reduce the 128-bit value (tile_lo, tile_hi)
+        // This is the same reduction as gold_mul but applied to accumulated sums
+        uint32_t hi_hi = (uint32_t)(tile_hi >> 32);
+        uint32_t hi_lo = (uint32_t)tile_hi;
+
+        uint64_t t0 = tile_lo - (uint64_t)hi_hi;
+        if (tile_lo < (uint64_t)hi_hi) t0 -= GOLDILOCKS_P_NEG;
+
+        uint64_t t1 = (uint64_t)hi_lo * GOLDILOCKS_P_NEG;
+
+        uint64_t result = t0 + t1;
+        if (result < t0) result += GOLDILOCKS_P_NEG;
+        if (result >= GOLDILOCKS_P) result -= GOLDILOCKS_P;
+
+        // Step 2: Add ov_lo * eps correction
+        // ov_lo <= 15, eps < 2^32, so ov_lo * eps < 2^36 — fits in uint64_t
+        if (ov_lo > 0) {
+            uint64_t lo_corr = (uint64_t)ov_lo * GOLDILOCKS_P_NEG;
+            uint64_t r2 = result + lo_corr;
+            if (r2 < result) r2 += GOLDILOCKS_P_NEG;  // overflow: add eps
+            if (r2 >= GOLDILOCKS_P) r2 -= GOLDILOCKS_P;
+            result = r2;
+        }
+
+        // Step 3: Subtract ov_hi * 2^32 correction
+        // ov_hi <= 15, so ov_hi * 2^32 < 2^36 — fits in uint64_t
+        if (ov_hi > 0) {
+            uint64_t hi_corr = (uint64_t)ov_hi << 32;
+            if (result >= hi_corr) {
+                result -= hi_corr;
+            } else {
+                result = result + GOLDILOCKS_P - hi_corr;
+            }
+            if (result >= GOLDILOCKS_P) result -= GOLDILOCKS_P;
+        }
+
+        // Accumulate tile result into running sum
+        uint64_t new_sum = sum + result;
+        if (new_sum < sum || new_sum >= GOLDILOCKS_P) {
+            new_sum -= GOLDILOCKS_P;
+        }
+        sum = new_sum;
+
+        __syncthreads();
+    }
+
+    if (row < rowsA && col < colsB) {
+        C[row * colsB + col] = Fr_t{sum};
+    }
+}
 #endif // USE_GOLDILOCKS
 
 
@@ -1022,7 +1150,7 @@ FrTensor FrTensor::matmul(const FrTensor& x, const FrTensor& y, uint M, uint N, 
     if (x.size != M * N || y.size != N * P) throw std::runtime_error("matmul: incompatible dimensions");
     FrTensor out(M * P);
 #ifdef USE_GOLDILOCKS
-    matrixMultiplyGoldV2<<<dim3((P-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1), dim3(TILE_WIDTH, TILE_WIDTH)>>>(x.gpu_data, y.gpu_data, out.gpu_data, M, N, P);
+    matrixMultiplyGoldV3<<<dim3((P-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1), dim3(TILE_WIDTH, TILE_WIDTH)>>>(x.gpu_data, y.gpu_data, out.gpu_data, M, N, P);
 #else
     matrixMultiplyOptimized<<<dim3((P-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1), dim3(TILE_WIDTH, TILE_WIDTH)>>>(x.gpu_data, y.gpu_data, out.gpu_data, M, N, P);
 #endif
