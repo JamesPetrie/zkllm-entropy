@@ -527,8 +527,28 @@ Fr_t zkConditionalEntropy::prove(
         Fr_t tw_u = total_win_vec(u_qr);
         Fr_t r_u  = r_vec(u_qr);
         Fr_t wp_scaled_u = wp_scaled_vec(u_qr);
-        if (q_u * tw_u + r_u != wp_scaled_u)
+        Fr_t lhs = q_u * tw_u + r_u;
+        if (lhs != wp_scaled_u) {
+            fprintf(stderr, "QR debug: q(u)=%lu tw(u)=%lu r(u)=%lu wp_scaled(u)=%lu lhs=%lu\n",
+                    fr_to_ull(q_u), fr_to_ull(tw_u), fr_to_ull(r_u),
+                    fr_to_ull(wp_scaled_u), fr_to_ull(lhs));
+            // Check pointwise relation for first few elements
+            Fr_t* dbg_q = new Fr_t[4]; Fr_t* dbg_tw = new Fr_t[4];
+            Fr_t* dbg_r = new Fr_t[4]; Fr_t* dbg_wps = new Fr_t[4];
+            cudaMemcpy(dbg_q, q_vec.gpu_data, 4*sizeof(Fr_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg_tw, total_win_vec.gpu_data, 4*sizeof(Fr_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg_r, r_vec.gpu_data, 4*sizeof(Fr_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg_wps, wp_scaled_vec.gpu_data, 4*sizeof(Fr_t), cudaMemcpyDeviceToHost);
+            for (int i = 0; i < 4; i++) {
+                Fr_t chk = dbg_q[i] * dbg_tw[i] + dbg_r[i];
+                fprintf(stderr, "  [%d] q=%lu tw=%lu r=%lu wps=%lu chk=%lu %s\n",
+                        i, fr_to_ull(dbg_q[i]), fr_to_ull(dbg_tw[i]),
+                        fr_to_ull(dbg_r[i]), fr_to_ull(dbg_wps[i]),
+                        fr_to_ull(chk), chk == dbg_wps[i] ? "OK" : "MISMATCH");
+            }
+            delete[] dbg_q; delete[] dbg_tw; delete[] dbg_r; delete[] dbg_wps;
             throw std::runtime_error("prove: division relation failed at challenge u");
+        }
 
         // 2. Non-negativity via bit decomposition
         //    - q in [0, 2^(log_precision+1)): log_precision+1 bits (q can equal 2^p)
