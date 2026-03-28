@@ -79,53 +79,31 @@ DEVICE inline Gold_t gold_double(Gold_t a) {
 }
 
 DEVICE inline Gold_t gold_mul(Gold_t a, Gold_t b) {
-    // Full 128-bit product: (hi, lo) = a * b
+    // 128-bit product: (hi, lo) = a * b
     uint64_t lo = a.val * b.val;
     uint64_t hi = UMUL64HI(a.val, b.val);
 
-    // Reduce mod p = 2^64 - 2^32 + 1 using 2^64 ≡ (2^32 - 1) mod p
-    // So: (hi * 2^64 + lo) ≡ lo + hi * (2^32 - 1) mod p
-    //
-    // Key trick: hi * (2^32 - 1) = (hi << 32) - hi, avoiding a second UMUL64HI.
-    // Split hi into hi_hi (top 32 bits) and hi_lo (bottom 32 bits):
-    //   hi << 32 = (hi_hi << 64) + (hi_lo << 32)
-    //   2^64 ≡ (2^32 - 1) mod p, so hi_hi << 64 ≡ hi_hi * (2^32 - 1) mod p
-    //
-    // Since hi < p < 2^64, hi_hi < 2^32, so hi_hi * (2^32-1) < 2^64 — no overflow.
+    // Plonky2-style Goldilocks reduction.
+    // For p = 2^64 - 2^32 + 1, eps = 2^32 - 1:
+    //   result ≡ lo - hi_hi + hi_lo * eps  (mod p)
+    // Proof: 2^64 ≡ eps, so hi*2^64 ≡ hi*eps = (hi_hi*2^32 + hi_lo)*eps
+    //   = hi_hi*(2^32*eps) + hi_lo*eps = hi_hi*(-1) + hi_lo*eps  (since 2^32*eps ≡ -1 mod p)
 
-    uint64_t hi_hi = hi >> 32;
-    uint64_t hi_lo = hi & 0xFFFFFFFFULL;
+    uint32_t hi_hi = (uint32_t)(hi >> 32);
+    uint32_t hi_lo = (uint32_t)hi;
 
-    // Compute: result = lo + (hi_lo << 32) - hi + hi_hi * (2^32 - 1)
-    // Rewrite hi_hi * (2^32-1) = (hi_hi << 32) - hi_hi
-    // So: result = lo + (hi_lo << 32) - hi + (hi_hi << 32) - hi_hi
-    //            = lo + ((hi_lo + hi_hi) << 32) - hi - hi_hi
-    //            = lo + (hi << 32 handled via parts) ... let's just be explicit:
+    // Step 1: t0 = lo - hi_hi  (if borrow: subtract eps ≡ add p)
+    uint64_t t0 = lo - (uint64_t)hi_hi;
+    if (lo < (uint64_t)hi_hi) t0 -= GOLDILOCKS_P_NEG;  // can't underflow: t0 >= p - eps > 0
 
-    // Step 1: t = hi * (2^32 - 1) = (hi << 32) - hi
-    // We split this to avoid 128-bit: hi << 32 = hi_lo << 32 (fits 64-bit) + hi_hi << 64 (overflow)
-    uint64_t t_lo = (hi_lo << 32) - hi;  // This can underflow (borrow)
-    bool borrow = (hi_lo << 32) < hi;
-    // The overflow part: hi_hi contributes hi_hi words of 2^64, which ≡ hi_hi * (2^32-1)
-    // Minus the borrow
-    uint64_t t_hi = hi_hi - (borrow ? 1ULL : 0ULL);  // hi_hi is at most 2^32-1, so this is fine
+    // Step 2: t1 = hi_lo * eps  (32x32 → fits in 64 bits)
+    uint64_t t1 = (uint64_t)hi_lo * GOLDILOCKS_P_NEG;
 
-    // Step 2: result = lo + t_lo (with carry)
-    uint64_t result = lo + t_lo;
-    uint64_t carry = (result < lo) ? 1ULL : 0ULL;
+    // Step 3: result = t0 + t1  (if overflow: add eps for the 2^64 wraparound)
+    uint64_t result = t0 + t1;
+    if (result < t0) result += GOLDILOCKS_P_NEG;  // can't overflow again
 
-    // Step 3: add overflow: (t_hi + carry) * (2^32 - 1)
-    // t_hi + carry < 2^32 + 1, so (t_hi + carry) * (2^32-1) < 2^64
-    uint64_t overflow = (t_hi + carry) * (uint64_t)GOLDILOCKS_P_NEG;
-    result += overflow;
-
-    // One more carry possible
-    if (result < overflow) {
-        // Wrapped: add another (2^32 - 1) for the 2^64 overflow
-        result += GOLDILOCKS_P_NEG;
-    }
-
-    // Final canonical reduction (at most one subtraction needed)
+    // Final canonical reduction
     if (result >= GOLDILOCKS_P) result -= GOLDILOCKS_P;
 
     return Gold_t{result};
