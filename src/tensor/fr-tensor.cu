@@ -1,7 +1,14 @@
 #include "tensor/fr-tensor.cuh"
+#include "proof/challenge.cuh"
 #include "util/ioutils.cuh"
 
 using namespace std;
+
+// ── Global challenge source ─────────────────────────────────────────────────
+static ChallengeSource* g_challenge_source = nullptr;
+
+void set_challenge_source(ChallengeSource* src) { g_challenge_source = src; }
+ChallengeSource* get_challenge_source() { return g_challenge_source; }
 
 ostream& operator<<(ostream& os, const Fr_t& x)
 {
@@ -20,6 +27,12 @@ ostream& operator<<(ostream& os, const Fr_t& x)
 
 vector<Fr_t> random_vec(uint len)
 {
+    // If a global challenge source is set, delegate to it.
+    if (g_challenge_source) {
+        return g_challenge_source->next_vec(len);
+    }
+
+    // Default: local RNG (original implementation).
     std::random_device rd;
     std::mt19937 mt(rd());
     std::uniform_int_distribution<unsigned int> dist(0, UINT_MAX);

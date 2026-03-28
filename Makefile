@@ -224,13 +224,16 @@ CXX_FLAGS := -std=c++17 -O2 -DUSE_GOLDILOCKS
 entropy_verifier: verifier/verifier.cpp verifier/verifier_utils.h verifier/sumcheck_verifier.h verifier/tlookup_verifier.h
 	$(CXX) $(CXX_FLAGS) -I verifier -o $@ verifier/verifier.cpp -lm
 
+interactive_verifier: verifier/interactive_verifier.cpp verifier/verifier_utils.h verifier/sumcheck_verifier.h verifier/tlookup_verifier.h
+	$(CXX) $(CXX_FLAGS) -I verifier -o $@ verifier/interactive_verifier.cpp -lm
+
 test_verifier: test/test_verifier.cpp verifier/verifier_utils.h verifier/sumcheck_verifier.h verifier/tlookup_verifier.h
 	$(CXX) $(CXX_FLAGS) -I verifier -o $@ test/test_verifier.cpp -lm
 
 cpu_skip-connection: bin/skip_connection_cpu.cpp
 	$(CXX) -std=c++17 -O2 -o $@ $<
 
-cpu: entropy_verifier test_verifier cpu_skip-connection
+cpu: entropy_verifier interactive_verifier test_verifier cpu_skip-connection
 
 # ── Clean rule ───────────────────────────────────────────────────────────────
 clean:
@@ -240,7 +243,7 @@ clean:
 	      gold_test_zkargmax gold_test_zkentropy gold_self-attn gold_ffn gold_rmsnorm \
 	      gold_skip-connection gold_commit-param bench_field gold_bench_field \
 	      gold_bench_matmul gold_rmsnorm_linear gold_post_attn gold_layer_server \
-	      entropy_verifier test_verifier cpu_skip-connection
+	      entropy_verifier interactive_verifier test_verifier cpu_skip-connection
 
 # Default rule
 all: $(BLS_TARGETS)

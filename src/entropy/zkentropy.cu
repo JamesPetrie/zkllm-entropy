@@ -428,13 +428,8 @@ Fr_t zkConditionalEntropy::prove(
 
         auto [cdf_padded, m_cdf_padded] = cdf_prover.compute(diffs_padded);
 
-        auto r_cdf = random_vec(1)[0];
-        auto alpha = random_vec(1)[0];
-        auto beta  = random_vec(1)[0];
-        auto u_cdf = random_vec(ceilLog2(D_cdf));
-        auto v_cdf = random_vec(ceilLog2(D_cdf));
-        cdf_prover.prove(diffs_padded, cdf_padded, m_cdf_padded,
-                         r_cdf, alpha, beta, u_cdf, v_cdf, proof);
+        // Interactive: challenges generated per round inside prove_interactive
+        cdf_prover.prove_interactive(diffs_padded, cdf_padded, m_cdf_padded, proof);
     }
 
     // ── 2b. total_win row-sum proof ────────────────────────────────────────
@@ -452,14 +447,15 @@ Fr_t zkConditionalEntropy::prove(
         if (tw_claim != wp_partial_sum)
             throw std::runtime_error("prove: row-sum mismatch at challenge u_t");
 
-        // Prove the sum via inner product with ones
+        // Interactive inner product sumcheck with ones
         Fr_t* ones_cpu = new Fr_t[V];
         for (uint i = 0; i < V; i++) ones_cpu[i] = FR_FROM_INT(1);
         FrTensor ones_V(V, ones_cpu);
         delete[] ones_cpu;
 
-        auto u_v = random_vec(ceilLog2(V));
-        inner_product_sumcheck(wp_partial, ones_V, u_v);
+        vector<Fr_t> u_v;
+        inner_product_sumcheck_interactive(wp_partial, ones_V,
+            ceilLog2(V), proof, u_v);
     }
 
     // ── 2c. Actual-token extraction proof ───────────────────────────────────
@@ -480,9 +476,10 @@ Fr_t zkConditionalEntropy::prove(
         if (ip != wp_sum)
             throw std::runtime_error("prove: indicator extraction mismatch");
 
-        // Inner product sumcheck
-        auto u_ext = random_vec(ceilLog2(TV));
-        inner_product_sumcheck(win_probs_all, indicator, u_ext);
+        // Interactive inner product sumcheck
+        vector<Fr_t> u_ext;
+        inner_product_sumcheck_interactive(win_probs_all, indicator,
+            ceilLog2(TV), proof, u_ext);
 
         auto u_T = random_vec(ceilLog2(T));
         Fr_t wp_at_u = actual_wp_raw(u_T);
@@ -539,13 +536,8 @@ Fr_t zkConditionalEntropy::prove(
     // Proves surprise[t] = log_table(q[t]) via tLookup on the padded q tensor.
     std::cout << "  Proving surprise log lookup..." << std::endl;
     {
-        auto r_log = random_vec(1)[0];
-        auto alpha = random_vec(1)[0];
-        auto beta  = random_vec(1)[0];
-        auto u_log = random_vec(ceilLog2(D_padded));
-        auto v_log = random_vec(ceilLog2(D_padded));
-        log_prover.prove(q_padded, surprise_padded, m_surprise,
-                         r_log, alpha, beta, u_log, v_log, proof);
+        // Interactive: challenges generated per round inside prove_interactive
+        log_prover.prove_interactive(q_padded, surprise_padded, m_surprise, proof);
     }
 
     std::cout << "zkConditionalEntropy::prove complete (batched, "

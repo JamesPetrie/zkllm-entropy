@@ -69,6 +69,10 @@ class zkFCStacked {
 
 Fr_t zkip(const Fr_t& claim, const FrTensor& a, const FrTensor& b, const vector<Fr_t>& u, vector<Polynomial>& proof);
 
+// Interactive zkip: generates challenges per round via random_vec(1).
+// Returns the final claim and appends the challenge vector used to u_out.
+Fr_t zkip(const Fr_t& claim, const FrTensor& a, const FrTensor& b, uint num_rounds, vector<Polynomial>& proof, vector<Fr_t>& u_out);
+
 Fr_t zkip_stacked(const Fr_t& claim, const FrTensor& A, const FrTensor& B, const vector<Fr_t>& uN, const vector<Fr_t>& uD, const vector<Fr_t> vN, uint N, uint D, vector<Polynomial>& proof);
 
 

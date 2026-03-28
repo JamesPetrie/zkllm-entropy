@@ -48,17 +48,16 @@ vector<Claim> Rescaling::prove(const FrTensor& X, const FrTensor& X_, vector<Pol
     if (X.size != X_.size)
         throw std::runtime_error("Error: the size of X and X_ should be the same.");
 
-    auto u = random_vec(ceilLog2(X.size));
-    auto v = random_vec(ceilLog2(X.size));
-    auto rand_temp = random_vec(2);
-
     auto rem = rem_tensor_ptr->pad({rem_tensor_ptr->size});
     auto m = tl_rem.prep(rem);
 
+    // Verification check: X(u) == X_(u) * scaling_factor + rem(u)
+    auto u = random_vec(ceilLog2(X.size));
     if (X(u) != X_(u) * FR_FROM_INT(scaling_factor) + rem(u))
         throw std::runtime_error("Error: the rem is not correct.");
 
-    tl_rem.prove(rem, m, rand_temp[0], rand_temp[1], u, v, proof);
+    // Interactive tLookup: challenges generated per round
+    tl_rem.prove_interactive(rem, m, proof);
 
     cout << "Rescaling proof complete." << endl;
     return {};

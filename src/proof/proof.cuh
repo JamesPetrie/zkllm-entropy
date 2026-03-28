@@ -45,9 +45,19 @@ void Fr_ip_sc(const FrTensor& a, const FrTensor& b, vector<Fr_t>::const_iterator
 
 vector<Fr_t> inner_product_sumcheck(const FrTensor& a, const FrTensor& b, vector<Fr_t> u);
 
+// Interactive inner product sumcheck: generates per-round challenges via random_vec(1).
+// Pushes degree-2 polynomials to proof. Returns challenges used in u_out.
+void inner_product_sumcheck_interactive(const FrTensor& a, const FrTensor& b,
+    uint num_rounds, vector<Polynomial>& proof, vector<Fr_t>& u_out);
+
 void Fr_hp_sc(const FrTensor& a, const FrTensor& b, vector<Fr_t>::const_iterator u_begin, vector<Fr_t>::const_iterator u_end, vector<Fr_t>::const_iterator v_begin, vector<Fr_t>::const_iterator v_end, vector<Fr_t>& proof);
 
 vector<Fr_t> hadamard_product_sumcheck(const FrTensor& a, const FrTensor& b, vector<Fr_t> u, vector<Fr_t> v);
+
+// Interactive hadamard product sumcheck: generates per-round challenges via random_vec(1).
+// Pushes degree-2 polynomials to proof. Returns challenges used in u_out and v_out.
+void hadamard_product_sumcheck_interactive(const FrTensor& a, const FrTensor& b,
+    uint num_rounds, vector<Polynomial>& proof, vector<Fr_t>& u_out, vector<Fr_t>& v_out);
 
 KERNEL void Fr_bin_sc_step(GLOBAL Fr_t *a, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint in_size, uint out_size);
 

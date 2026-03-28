@@ -34,6 +34,8 @@
 #include "zknn/zkfc.cuh"
 #include "zknn/rescaling.cuh"
 #include "proof/proof.cuh"
+#include "proof/challenge.cuh"
+#include "proof/pipe_challenge.cuh"
 #ifndef USE_GOLDILOCKS
 #include "commit/commitment.cuh"
 #endif
@@ -83,6 +85,20 @@ int main(int argc, char* argv[]) {
     uint log_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
 
     auto path = [&](const string& f) { return workdir + "/" + f; };
+
+    // ── Interactive mode: if pipe FDs are set, use PipeChallengeSource ────────
+    PipeChallengeSource* pipe_source = nullptr;
+    {
+        const char* read_env = getenv("ZKLLM_CHALLENGE_READ_FD");
+        const char* write_env = getenv("ZKLLM_CHALLENGE_WRITE_FD");
+        if (read_env && write_env) {
+            int r_fd = atoi(read_env);
+            int w_fd = atoi(write_env);
+            pipe_source = new PipeChallengeSource(r_fd, w_fd);
+            set_challenge_source(pipe_source);
+            cout << "Interactive mode: challenges from verifier (fds " << r_fd << "/" << w_fd << ")" << endl;
+        }
+    }
 
     cout << "Loading inputs from " << workdir << " ..." << endl;
     cout << "  seq_len=" << seq_len << "  hidden_size=" << hidden_size
@@ -175,6 +191,7 @@ int main(int argc, char* argv[]) {
     // ── Step 5: Prove entropy (batched) ──────────────────────────────────────
     cout << "Generating entropy proof..." << endl;
     vector<Polynomial> proof;
+    if (pipe_source) pipe_source->set_proof(&proof);
     entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof);
 
     // ── Step 6: Prove lm_head — links logits to committed W_lm ───────────────
@@ -185,20 +202,20 @@ int main(int argc, char* argv[]) {
     // ── Step 7: Prove final RMSNorm — links normed_hidden to committed W_norm ─
     cout << "Proving final RMSNorm..." << endl;
     rs_norm2.prove(normed, normed_, proof);
-    auto u_hp = random_vec(ceilLog2(normed.size));
-    auto hp_vals = hadamard_product_sumcheck(g_inv_rms_, hidden, u_hp, random_vec(ceilLog2(normed.size)));
-    // Convert hadamard sumcheck Fr_t triples to Polynomial objects.
-    // Each round produces 3 values (degree-2 polynomial evals at 0,1,2);
-    // the base case appends 2 final openings a(0), b(0).
-    for (size_t i = 0; i + 2 < hp_vals.size(); i += 3) {
-        proof.push_back(Polynomial({hp_vals[i], hp_vals[i+1], hp_vals[i+2]}));
-    }
-    if (hp_vals.size() % 3 == 2) {
-        proof.push_back(Polynomial(hp_vals[hp_vals.size() - 2]));
-        proof.push_back(Polynomial(hp_vals[hp_vals.size() - 1]));
-    }
+    // Interactive hadamard product sumcheck: challenges generated per round
+    vector<Fr_t> hp_u, hp_v;
+    hadamard_product_sumcheck_interactive(g_inv_rms_, hidden,
+        ceilLog2(normed.size), proof, hp_u, hp_v);
     rs_norm1.prove(g_inv_rms, g_inv_rms_, proof);
     verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms, proof)[0]);
+
+    // ── Signal end of interactive proof ─────────────────────────────────────
+    if (pipe_source) {
+        pipe_source->signal_end();
+        set_challenge_source(nullptr);
+        delete pipe_source;
+        pipe_source = nullptr;
+    }
 
     // ── Serialise proof ───────────────────────────────────────────────────────
     // Format (v5 — includes weight-binding proofs):

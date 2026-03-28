@@ -81,14 +81,17 @@ vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y, vector<Polynomia
     if (has_bias) throw std::runtime_error("Cleaned-up version not implemented for zkFC with bias. Use zkFCStacked instead.");
     uint batchSize = X.size / inputSize;
     auto u_batch = random_vec(ceilLog2(batchSize));
-    auto u_input = random_vec(ceilLog2(inputSize));
     auto u_output = random_vec(ceilLog2(outputSize));
 
     auto claim = Y.multi_dim_me({u_batch, u_output}, {batchSize, outputSize});
 
     auto X_reduced = X.partial_me(u_batch, batchSize, inputSize);
     auto W_reduced = weights.partial_me(u_output, outputSize, 1);
-    auto final_claim = zkip(claim, X_reduced, W_reduced, u_input, proof);
+
+    // Interactive zkip: challenges generated per round
+    vector<Fr_t> u_input;
+    auto final_claim = zkip(claim, X_reduced, W_reduced, ceilLog2(inputSize), proof, u_input);
+
     auto claim_X = X.multi_dim_me({u_batch, u_input}, {batchSize, inputSize});
     auto claim_W = weights.multi_dim_me({u_input, u_output}, {inputSize, outputSize});
     if (claim_X * claim_W != final_claim) {
@@ -159,6 +162,29 @@ Fr_t zkip(const Fr_t& claim, const FrTensor& a, const FrTensor& b, const vector<
     FrTensor new_a(N_out), new_b(N_out);
     zkip_reduce_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(a.gpu_data, b.gpu_data, new_a.gpu_data, new_b.gpu_data, u.back(), N_in, N_out);
     return zkip(p(u.back()), new_a, new_b, {u.begin(), u.end()-1}, proof);
+}
+
+// Interactive zkip: generates one challenge per round via random_vec(1).
+// The challenge for each round is chosen AFTER the round polynomial is
+// computed and recorded, which is essential for interactive soundness.
+// The challenge vector is collected in u_out (front-to-back order).
+Fr_t zkip(const Fr_t& claim, const FrTensor& a, const FrTensor& b, uint num_rounds, vector<Polynomial>& proof, vector<Fr_t>& u_out)
+{
+    if (!num_rounds) return claim;
+    auto p = zkip_step_poly(a, b, TEMP_ZERO); // second arg unused in poly computation
+    proof.push_back(p);
+    if (claim != p(TEMP_ZERO) + p(TEMP_ONE))
+        throw std::runtime_error("interactive zkip: claim != p(0) + p(1)");
+
+    // Generate challenge AFTER polynomial is committed
+    Fr_t r = random_vec(1)[0];
+    u_out.push_back(r);
+
+    uint N_in = a.size, N_out = (1 << ceilLog2(a.size)) >> 1;
+    FrTensor new_a(N_out), new_b(N_out);
+    zkip_reduce_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        a.gpu_data, b.gpu_data, new_a.gpu_data, new_b.gpu_data, r, N_in, N_out);
+    return zkip(p(r), new_a, new_b, num_rounds - 1, proof, u_out);
 }
 
 KERNEL void zkip_stacked_poly_kernel(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint N_in, uint N_out, uint D)

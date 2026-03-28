@@ -46,3 +46,8 @@ Fr_t zkNormalCDF::prove(const FrTensor& diffs, const FrTensor& cdf_values, const
                         vector<Polynomial>& proof) {
     return lookup.prove(diffs, cdf_values, m, r, alpha, beta, u, v, proof);
 }
+
+Fr_t zkNormalCDF::prove_interactive(const FrTensor& diffs, const FrTensor& cdf_values,
+                                    const FrTensor& m, vector<Polynomial>& proof) {
+    return lookup.prove_interactive(diffs, cdf_values, m, proof);
+}

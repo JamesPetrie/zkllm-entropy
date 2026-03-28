@@ -208,6 +208,96 @@ vector<Fr_t> binary_sumcheck(const FrTensor& a, vector<Fr_t> u, vector<Fr_t> v)
     return proof;
 }
 
+// ── Interactive inner product sumcheck ───────────────────────────────────────
+// Generates challenges per round via random_vec(1), after computing and
+// recording the round polynomial.  This is essential for interactive soundness.
+
+static void Fr_ip_sc_interactive(const FrTensor& a, const FrTensor& b,
+    uint rounds_left, vector<Polynomial>& proof, vector<Fr_t>& u_out, Fr_t claim)
+{
+    if (a.size != b.size) throw std::runtime_error("Incompatible dimensions");
+    if (rounds_left == 0) {
+        // Base case: record final evaluations a(0), b(0)
+        proof.push_back(Polynomial(a(0)));
+        proof.push_back(Polynomial(b(0)));
+        return;
+    }
+
+    auto in_size = a.size;
+    auto out_size = (in_size + 1) / 2;
+    FrTensor out0(out_size), out1(out_size), out2(out_size);
+    Fr_ip_sc_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        a.gpu_data, b.gpu_data, out0.gpu_data, out1.gpu_data, out2.gpu_data, in_size, out_size);
+
+    Fr_t s0 = out0.sum(), s1 = out1.sum(), s2 = out2.sum();
+    // Round polynomial p(x) with p(0) = s0, p(1) = s0+s1+s2
+    // (coefficients: s0, s1, s2 in the basis 1, x, x^2)
+    Polynomial p({s0, s1, s2});
+    proof.push_back(p);
+
+    Fr_t p0 = s0;
+    Fr_t p1 = s0 + s1 + s2;
+    if (p0 + p1 != claim)
+        throw std::runtime_error("interactive ip sumcheck: p(0)+p(1) != claim");
+
+    // Generate challenge AFTER polynomial is committed
+    Fr_t r = random_vec(1)[0];
+    u_out.push_back(r);
+
+    FrTensor a_new(out_size), b_new(out_size);
+    Fr_me_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        a.gpu_data, a_new.gpu_data, r, in_size, out_size);
+    Fr_me_step<<<(out_size+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        b.gpu_data, b_new.gpu_data, r, in_size, out_size);
+
+    Fr_ip_sc_interactive(a_new, b_new, rounds_left - 1, proof, u_out, p(r));
+}
+
+void inner_product_sumcheck_interactive(const FrTensor& a, const FrTensor& b,
+    uint num_rounds, vector<Polynomial>& proof, vector<Fr_t>& u_out)
+{
+    if (a.size != b.size) throw std::runtime_error("Incompatible dimensions");
+    if (a.size > (1u << num_rounds)) throw std::runtime_error("Incompatible dimensions");
+
+    // Initial claim: <a, b>
+    Fr_t claim = (a * b).sum();
+    Fr_ip_sc_interactive(a, b, num_rounds, proof, u_out, claim);
+}
+
+// ── Interactive hadamard product sumcheck ────────────────────────────────────
+// The HP sumcheck round polynomial depends on future u values (partial MLE
+// evaluation), so u must be generated upfront. The v (folding) challenges are
+// also generated upfront via random_vec(), which dispatches to the verifier's
+// challenge source in interactive mode.
+//
+// The round polynomials and final openings are pushed to the proof vector for
+// serialization and verification.
+
+void hadamard_product_sumcheck_interactive(const FrTensor& a, const FrTensor& b,
+    uint num_rounds, vector<Polynomial>& proof, vector<Fr_t>& u_out, vector<Fr_t>& v_out)
+{
+    if (a.size != b.size) throw std::runtime_error("Incompatible dimensions");
+    if (a.size > (1u << num_rounds)) throw std::runtime_error("Incompatible dimensions");
+
+    // Generate challenges via random_vec (dispatches to challenge source)
+    u_out = random_vec(num_rounds);
+    v_out = random_vec(num_rounds);
+
+    // Run the HP sumcheck
+    vector<Fr_t> hp_proof;
+    Fr_hp_sc(a, b, u_out.begin(), u_out.end(), v_out.begin(), v_out.end(), hp_proof);
+
+    // Convert Fr_t triples to Polynomial objects in the proof vector.
+    // Each round produces 3 values; the base case appends 2 final openings.
+    for (size_t i = 0; i + 2 < hp_proof.size(); i += 3) {
+        proof.push_back(Polynomial({hp_proof[i], hp_proof[i+1], hp_proof[i+2]}));
+    }
+    if (hp_proof.size() % 3 == 2) {
+        proof.push_back(Polynomial(hp_proof[hp_proof.size() - 2]));
+        proof.push_back(Polynomial(hp_proof[hp_proof.size() - 1]));
+    }
+}
+
 // TODO: DEPRECATE ABOVE
 
 

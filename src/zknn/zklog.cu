@@ -45,3 +45,8 @@ Fr_t zkLog::prove(const FrTensor& probs, const FrTensor& log_probs, const FrTens
                   vector<Polynomial>& proof) {
     return lookup.prove(probs, log_probs, m, r, alpha, beta, u, v, proof);
 }
+
+Fr_t zkLog::prove_interactive(const FrTensor& probs, const FrTensor& log_probs,
+                              const FrTensor& m, vector<Polynomial>& proof) {
+    return lookup.prove_interactive(probs, log_probs, m, proof);
+}

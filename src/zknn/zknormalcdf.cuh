@@ -40,6 +40,10 @@ public:
                const Fr_t& r, const Fr_t& alpha, const Fr_t& beta,
                const vector<Fr_t>& u, const vector<Fr_t>& v,
                vector<Polynomial>& proof);
+
+    // Interactive prove: challenges generated per round.
+    Fr_t prove_interactive(const FrTensor& diffs, const FrTensor& cdf_values,
+                           const FrTensor& m, vector<Polynomial>& proof);
 };
 
 #endif

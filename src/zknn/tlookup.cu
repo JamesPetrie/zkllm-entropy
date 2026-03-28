@@ -295,8 +295,38 @@ Fr_t tLookup_phase2(const Fr_t& claim, const FrTensor& A, const FrTensor& S, con
     return tLookup_phase2(p(v2.back()), new_A, new_S, new_B, new_T, new_m, alpha_ * Polynomial::eq(u.back(), v2.back()), beta, inv_size_ratio, alpha_sq * Polynomial::eq(u.back(), v2.back()), {u.begin(), u.end() - 1}, {v2.begin(), v2.end() - 1});
 }
 
+// Interactive tLookup phase 2: pushes round polynomials to proof and generates
+// per-round challenges via random_vec(1).
+Fr_t tLookup_phase2_interactive(const Fr_t& claim, const FrTensor& A, const FrTensor& S,
+    const FrTensor& B, const FrTensor& T, const FrTensor& m,
+    const Fr_t& alpha_, const Fr_t& beta, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq,
+    vector<Fr_t>& u, vector<Polynomial>& proof)
+{
+    if (u.empty()) return claim;
+    auto p = tLookup_phase2_step_poly(A, S, B, T, m, alpha_, beta, inv_size_ratio, alpha_sq, u);
+    proof.push_back(p);
+
+    if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1)))
+        throw std::runtime_error("tLookup_phase2_interactive: claim != p(0) + p(1)");
+
+    // Generate challenge AFTER polynomial is committed
+    Fr_t v_r = random_vec(1)[0];
+
+    FrTensor new_A(A.size >> 1), new_S(S.size >> 1), new_B(B.size >> 1), new_T(T.size >> 1), new_m(m.size >> 1);
+    tLookup_phase2_reduce_kernel<<<((A.size >> 1)+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        A.gpu_data, S.gpu_data, B.gpu_data, T.gpu_data, m.gpu_data,
+        new_A.gpu_data, new_S.gpu_data, new_B.gpu_data, new_T.gpu_data, new_m.gpu_data,
+        v_r, A.size >> 1
+    );
+
+    vector<Fr_t> new_u(u.begin(), u.end() - 1);
+    return tLookup_phase2_interactive(p(v_r), new_A, new_S, new_B, new_T, new_m,
+        alpha_ * Polynomial::eq(u.back(), v_r), beta, inv_size_ratio,
+        alpha_sq * Polynomial::eq(u.back(), v_r), new_u, proof);
+}
+
 Fr_t tLookup_phase1(const Fr_t& claim, const FrTensor& A, const FrTensor& S, const FrTensor& B, const FrTensor& T, const FrTensor& m,
-    const Fr_t& alpha, const Fr_t& beta, const Fr_t& C, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq, 
+    const Fr_t& alpha, const Fr_t& beta, const Fr_t& C, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq,
     const vector<Fr_t>& u, const vector<Fr_t>& v1, const vector<Fr_t>& v2)
 {
     if (!v1.size())
@@ -306,14 +336,46 @@ Fr_t tLookup_phase1(const Fr_t& claim, const FrTensor& A, const FrTensor& S, con
     else{
         auto p = tLookup_phase1_step_poly(A, S, alpha, beta, C, u);
         FrTensor new_A(A.size >> 1), new_S(S.size >> 1);
-        
+
         if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1))) throw std::runtime_error("tLookup_phase1: claim != p(0) + p(1)");
-        
+
         tLookup_phase1_reduce_kernel<<<(A.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(
             A.gpu_data, S.gpu_data, new_A.gpu_data, new_S.gpu_data, v1.back(), A.size >> 1
         );
         return tLookup_phase1(p(v1.back()), new_A, new_S, B, T, m, alpha * Polynomial::eq(u.back(), v1.back()), beta, C * TWO_INV, inv_size_ratio, alpha_sq, {u.begin(), u.end() - 1}, {v1.begin(), v1.end() - 1}, v2);
     }
+}
+
+// Interactive tLookup phase 1: pushes round polynomials to proof and generates
+// per-round challenges via random_vec(1).
+Fr_t tLookup_phase1_interactive(const Fr_t& claim, const FrTensor& A, const FrTensor& S,
+    const FrTensor& B, const FrTensor& T, const FrTensor& m,
+    const Fr_t& alpha, const Fr_t& beta, const Fr_t& C, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq,
+    vector<Fr_t>& u, uint phase1_rounds, vector<Polynomial>& proof)
+{
+    if (phase1_rounds == 0) {
+        return tLookup_phase2_interactive(claim, A, S, B, T, m,
+            alpha, beta, inv_size_ratio, alpha_sq, u, proof);
+    }
+
+    auto p = tLookup_phase1_step_poly(A, S, alpha, beta, C, u);
+    proof.push_back(p);
+
+    if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1)))
+        throw std::runtime_error("tLookup_phase1_interactive: claim != p(0) + p(1)");
+
+    // Generate challenge AFTER polynomial is committed
+    Fr_t v_r = random_vec(1)[0];
+
+    FrTensor new_A(A.size >> 1), new_S(S.size >> 1);
+    tLookup_phase1_reduce_kernel<<<(A.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        A.gpu_data, S.gpu_data, new_A.gpu_data, new_S.gpu_data, v_r, A.size >> 1
+    );
+
+    vector<Fr_t> new_u(u.begin(), u.end() - 1);
+    return tLookup_phase1_interactive(p(v_r), new_A, new_S, B, T, m,
+        alpha * Polynomial::eq(u.back(), v_r), beta, C * TWO_INV,
+        inv_size_ratio, alpha_sq, new_u, phase1_rounds - 1, proof);
 }
 
 
@@ -363,6 +425,44 @@ Fr_t tLookup::prove(const FrTensor& S, const FrTensor& m, const Fr_t& alpha, con
         alpha, beta, C, N_Fr / D_Fr, alpha_sq, 
         u, v1, v2);
 } 
+
+// Interactive tLookup::prove: generates section-level challenges (alpha, beta)
+// and per-round challenges via random_vec. Pushes all round polynomials to proof.
+Fr_t tLookup::prove_interactive(const FrTensor& S, const FrTensor& m,
+    vector<Polynomial>& proof)
+{
+    const uint D = S.size;
+    if (m.size != table.size)
+        throw std::runtime_error("m.size != table.size");
+    const uint N = m.size;
+
+    if (D != 1 << ceilLog2(D) || N != 1 << ceilLog2(N) || D % N != 0)
+        throw std::runtime_error("D or N is not power of 2, or D is not divisible by N");
+
+    // Section-level challenges: generated before the sumcheck begins
+    Fr_t alpha = random_vec(1)[0];
+    Fr_t beta  = random_vec(1)[0];
+
+    FrTensor A(D), B(N);
+    tlookup_inv_kernel<<<(D+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        S.gpu_data, beta, A.gpu_data, D);
+    tlookup_inv_kernel<<<(N+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        table.gpu_data, beta, B.gpu_data, N);
+
+    // Generate initial u challenges for MLE evaluation
+    vector<Fr_t> u = random_vec(ceilLog2(D));
+
+    Fr_t C = alpha * alpha - (B * m).sum();
+    Fr_t alpha_sq = alpha * alpha;
+    Fr_t claim = alpha + alpha_sq;
+    Fr_t N_Fr = FR_FROM_INT(N);
+    Fr_t D_Fr = FR_FROM_INT(D);
+
+    uint phase1_rounds = ceilLog2(D / N);
+    return tLookup_phase1_interactive(claim, A, S, B, table, m,
+        alpha, beta, C, N_Fr / D_Fr, alpha_sq,
+        u, phase1_rounds, proof);
+}
 
 KERNEL void tlookuprange_init_kernel(Fr_t* table_ptr, int low, uint len, uint table_size)
 {
@@ -544,7 +644,53 @@ Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, con
     Fr_t N_Fr = FR_FROM_INT(N);
     Fr_t D_Fr = FR_FROM_INT(D);
 
-    return tLookup_phase1(claim, A, S_com, B, T_com, m, 
-        alpha, beta, C, N_Fr / D_Fr, alpha_sq, 
+    return tLookup_phase1(claim, A, S_com, B, T_com, m,
+        alpha, beta, C, N_Fr / D_Fr, alpha_sq,
         u, v1, v2);
+}
+
+// Interactive tLookupRangeMapping::prove: generates all challenges interactively.
+Fr_t tLookupRangeMapping::prove_interactive(const FrTensor& S_in, const FrTensor& S_out,
+    const FrTensor& m, vector<Polynomial>& proof)
+{
+    const uint D = S_in.size;
+    if (m.size != table.size) throw std::runtime_error("m.size != table.size");
+    const uint N = m.size;
+
+    if (D != 1 << ceilLog2(D)) {
+        auto S_in_ = S_in.pad({D}, table(0));
+        auto S_out_ = S_out.pad({D}, mapped_vals(0));
+        FrTensor m_(m);
+        tlookuprange_pad_m<<<1,1>>>(m_.gpu_data, 0, (1 << ceilLog2(D)) - D);
+        return prove_interactive(S_in_, S_out_, m_, proof);
+    }
+
+    if (N != 1 << ceilLog2(N) || D % N != 0)
+        throw std::runtime_error("N is not power of 2, or D is not divisible by N");
+
+    // Section-level challenges
+    Fr_t r     = random_vec(1)[0];
+    Fr_t alpha = random_vec(1)[0];
+    Fr_t beta  = random_vec(1)[0];
+
+    FrTensor A(D), B(N);
+    auto S_com = S_in + S_out * r;
+    auto T_com = table + mapped_vals * r;
+    tlookup_inv_kernel<<<(D+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        S_com.gpu_data, beta, A.gpu_data, D);
+    tlookup_inv_kernel<<<(N+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        T_com.gpu_data, beta, B.gpu_data, N);
+
+    vector<Fr_t> u = random_vec(ceilLog2(D));
+
+    Fr_t C = alpha * alpha - (B * m).sum();
+    Fr_t alpha_sq = alpha * alpha;
+    Fr_t claim = alpha + alpha_sq;
+    Fr_t N_Fr = FR_FROM_INT(N);
+    Fr_t D_Fr = FR_FROM_INT(D);
+
+    uint phase1_rounds = ceilLog2(D / N);
+    return tLookup_phase1_interactive(claim, A, S_com, B, T_com, m,
+        alpha, beta, C, N_Fr / D_Fr, alpha_sq,
+        u, phase1_rounds, proof);
 }

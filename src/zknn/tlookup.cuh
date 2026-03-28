@@ -18,6 +18,9 @@ class tLookup
 
     Fr_t prove(const FrTensor& S, const FrTensor& m, const Fr_t& alpha, const Fr_t& beta,
      const vector<Fr_t>& u, const vector<Fr_t>& v, vector<Polynomial>& proof);
+
+    // Interactive prove: generates all challenges via random_vec (per-round).
+    Fr_t prove_interactive(const FrTensor& S, const FrTensor& m, vector<Polynomial>& proof);
 };
 
 class tLookupRange: public tLookup
@@ -45,9 +48,13 @@ class tLookupRangeMapping: public tLookupRange
     pair<FrTensor, FrTensor> operator()(const int* vals, const uint D);
     pair<FrTensor, FrTensor> operator()(const FrTensor& mvals);
     
-    Fr_t prove(const FrTensor& S_in, const FrTensor& S_out, const FrTensor& m, 
+    Fr_t prove(const FrTensor& S_in, const FrTensor& S_out, const FrTensor& m,
         const Fr_t& r, const Fr_t& alpha, const Fr_t& beta,
         const vector<Fr_t>& u, const vector<Fr_t>& v, vector<Polynomial>& proof);
+
+    // Interactive prove: generates all challenges via random_vec (per-round).
+    Fr_t prove_interactive(const FrTensor& S_in, const FrTensor& S_out,
+        const FrTensor& m, vector<Polynomial>& proof);
 };
 
 #endif
