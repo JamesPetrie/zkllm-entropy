@@ -221,13 +221,13 @@ gold_layer_server: $(BUILD)/gold/bin/layer_server.o $(GOLD_OBJS)
 CXX := g++
 CXX_FLAGS := -std=c++17 -O2 -DUSE_GOLDILOCKS
 
-verifier: verifier/verifier.cpp verifier/verifier_utils.h verifier/sumcheck_verifier.h verifier/tlookup_verifier.h
+entropy_verifier: verifier/verifier.cpp verifier/verifier_utils.h verifier/sumcheck_verifier.h verifier/tlookup_verifier.h
 	$(CXX) $(CXX_FLAGS) -I verifier -o $@ verifier/verifier.cpp -lm
 
 test_verifier: test/test_verifier.cpp verifier/verifier_utils.h verifier/sumcheck_verifier.h verifier/tlookup_verifier.h
 	$(CXX) $(CXX_FLAGS) -I verifier -o $@ test/test_verifier.cpp -lm
 
-cpu: verifier test_verifier
+cpu: entropy_verifier test_verifier
 
 # ── Clean rule ───────────────────────────────────────────────────────────────
 clean:
@@ -237,7 +237,7 @@ clean:
 	      gold_test_zkargmax gold_test_zkentropy gold_self-attn gold_ffn gold_rmsnorm \
 	      gold_skip-connection gold_commit-param bench_field gold_bench_field \
 	      gold_bench_matmul gold_rmsnorm_linear gold_post_attn gold_layer_server \
-	      verifier test_verifier
+	      entropy_verifier test_verifier
 
 # Default rule
 all: $(BLS_TARGETS)
