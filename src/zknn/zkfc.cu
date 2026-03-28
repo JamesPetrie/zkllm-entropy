@@ -1,4 +1,5 @@
 #include "zknn/zkfc.cuh"
+#include <algorithm>
 
 
 
@@ -91,6 +92,8 @@ vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y, vector<Polynomia
     // Interactive zkip: challenges generated per round
     vector<Fr_t> u_input;
     auto final_claim = zkip(claim, X_reduced, W_reduced, ceilLog2(inputSize), proof, u_input);
+    // Reverse u_input: zkip builds it MSB-first but MLE evaluation expects LSB-first
+    std::reverse(u_input.begin(), u_input.end());
 
     auto claim_X = X.multi_dim_me({u_batch, u_input}, {batchSize, inputSize});
     auto claim_W = weights.multi_dim_me({u_input, u_output}, {inputSize, outputSize});

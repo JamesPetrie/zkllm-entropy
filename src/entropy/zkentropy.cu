@@ -116,6 +116,29 @@ KERNEL void clamp_min_one_kernel(Fr_t* data, uint N) {
     }
 }
 
+// Clamp diff values to [0, max_val] for tLookup proof consistency.
+// Values > max_val and < p/2 are large positive diffs → clamp to max_val.
+// Values >= p/2 are "negative" diffs (quantization artifacts) → clamp to 0.
+KERNEL void clamp_diffs_kernel(Fr_t* diffs, uint N, uint64_t max_val) {
+    uint tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < N) {
+#ifdef USE_GOLDILOCKS
+        uint64_t v = diffs[tid].val;
+        if (v >= (GOLDILOCKS_P >> 1)) diffs[tid] = FR_FROM_INT(0);
+        else if (v > max_val) diffs[tid] = {max_val};
+#else
+        // BLS12-381: check if negative (upper limbs nonzero)
+        bool neg = diffs[tid].val[2] || diffs[tid].val[3] || diffs[tid].val[4] ||
+                   diffs[tid].val[5] || diffs[tid].val[6] || diffs[tid].val[7];
+        if (neg) diffs[tid] = FR_FROM_INT(0);
+        else {
+            uint64_t v = ((uint64_t)diffs[tid].val[1] << 32) | diffs[tid].val[0];
+            if (v > max_val) { diffs[tid] = FR_FROM_INT(0); diffs[tid].val[0] = (uint32_t)max_val; diffs[tid].val[1] = (uint32_t)(max_val >> 32); }
+        }
+#endif
+    }
+}
+
 // ── Bit-extract kernel (same as zkargmax_bit_extract_kernel) ─────────────────
 // bits_b[i] = (vals[i] >> bit) & 1
 KERNEL void entropy_bit_extract_kernel(const Fr_t* vals, Fr_t* bits_b, uint bit, uint N) {
@@ -228,10 +251,13 @@ Fr_t zkConditionalEntropy::compute(
     FrTensor v_star_vec(T, v_star_cpu);
     delete[] v_star_cpu;
 
-    // 2. Batched diffs
+    // 2. Batched diffs (clamped to CDF table range)
     FrTensor diffs_all(TV);
     batched_diffs_kernel<<<(TV + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
         logits_all.gpu_data, v_star_vec.gpu_data, diffs_all.gpu_data, T, V);
+    uint64_t cdf_max = (1ULL << cdf_precision) - 1;
+    clamp_diffs_kernel<<<(TV + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        diffs_all.gpu_data, TV, cdf_max);
 
     // 3. CDF + win probs
     auto [cdf_all, m_cdf] = cdf_prover.compute(diffs_all);
@@ -325,10 +351,13 @@ Fr_t zkConditionalEntropy::prove(
     FrTensor v_star_vec_t(T, v_star_cpu);
     delete[] v_star_cpu;
 
-    // 2. Batched diffs
+    // 2. Batched diffs (clamped to CDF table range)
     FrTensor diffs_all(TV);
     batched_diffs_kernel<<<(TV + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
         logits_all.gpu_data, v_star_vec_t.gpu_data, diffs_all.gpu_data, T, V);
+    uint64_t cdf_max = (1ULL << cdf_precision) - 1;
+    clamp_diffs_kernel<<<(TV + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        diffs_all.gpu_data, TV, cdf_max);
 
     // 3. CDF + win probs
     auto [cdf_all, m_cdf] = cdf_prover.compute(diffs_all);
