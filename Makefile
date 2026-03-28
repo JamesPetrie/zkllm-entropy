@@ -86,6 +86,9 @@ gold_zkllm_entropy_timed: gold_zkllm_entropy_timed.o $(GOLD_OBJS) gold_timer.o
 gold_test_zkargmax: gold_test_zkargmax.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
+gold_test_zkentropy: gold_test_zkentropy.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
 gold_self-attn: gold_self-attn.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 

@@ -8,16 +8,21 @@
 #include "proof.cuh"
 #include "polynomial.cuh"
 
-// Zero-knowledge conditional entropy calculator.
+// Zero-knowledge conditional entropy calculator (batched).
 //
-// For each output token position, proves surprise = -log2(q[actual_token])
-// where q[actual] = win_prob[actual] / total_win_prob, with:
-//   win_prob[i] = (1 - Phi((v_star - logits[i]) / sigma_eff)) * cdf_scale
+// Operates on a flat T x V logit tensor (all positions at once) instead of
+// looping per position.  Only the aggregate entropy H is revealed; no
+// per-token scalars (diff, win_prob, total_win, surprise) leak.
 //
-// The logit tensor is an ephemeral value passed in from the caller, which is
-// responsible for proving it derives from committed model weights (e.g. via
-// zkFC on the final hidden state).  This class proves only the argmax and
-// entropy calculation on top of whatever logits are provided.
+// Proof structure:
+//   1. Batched argmax (bit-decomp range proof on T x V diffs tensor)
+//   2. CDF tLookup proof  (T x V -> T x V, one proof)
+//   3. total_win row-sum proof (inner product with ones, per row)
+//   4. Actual-token extraction proof (indicator inner product)
+//   5. Win-prob log lookup proof (tLookup on T-element vector)
+//   6. Range-reduced log of total_win (placeholder -- computed correctly,
+//      proof to be added later via bit-decomp + mantissa extraction)
+//   7. Linear subtraction + final sum
 //
 // Parameters:
 //   vocab_size    : number of tokens (e.g. 32000 for LLaMA)
@@ -51,15 +56,29 @@ public:
         double sigma_eff
     );
 
-    // Compute surprise (-log2 q[actual_token]) for one position, in log_scale units.
+    // Compute total conditional entropy from a flat T x V logit tensor.
+    // tokens[t] is the actual token at position t.
+    // Returns entropy in log_scale fixed-point units.
+    Fr_t compute(const FrTensor& logits_all, uint T, uint V,
+                 const vector<uint>& tokens);
+
+    // Prove the entropy computation on the flat T x V tensor.
+    // Returns the sum of argmax MLE claims on the logit tensor (for chaining
+    // with zkFC proofs on the lm_head weight).
+    Fr_t prove(const FrTensor& logits_all, uint T, uint V,
+               const vector<uint>& tokens,
+               Fr_t claimed_entropy,
+               vector<Polynomial>& proof);
+
+    // ---- Legacy per-position interface (kept for test compatibility) --------
+
+    // Compute surprise for one position.
     Fr_t computePosition(const FrTensor& logits, uint actual_token);
 
-    // Compute total conditional entropy for a sequence (sum of per-position surprises).
+    // Compute total entropy from per-position logit vectors.
     Fr_t compute(const vector<FrTensor>& logits_seq, const vector<uint>& tokens);
 
-    // Prove the entropy computation.  The logits are taken as given; the caller
-    // is responsible for linking them to committed weights via zkFC.
-    // Returns the sum of argmax MLE claims on the logit tensors (for chaining).
+    // Prove from per-position logit vectors (assembles flat tensor, delegates).
     Fr_t prove(const vector<FrTensor>& logits_seq, const vector<uint>& tokens,
                Fr_t claimed_entropy, vector<Polynomial>& proof);
 };

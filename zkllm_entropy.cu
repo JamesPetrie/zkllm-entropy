@@ -57,16 +57,7 @@ static vector<uint> load_token_sequence(const string& filename) {
     return tokens;
 }
 
-// Extract row `row_idx` (of width `row_size`) from a flat GPU tensor into a
-// new FrTensor using a device-to-device copy.
-static FrTensor tensor_row(const FrTensor& mat, uint row_idx, uint row_size) {
-    FrTensor row(row_size);
-    cudaMemcpy(row.gpu_data,
-               mat.gpu_data + (size_t)row_idx * row_size,
-               row_size * sizeof(Fr_t),
-               cudaMemcpyDeviceToDevice);
-    return row;
-}
+// (tensor_row helper moved to zkentropy.cu — no longer needed here)
 
 int main(int argc, char* argv[]) {
     if (argc < 5) {
@@ -158,14 +149,7 @@ int main(int argc, char* argv[]) {
     FrTensor logits_batch  = lm_fc(normed_);   // seq_len * vocab_size
     FrTensor logits_batch_ = rs_lm(logits_batch);
 
-    // ── Step 3: Split into per-position logit tensors ─────────────────────────
-    cout << "Splitting logits by position..." << endl;
-    vector<FrTensor> logits_seq;
-    logits_seq.reserve(seq_len);
-    for (uint pos = 0; pos < seq_len; pos++)
-        logits_seq.push_back(tensor_row(logits_batch_, pos, vocab_size));
-
-    // ── Step 4: Load tokens and compute entropy ───────────────────────────────
+    // ── Step 3: Load tokens ─────────────────────────────────────────────────
     vector<uint> tokens = load_token_sequence(tokens_file);
     if (tokens.size() != seq_len)
         throw std::runtime_error("token count != seq_len");
@@ -175,8 +159,9 @@ int main(int argc, char* argv[]) {
         vocab_size, bit_width, cdf_precision, log_precision,
         cdf_scale, log_scale, sigma_eff);
 
-    cout << "Computing conditional entropy..." << endl;
-    Fr_t total_entropy = entropy_prover.compute(logits_seq, tokens);
+    // ── Step 4: Compute entropy (batched, flat T×V tensor) ───────────────────
+    cout << "Computing conditional entropy (batched)..." << endl;
+    Fr_t total_entropy = entropy_prover.compute(logits_batch_, seq_len, vocab_size, tokens);
 
 #ifdef USE_GOLDILOCKS
     unsigned long entropy_val = total_entropy.val;
@@ -188,10 +173,10 @@ int main(int argc, char* argv[]) {
     cout << "Conditional entropy bound : " << entropy_bits << " bits total" << endl;
     cout << "Average per token         : " << entropy_bits / seq_len << " bits/token" << endl;
 
-    // ── Step 5: Prove entropy ─────────────────────────────────────────────────
+    // ── Step 5: Prove entropy (batched) ──────────────────────────────────────
     cout << "Generating entropy proof..." << endl;
     vector<Polynomial> proof;
-    entropy_prover.prove(logits_seq, tokens, total_entropy, proof);
+    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof);
 
     // ── Step 6: Prove lm_head — links logits to committed W_lm ───────────────
     cout << "Proving lm_head (zkFC)..." << endl;

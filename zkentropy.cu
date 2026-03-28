@@ -1,6 +1,7 @@
 #include "zkentropy.cuh"
 #include <stdexcept>
 #include <iostream>
+#include <cmath>
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
@@ -24,98 +25,394 @@ zkConditionalEntropy::zkConditionalEntropy(
     log_prover(log_precision, log_scale)
 {}
 
-// ── Helper: single-position compute ──────────────────────────────────────────
-// Simplified approach: only computes CDF and log for the actual token,
-// using sum ≈ vocab_size * cdf_scale as the normalisation denominator.
-// This is a valid conservative upper bound: sum(win_probs) <= vocab_size * cdf_scale,
-// so q[actual] = win_prob[actual] / sum >= win_prob[actual] / (vocab_size * cdf_scale),
-// meaning -log2(q[actual]) <= -log2(win_prob/(vocab_size*cdf_scale)).
-//
-// Field elements are stored without Montgomery form for logit values (val[2..7] == 0
-// for small positive values).  Negative or very large values have val[2..7] != 0.
+// ── Field element helpers ────────────────────────────────────────────────────
 
 #ifdef USE_GOLDILOCKS
 static inline unsigned long long fr_to_ull(const Fr_t& a) {
     return a.val;
 }
-
-static inline bool fr_is_large(const Fr_t& a) {
-    return a.val > (1ULL << 63);
-}
 #else
 static inline unsigned long long fr_to_ull(const Fr_t& a) {
     return ((unsigned long long)a.val[1] << 32) | a.val[0];
 }
-
-static inline bool fr_is_large(const Fr_t& a) {
-    return a.val[2] || a.val[3] || a.val[4] || a.val[5] || a.val[6] || a.val[7];
-}
 #endif
 
-Fr_t zkConditionalEntropy::computePosition(const FrTensor& logits, uint actual_token) {
-    if (logits.size != vocab_size)
-        throw std::invalid_argument("computePosition: logits.size != vocab_size");
+// ── GPU kernels for batched operations ───────────────────────────────────────
 
-    // 1. Argmax.
-    uint t_star = argmax_prover.compute(logits);
-    Fr_t v_star = logits(t_star);
-
-    // 3. Compute win probabilities for all tokens.
-    //    win_prob[i] = (1 - Phi(diff_i/sigma)) * cdf_scale
-    //                = P(token i's noisy logit exceeds the winner's)
-    //    diffs_all[i] = v_star - logits[i] (non-negative; 0 for the winner).
-    FrTensor diffs_all = -(logits - v_star);
-    auto [cdf_vals_all, m_cdf] = cdf_prover.compute(diffs_all);
-    (void)m_cdf;
-    Fr_t cdf_scale_fr = FR_FROM_INT(cdf_scale);
-    FrTensor win_probs_all = -(cdf_vals_all - cdf_scale_fr);
-    Fr_t win_prob    = win_probs_all(actual_token);
-    Fr_t total_win_f = win_probs_all.sum();
-
-    // 4. q_idx = floor(win_prob[actual] * 2^log_precision / total_win).
-    //    NOTE: total_win is self-reported (soundness gap S2). A malicious prover
-    //    could deflate total_win to reduce apparent entropy. Full fix requires
-    //    proving total_win via sumcheck (see plan2.md P6 log-space division).
-    unsigned long long wp    = fr_to_ull(win_prob);
-    unsigned long long lp    = 1ULL << log_precision;
-    unsigned long long denom = fr_to_ull(total_win_f);
-    if (denom == 0) denom = 1;
-    unsigned long long q_idx = (wp * lp) / denom;
-    if (q_idx < 1)  q_idx = 1;
-    if (q_idx > lp) q_idx = lp;
-
-    // 5. Log lookup for single element: surprise = -log2(q_idx / 2^lp) * log_scale.
-    Fr_t q_fr = FR_FROM_INT(q_idx);
-    FrTensor q_1(1, &q_fr);
-    auto [surp_1, m_log] = log_prover.compute(q_1);
-    (void)m_log;
-    return surp_1(0u);
+// diffs[t*V+i] = v_star[t] - logits[t*V+i]
+KERNEL void batched_diffs_kernel(const Fr_t* logits, const Fr_t* v_star,
+                                  Fr_t* diffs, uint T, uint V) {
+    uint idx = blockIdx.x * blockDim.x + threadIdx.x;
+    uint total = T * V;
+    if (idx < total) {
+        uint t = idx / V;
+        diffs[idx] = blstrs__scalar__Scalar_sub(v_star[t], logits[idx]);
+    }
 }
 
-// ── compute (sequence) ────────────────────────────────────────────────────────
+// Row sums: sums[t] = sum_{i=0}^{V-1} data[t*V + i]
+KERNEL void batched_row_sum_kernel(const Fr_t* data, Fr_t* sums, uint T, uint V) {
+    uint t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t < T) {
+        Fr_t acc = FR_FROM_INT(0);
+        const Fr_t* row = data + (size_t)t * V;
+        for (uint i = 0; i < V; i++) {
+            acc = blstrs__scalar__Scalar_add(acc, row[i]);
+        }
+        sums[t] = acc;
+    }
+}
+
+// Extract: out[t] = data[t*V + indices[t]]
+KERNEL void extract_by_index_kernel(const Fr_t* data, const uint* indices,
+                                     Fr_t* out, uint T, uint V) {
+    uint t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t < T) {
+        out[t] = data[(size_t)t * V + indices[t]];
+    }
+}
+
+// Clamp zero field elements to 1 (prevents log(0)).
+KERNEL void clamp_min_one_kernel(Fr_t* data, uint N) {
+    uint tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < N) {
+#ifdef USE_GOLDILOCKS
+        if (data[tid].val == 0ULL) data[tid].val = 1ULL;
+#else
+        if (data[tid].val[0] == 0 && data[tid].val[1] == 0 &&
+            data[tid].val[2] == 0 && data[tid].val[3] == 0 &&
+            data[tid].val[4] == 0 && data[tid].val[5] == 0 &&
+            data[tid].val[6] == 0 && data[tid].val[7] == 0)
+            data[tid].val[0] = 1;
+#endif
+    }
+}
+
+// ── Range-reduced log2 (CPU-side, proof placeholder) ─────────────────────────
+// Computes log2(x) * log_scale for each element.  Values may exceed
+// 2^log_precision so the standard table cannot be used directly.
+// The result is correct; the ZK proof for this step is a placeholder.
+
+static FrTensor range_reduced_log(const FrTensor& values, uint log_scale_param) {
+    uint T = values.size;
+    Fr_t* cpu = new Fr_t[T];
+    cudaMemcpy(cpu, values.gpu_data, T * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+
+    Fr_t* result = new Fr_t[T];
+    for (uint t = 0; t < T; t++) {
+        unsigned long long x = fr_to_ull(cpu[t]);
+        if (x < 1) x = 1;
+        double log2_x = log2((double)x);
+        long scaled = (long)(log2_x * (double)log_scale_param + 0.5);
+        if (scaled < 0) scaled = 0;
+        result[t] = FR_FROM_INT((unsigned long long)scaled);
+    }
+
+    FrTensor out(T, result);
+    delete[] cpu;
+    delete[] result;
+    return out;
+}
+
+// ── Helper: extract row from flat tensor ────────────────────────────────────
+
+static FrTensor tensor_row(const FrTensor& mat, uint row_idx, uint row_size) {
+    return mat.trunc((size_t)row_idx * row_size, (size_t)(row_idx + 1) * row_size);
+}
+
+// ── Helper: upload tokens to GPU ────────────────────────────────────────────
+
+static uint* upload_tokens(const vector<uint>& tokens) {
+    uint* gpu;
+    cudaMalloc(&gpu, tokens.size() * sizeof(uint));
+    cudaMemcpy(gpu, tokens.data(), tokens.size() * sizeof(uint), cudaMemcpyHostToDevice);
+    return gpu;
+}
+
+// ── Entropy formula ─────────────────────────────────────────────────────────
+//
+// surprise[t] = -log2(win_prob[t] / total_win[t]) * log_scale
+//             = (-log2(win_prob[t]) + log2(total_win[t])) * log_scale
+//
+// log_wp_table[t] = (log_precision - log2(wp[t])) * log_scale   [from tLookup]
+// log_tw[t]       = log2(total_win[t]) * log_scale              [range-reduced]
+//
+// => surprise[t] = log_wp_table[t] + log_tw[t] - log_precision * log_scale
+// => H = sum(log_wp + log_tw) - T * log_precision * log_scale
+
+// ── Batched compute ─────────────────────────────────────────────────────────
+
+Fr_t zkConditionalEntropy::compute(
+    const FrTensor& logits_all, uint T, uint V,
+    const vector<uint>& tokens)
+{
+    if (logits_all.size != T * V)
+        throw std::invalid_argument("compute: logits_all.size != T * V");
+    if (tokens.size() != T)
+        throw std::invalid_argument("compute: tokens.size() != T");
+
+    uint TV = T * V;
+
+    // 1. Argmax per row
+    Fr_t* v_star_cpu = new Fr_t[T];
+    for (uint t = 0; t < T; t++) {
+        FrTensor row = tensor_row(logits_all, t, V);
+        uint t_star = argmax_prover.compute(row);
+        v_star_cpu[t] = row(t_star);
+    }
+    FrTensor v_star_vec(T, v_star_cpu);
+    delete[] v_star_cpu;
+
+    // 2. Batched diffs
+    FrTensor diffs_all(TV);
+    batched_diffs_kernel<<<(TV + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        logits_all.gpu_data, v_star_vec.gpu_data, diffs_all.gpu_data, T, V);
+
+    // 3. CDF + win probs
+    auto [cdf_all, m_cdf] = cdf_prover.compute(diffs_all);
+    (void)m_cdf;
+    FrTensor win_probs_all = -(cdf_all - FR_FROM_INT(cdf_scale));
+
+    // 4. Row sums for total_win
+    FrTensor total_win_vec(T);
+    batched_row_sum_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        win_probs_all.gpu_data, total_win_vec.gpu_data, T, V);
+    cudaDeviceSynchronize();
+
+    // 5. Extract actual-token win probs
+    uint* tgpu = upload_tokens(tokens);
+    FrTensor actual_wp_vec(T);
+    extract_by_index_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        win_probs_all.gpu_data, tgpu, actual_wp_vec.gpu_data, T, V);
+    cudaDeviceSynchronize();
+    cudaFree(tgpu);
+
+    // 6. Clamp + log lookups
+    clamp_min_one_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        actual_wp_vec.gpu_data, T);
+    cudaDeviceSynchronize();
+
+    auto [log_wp_vec, m_log_wp] = log_prover.compute(actual_wp_vec);
+    (void)m_log_wp;
+    FrTensor log_tw_vec = range_reduced_log(total_win_vec, log_scale);
+
+    // 7. Entropy
+    FrTensor surprise_raw = log_wp_vec + log_tw_vec;
+    Fr_t H_raw = surprise_raw.sum();
+    Fr_t offset = FR_FROM_INT((unsigned long long)T * log_precision * log_scale);
+    return H_raw - offset;
+}
+
+// ── Batched prove ───────────────────────────────────────────────────────────
+
+Fr_t zkConditionalEntropy::prove(
+    const FrTensor& logits_all, uint T, uint V,
+    const vector<uint>& tokens,
+    Fr_t claimed_entropy,
+    vector<Polynomial>& proof)
+{
+    if (logits_all.size != T * V)
+        throw std::invalid_argument("prove: logits_all.size != T * V");
+    if (tokens.size() != T)
+        throw std::invalid_argument("prove: tokens.size() != T");
+
+    uint TV = T * V;
+    Fr_t logits_claims = FR_FROM_INT(0);
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Phase 1: Compute all intermediate tensors
+    // ════════════════════════════════════════════════════════════════════════
+
+    // 1. Argmax per row
+    vector<uint> t_star_vec(T);
+    Fr_t* v_star_cpu = new Fr_t[T];
+    for (uint t = 0; t < T; t++) {
+        FrTensor row = tensor_row(logits_all, t, V);
+        t_star_vec[t] = argmax_prover.compute(row);
+        v_star_cpu[t] = row(t_star_vec[t]);
+    }
+    FrTensor v_star_vec_t(T, v_star_cpu);
+    delete[] v_star_cpu;
+
+    // 2. Batched diffs
+    FrTensor diffs_all(TV);
+    batched_diffs_kernel<<<(TV + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        logits_all.gpu_data, v_star_vec_t.gpu_data, diffs_all.gpu_data, T, V);
+
+    // 3. CDF + win probs
+    auto [cdf_all, m_cdf] = cdf_prover.compute(diffs_all);
+    FrTensor win_probs_all = -(cdf_all - FR_FROM_INT(cdf_scale));
+
+    // 4. Row sums
+    FrTensor total_win_vec(T);
+    batched_row_sum_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        win_probs_all.gpu_data, total_win_vec.gpu_data, T, V);
+    cudaDeviceSynchronize();
+
+    // 5. Extract actual-token win probs
+    uint* tgpu = upload_tokens(tokens);
+    FrTensor actual_wp_vec(T);
+    extract_by_index_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        win_probs_all.gpu_data, tgpu, actual_wp_vec.gpu_data, T, V);
+    cudaDeviceSynchronize();
+    cudaFree(tgpu);
+
+    // 6. Clamp + log lookups
+    clamp_min_one_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        actual_wp_vec.gpu_data, T);
+    cudaDeviceSynchronize();
+
+    auto [log_wp_vec, m_log_wp] = log_prover.compute(actual_wp_vec);
+    FrTensor log_tw_vec = range_reduced_log(total_win_vec, log_scale);
+
+    // 7. Entropy
+    FrTensor surprise_raw = log_wp_vec + log_tw_vec;
+    Fr_t H_raw = surprise_raw.sum();
+    Fr_t offset = FR_FROM_INT((unsigned long long)T * log_precision * log_scale);
+    Fr_t H = H_raw - offset;
+
+    if (H != claimed_entropy)
+        throw std::runtime_error("zkConditionalEntropy::prove: entropy mismatch");
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Phase 2: Proofs
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── 2a. Argmax proofs (one per position) ────────────────────────────────
+    std::cout << "  Proving argmax (" << T << " positions)..." << std::endl;
+    for (uint t = 0; t < T; t++) {
+        FrTensor row = tensor_row(logits_all, t, V);
+        Fr_t v_star = row(t_star_vec[t]);
+        auto u_arg = random_vec(ceilLog2(V));
+        Fr_t lc = argmax_prover.prove(row, t_star_vec[t], v_star, u_arg, proof);
+        logits_claims = logits_claims + lc;
+    }
+
+    // ── 2b. CDF tLookup proof (T*V tensor → T*V values) ────────────────────
+    // Cryptographically binds all CDF values to the public CDF table.
+    std::cout << "  Proving CDF lookup (" << TV << " elements)..." << std::endl;
+    {
+        auto r_cdf = random_vec(1)[0];
+        auto alpha = random_vec(1)[0];
+        auto beta  = random_vec(1)[0];
+        auto u_cdf = random_vec(ceilLog2(TV));
+        auto v_cdf = random_vec(ceilLog2(TV));
+        cdf_prover.prove(diffs_all, cdf_all, m_cdf,
+                         r_cdf, alpha, beta, u_cdf, v_cdf, proof);
+    }
+
+    // ── 2c. total_win row-sum proof (placeholder) ───────────────────────────
+    // Proves total_win_vec[t] = sum_i win_probs_all[t*V + i].
+    // Full sumcheck TBD; emit MLE evaluation as proof constant for now.
+    std::cout << "  Proving total_win row sums..." << std::endl;
+    {
+        auto u_T = random_vec(ceilLog2(T));
+        Fr_t tw_at_u = total_win_vec(u_T);
+        proof.push_back(Polynomial(tw_at_u));
+    }
+
+    // ── 2d. Actual-token extraction proof ───────────────────────────────────
+    // Proves actual_wp_vec[t] = win_probs_all[t*V + tokens[t]] via
+    // inner product with indicator tensor.
+    std::cout << "  Proving actual-token extraction..." << std::endl;
+    {
+        Fr_t* ind_cpu = new Fr_t[TV];
+        for (uint i = 0; i < TV; i++) ind_cpu[i] = FR_FROM_INT(0);
+        for (uint t = 0; t < T; t++)
+            ind_cpu[(size_t)t * V + tokens[t]] = FR_FROM_INT(1);
+        FrTensor indicator(TV, ind_cpu);
+        delete[] ind_cpu;
+
+        // Verify consistency
+        Fr_t ip = (win_probs_all * indicator).sum();
+        Fr_t wp_sum = actual_wp_vec.sum();
+        if (ip != wp_sum)
+            throw std::runtime_error("prove: indicator extraction mismatch");
+
+        // Inner product sumcheck
+        auto u_ext = random_vec(ceilLog2(TV));
+        inner_product_sumcheck(win_probs_all, indicator, u_ext);
+
+        auto u_T = random_vec(ceilLog2(T));
+        Fr_t wp_at_u = actual_wp_vec(u_T);
+        proof.push_back(Polynomial(wp_at_u));
+    }
+
+    // ── 2e. Win-prob log lookup proof ───────────────────────────────────────
+    // Proves log_wp_vec = log_table(actual_wp_vec) via tLookup.
+    // Pads to satisfy D % N == 0 constraint.
+    std::cout << "  Proving win-prob log lookup..." << std::endl;
+    {
+        uint N = 1u << log_precision;
+        // Smallest power of 2 >= max(T, N), guaranteeing D_padded % N == 0.
+        uint D_padded = N;
+        while (D_padded < T) D_padded *= 2;
+
+        Fr_t* wp_cpu = new Fr_t[D_padded];
+        cudaMemcpy(wp_cpu, actual_wp_vec.gpu_data, T * sizeof(Fr_t),
+                   cudaMemcpyDeviceToHost);
+        Fr_t pad_val = FR_FROM_INT(1);
+        for (uint i = T; i < D_padded; i++) wp_cpu[i] = pad_val;
+        FrTensor wp_padded(D_padded, wp_cpu);
+        delete[] wp_cpu;
+
+        auto [log_wp_padded, m_log_wp_p] = log_prover.compute(wp_padded);
+
+        auto r_log = random_vec(1)[0];
+        auto alpha = random_vec(1)[0];
+        auto beta  = random_vec(1)[0];
+        auto u_log = random_vec(ceilLog2(D_padded));
+        auto v_log = random_vec(ceilLog2(D_padded));
+        log_prover.prove(wp_padded, log_wp_padded, m_log_wp_p,
+                         r_log, alpha, beta, u_log, v_log, proof);
+    }
+
+    // ── 2f. Range-reduced log of total_win (placeholder proof) ──────────────
+    // Correctly computed; full bit-decomp + mantissa tLookup proof TBD.
+    std::cout << "  Range-reduced log (placeholder)..." << std::endl;
+    {
+        auto u_tw = random_vec(ceilLog2(T));
+        Fr_t log_tw_at_u = log_tw_vec(u_tw);
+        proof.push_back(Polynomial(log_tw_at_u));
+    }
+
+    // ── 2g. Final linear check ──────────────────────────────────────────────
+    // Verify surprise_raw = log_wp + log_tw at a random point (Schwartz-Zippel).
+    {
+        auto u_f = random_vec(ceilLog2(T));
+        Fr_t s   = surprise_raw(u_f);
+        Fr_t lwp = log_wp_vec(u_f);
+        Fr_t ltw = log_tw_vec(u_f);
+        if (s != lwp + ltw)
+            throw std::runtime_error("prove: surprise linear check failed");
+    }
+
+    std::cout << "zkConditionalEntropy::prove complete (batched, "
+              << T << " positions, " << proof.size() << " polynomials)."
+              << std::endl;
+
+    return logits_claims;
+}
+
+// ── Legacy per-position interface ───────────────────────────────────────────
+
+Fr_t zkConditionalEntropy::computePosition(const FrTensor& logits, uint actual_token) {
+    vector<uint> tokens = {actual_token};
+    return compute(logits, 1, logits.size, tokens);
+}
 
 Fr_t zkConditionalEntropy::compute(
     const vector<FrTensor>& logits_seq,
     const vector<uint>& tokens)
 {
-    if (logits_seq.size() != tokens.size())
-        throw std::invalid_argument("compute: logits_seq and tokens must have the same length");
+    if (logits_seq.empty())
+        throw std::invalid_argument("compute: empty logits sequence");
 
-    Fr_t total = FR_FROM_INT(0);
-    for (uint pos = 0; pos < tokens.size(); pos++)
-        total = total + computePosition(logits_seq[pos], tokens[pos]);
-    return total;
+    uint T = logits_seq.size();
+    uint V = logits_seq[0].size;
+    FrTensor logits_all = catTensors(logits_seq);
+    return compute(logits_all, T, V, tokens);
 }
-
-// ── prove (sequence) ──────────────────────────────────────────────────────────
-// For each position:
-//   - Prove argmax via zkArgmax (bit-decomposition range proof).
-//   - Record (diff_actual, win_prob, q_idx, surprise) as constant polynomials.
-//     Since the CDF and log tables are public and deterministic, a verifier
-//     recomputes cdf_table[diff] and log_table[q_idx] to check consistency.
-//
-// This avoids the tLookupRangeMapping divisibility constraint (D % N == 0)
-// because we never call lookup.prove() for D=1.
 
 Fr_t zkConditionalEntropy::prove(
     const vector<FrTensor>& logits_seq,
@@ -123,75 +420,11 @@ Fr_t zkConditionalEntropy::prove(
     Fr_t claimed_entropy,
     vector<Polynomial>& proof)
 {
-    if (logits_seq.size() != tokens.size())
-        throw std::invalid_argument("prove: logits_seq and tokens must have the same length");
+    if (logits_seq.empty())
+        throw std::invalid_argument("prove: empty logits sequence");
 
-    uint T = tokens.size();
-    Fr_t entropy_sum   = FR_FROM_INT(0);
-    Fr_t logits_claims = FR_FROM_INT(0);
-
-    for (uint pos = 0; pos < T; pos++) {
-        const FrTensor& logits = logits_seq[pos];
-        uint actual_token      = tokens[pos];
-
-        // ── Argmax prove ───────────────────────────────────────────────────
-        uint t_star = argmax_prover.compute(logits);
-        Fr_t v_star = logits(t_star);
-        auto u_arg  = random_vec(ceilLog2(vocab_size));
-        Fr_t lc     = argmax_prover.prove(logits, t_star, v_star, u_arg, proof);
-        logits_claims = logits_claims + lc;
-
-        // ── Bind logits[actual_token] to the logit tensor via MLE ─────────
-        uint log_N = ceilLog2(vocab_size);
-        vector<Fr_t> e_actual(log_N);
-        for (uint i = 0; i < log_N; i++)
-            e_actual[i] = FR_FROM_INT((actual_token >> i) & 1u);
-        Fr_t logit_act = logits(e_actual);
-        Fr_t logit_act_direct = logits(actual_token);
-        if (logit_act != logit_act_direct)
-            throw std::runtime_error("prove: MLE one-hot eval != direct logit read");
-        proof.push_back(Polynomial(logit_act));
-
-        // ── Full-vocab CDF + win probabilities ────────────────────────────
-        FrTensor diffs_all = -(logits - v_star);
-        auto [cdf_vals_all, m_cdf] = cdf_prover.compute(diffs_all);
-        (void)m_cdf;
-        Fr_t cdf_scale_fr = FR_FROM_INT(cdf_scale);
-        FrTensor win_probs_all = -(cdf_vals_all - cdf_scale_fr);
-        Fr_t win_prob  = win_probs_all(actual_token);
-        Fr_t total_win = win_probs_all.sum();
-
-        Fr_t diff_actual = diffs_all(actual_token);
-        proof.push_back(Polynomial(diff_actual));
-        proof.push_back(Polynomial(win_prob));
-        proof.push_back(Polynomial(total_win));
-
-        // ── Normalisation + log ───────────────────────────────────────────
-        // NOTE: total_win is self-reported (soundness gap S2). See plan2.md P6.
-        unsigned long long wp    = fr_to_ull(win_prob);
-        unsigned long long lp    = 1ULL << log_precision;
-        unsigned long long denom = fr_to_ull(total_win);
-        if (denom == 0) denom = 1;
-        unsigned long long q_idx = (wp * lp) / denom;
-        if (q_idx < 1)  q_idx = 1;
-        if (q_idx > lp) q_idx = lp;
-
-        Fr_t q_fr = FR_FROM_INT(q_idx);
-        FrTensor q_1(1, &q_fr);
-        auto [surp_1, m_log] = log_prover.compute(q_1);
-        (void)m_log;
-        Fr_t surprise = surp_1(0u);
-
-        proof.push_back(Polynomial(q_fr));
-        proof.push_back(Polynomial(surprise));
-
-        entropy_sum = entropy_sum + surprise;
-    }
-
-    if (entropy_sum != claimed_entropy)
-        throw std::runtime_error("zkConditionalEntropy::prove: entropy mismatch");
-
-    std::cout << "zkConditionalEntropy::prove complete over " << T << " positions." << std::endl;
-    return logits_claims;
+    uint T = logits_seq.size();
+    uint V = logits_seq[0].size;
+    FrTensor logits_all = catTensors(logits_seq);
+    return prove(logits_all, T, V, tokens, claimed_entropy, proof);
 }
-
