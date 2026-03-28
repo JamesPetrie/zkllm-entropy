@@ -927,26 +927,26 @@ KERNEL void matrixMultiplyOptimized(Fr_t* A, Fr_t* B, Fr_t* C, int rowsA, int co
 
 
 #ifdef USE_GOLDILOCKS
-// ── Optimized Goldilocks matmul with double buffering + 2-way ILP ───────────
+// ── Optimized Goldilocks matmul with lazy accumulation ──────────────────────
 //
-// Two improvements over matrixMultiplyOptimized:
+// Key optimization: replace 15 full gold_add calls (each ~10 SASS instructions
+// with modular reduction) with raw uint64_t wrapping additions + a single
+// final reduction per tile pass.
 //
-// 1. 2-way unrolled inner loop: compute two independent gold_muls per iteration,
-//    then tree-reduce with gold_add. This gives the warp scheduler two independent
-//    instruction chains to interleave, improving ILP.
+// The kernel is throughput-limited (total SASS instruction count), not
+// latency-limited (dependency chains). With 16 warps per scheduler, ILP is
+// fully utilized. So the only way to speed up is fewer instructions.
 //
-// 2. Double-buffered shared memory: load the next tile while computing on the
-//    current tile, hiding global memory latency behind compute.
-//
-// Correctness: both gold_mul results are in [0, p), and gold_add handles
-// inputs in [0, p), so no overflow concerns — all intermediate values are
-// fully reduced.
+// Correctness: each gold_mul result is in [0, p) where p = 2^64 - 2^32 + 1.
+// Summing 16 such values in wrapping uint64_t arithmetic gives us
+// (true_sum mod 2^64). We track the number of 2^64 overflows in a counter.
+// Then: true_sum ≡ acc_lo + overflow_count * 2^64 ≡ acc_lo + overflow_count * eps (mod p)
+// where eps = 2^32 - 1.
 
 KERNEL void matrixMultiplyGoldV2(Fr_t* A, Fr_t* B, Fr_t* C,
                                   int rowsA, int colsA, int colsB) {
-    // Double-buffered tiles: [2][TILE_WIDTH][TILE_WIDTH]
-    __shared__ Fr_t A_tile[2][TILE_WIDTH][TILE_WIDTH];
-    __shared__ Fr_t B_tile[2][TILE_WIDTH][TILE_WIDTH];
+    __shared__ Fr_t A_tile[TILE_WIDTH][TILE_WIDTH];
+    __shared__ Fr_t B_tile[TILE_WIDTH][TILE_WIDTH];
 
     int row = blockIdx.y * TILE_WIDTH + threadIdx.y;
     int col = blockIdx.x * TILE_WIDTH + threadIdx.x;
@@ -955,58 +955,63 @@ KERNEL void matrixMultiplyGoldV2(Fr_t* A, Fr_t* B, Fr_t* C,
 
     int numTiles = (colsA - 1) / TILE_WIDTH + 1;
 
-    Fr_t sum = Fr_t{0ULL};
+    // Running sum in fully-reduced form [0, p)
+    uint64_t sum = 0;
 
-    // Load first tile into buffer 0
-    const Fr_t ZERO = Fr_t{0ULL};
-    int t = 0;
-    if (row < rowsA && t * TILE_WIDTH + tx < colsA) {
-        A_tile[0][ty][tx] = A[row * colsA + t * TILE_WIDTH + tx];
-    } else {
-        A_tile[0][ty][tx] = ZERO;
-    }
-    if (t * TILE_WIDTH + ty < colsA && col < colsB) {
-        B_tile[0][ty][tx] = B[(t * TILE_WIDTH + ty) * colsB + col];
-    } else {
-        B_tile[0][ty][tx] = ZERO;
-    }
-    __syncthreads();
+    for (int t = 0; t < numTiles; ++t) {
+        // Load tile
+        if (row < rowsA && t * TILE_WIDTH + tx < colsA) {
+            A_tile[ty][tx] = A[row * colsA + t * TILE_WIDTH + tx];
+        } else {
+            A_tile[ty][tx] = Fr_t{0ULL};
+        }
+        if (t * TILE_WIDTH + ty < colsA && col < colsB) {
+            B_tile[ty][tx] = B[(t * TILE_WIDTH + ty) * colsB + col];
+        } else {
+            B_tile[ty][tx] = Fr_t{0ULL};
+        }
+        __syncthreads();
 
-    for (t = 0; t < numTiles; ++t) {
-        int cur = t & 1;
-        int nxt = 1 - cur;
+        // Accumulate 16 products using wrapping uint64_t addition.
+        // Track overflow count for final Goldilocks reduction.
+        uint64_t acc = 0;
+        uint32_t overflows = 0;
 
-        // Prefetch next tile into the other buffer (if there is a next tile)
-        if (t + 1 < numTiles) {
-            int t1 = t + 1;
-            if (row < rowsA && t1 * TILE_WIDTH + tx < colsA) {
-                A_tile[nxt][ty][tx] = A[row * colsA + t1 * TILE_WIDTH + tx];
-            } else {
-                A_tile[nxt][ty][tx] = ZERO;
-            }
-            if (t1 * TILE_WIDTH + ty < colsA && col < colsB) {
-                B_tile[nxt][ty][tx] = B[(t1 * TILE_WIDTH + ty) * colsB + col];
-            } else {
-                B_tile[nxt][ty][tx] = ZERO;
-            }
+        for (int k = 0; k < TILE_WIDTH; ++k) {
+            Fr_t prod = gold_mul(A_tile[ty][k], B_tile[k][tx]);
+            uint64_t new_acc = acc + prod.val;
+            if (new_acc < acc) overflows++;  // wrapped around 2^64
+            acc = new_acc;
         }
 
-        // Compute on current buffer with 2-way unrolled inner loop
-        // TILE_WIDTH=16 so k steps 0,2,4,...,14 (8 iterations, 2 muls each)
-        for (int k = 0; k < TILE_WIDTH; k += 2) {
-            // Two independent multiplies — warp scheduler can interleave
-            Fr_t p0 = gold_mul(A_tile[cur][ty][k],     B_tile[cur][k][tx]);
-            Fr_t p1 = gold_mul(A_tile[cur][ty][k + 1], B_tile[cur][k + 1][tx]);
-            // Tree reduce: add products first (independent of sum), then accumulate
-            Fr_t pair_sum = gold_add(p0, p1);
-            sum = gold_add(sum, pair_sum);
+        // Reduce: true_sum = acc + overflows * 2^64
+        // 2^64 ≡ eps (mod p) where eps = GOLDILOCKS_P_NEG = 2^32 - 1
+        // overflows <= 15 (at most 16 additions of values < 2^64)
+        // overflows * eps < 16 * 2^32 = 2^36, fits comfortably in uint64_t
+        uint64_t correction = (uint64_t)overflows * GOLDILOCKS_P_NEG;
+        uint64_t tile_sum = acc + correction;
+        if (tile_sum < acc) {
+            // This addition itself overflowed: add another eps
+            tile_sum += GOLDILOCKS_P_NEG;
         }
+        // Canonical reduction
+        if (tile_sum >= GOLDILOCKS_P) tile_sum -= GOLDILOCKS_P;
+        // tile_sum might still be >= p if the correction pushed it over
+        if (tile_sum >= GOLDILOCKS_P) tile_sum -= GOLDILOCKS_P;
+
+        // Accumulate tile result into running sum
+        uint64_t new_sum = sum + tile_sum;
+        // Check for overflow and reduce
+        if (new_sum < sum || new_sum >= GOLDILOCKS_P) {
+            new_sum -= GOLDILOCKS_P;
+        }
+        sum = new_sum;
 
         __syncthreads();
     }
 
     if (row < rowsA && col < colsB) {
-        C[row * colsB + col] = sum;  // gold_mont is identity
+        C[row * colsB + col] = Fr_t{sum};
     }
 }
 #endif // USE_GOLDILOCKS
