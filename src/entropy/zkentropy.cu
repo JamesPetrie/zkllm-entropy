@@ -88,30 +88,63 @@ KERNEL void clamp_min_one_kernel(Fr_t* data, uint N) {
     }
 }
 
-// ── Range-reduced log2 (CPU-side, proof placeholder) ─────────────────────────
-// Computes log2(x) * log_scale for each element.  Values may exceed
-// 2^log_precision so the standard table cannot be used directly.
-// The result is correct; the ZK proof for this step is a placeholder.
-
-static FrTensor range_reduced_log(const FrTensor& values, uint log_scale_param) {
-    uint T = values.size;
-    Fr_t* cpu = new Fr_t[T];
-    cudaMemcpy(cpu, values.gpu_data, T * sizeof(Fr_t), cudaMemcpyDeviceToHost);
-
-    Fr_t* result = new Fr_t[T];
-    for (uint t = 0; t < T; t++) {
-        unsigned long long x = fr_to_ull(cpu[t]);
-        if (x < 1) x = 1;
-        double log2_x = log2((double)x);
-        long scaled = (long)(log2_x * (double)log_scale_param + 0.5);
-        if (scaled < 0) scaled = 0;
-        result[t] = FR_FROM_INT((unsigned long long)scaled);
+// ── Bit-extract kernel (same as zkargmax_bit_extract_kernel) ─────────────────
+// bits_b[i] = (vals[i] >> bit) & 1
+KERNEL void entropy_bit_extract_kernel(const Fr_t* vals, Fr_t* bits_b, uint bit, uint N) {
+    uint tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < N) {
+        long val = scalar_to_long(vals[tid]);
+        bits_b[tid] = long_to_scalar((val >> bit) & 1L);
     }
+}
 
-    FrTensor out(T, result);
-    delete[] cpu;
-    delete[] result;
-    return out;
+// ── Bit-decomposition non-negativity proof ──────────────────────────────────
+// Proves that each element of `vals` lies in [0, 2^num_bits) by decomposing
+// into `num_bits` bit-planes and verifying:
+//   1. Reconstruction: sum_b 2^b * bits_b(u) == vals(u)
+//   2. Each bit-plane is binary (accumulated into combined_error for batched check)
+//
+// bit_planes: output parameter; bit-planes are appended here
+// combined_error: running batched binary check tensor (accumulated in-place)
+// batch_idx: starting index for random coefficients in the batched check
+static void prove_nonneg(const FrTensor& vals, uint num_bits,
+                          const vector<Fr_t>& u,
+                          vector<FrTensor>& bit_planes,
+                          FrTensor& combined_error,
+                          uint& batch_idx) {
+    uint N = vals.size;
+    uint blocks = (N + FrNumThread - 1) / FrNumThread;
+
+    // 1. Extract bit planes
+    uint base = bit_planes.size();
+    for (uint b = 0; b < num_bits; b++) {
+        bit_planes.emplace_back(N);
+        entropy_bit_extract_kernel<<<blocks, FrNumThread>>>(
+            vals.gpu_data, bit_planes.back().gpu_data, b, N);
+    }
+    cudaDeviceSynchronize();
+
+    // 2. Reconstruction check at challenge u:
+    //    vals(u) == sum_b 2^b * bits_b(u)
+    Fr_t vals_u = vals(u);
+    Fr_t recon  = FR_FROM_INT(0);
+    Fr_t pow2   = FR_FROM_INT(1);
+    Fr_t two    = FR_FROM_INT(2);
+    for (uint b = 0; b < num_bits; b++) {
+        Fr_t bits_b_u = bit_planes[base + b](u);
+        recon = recon + pow2 * bits_b_u;
+        pow2  = pow2 * two;
+    }
+    if (recon != vals_u)
+        throw std::runtime_error("prove_nonneg: bit reconstruction mismatch");
+
+    // 3. Accumulate binary check: r_k * bits_b * (bits_b - 1) for each bit plane
+    auto r = random_vec(num_bits);
+    for (uint b = 0; b < num_bits; b++) {
+        combined_error += (bit_planes[base + b] * bit_planes[base + b]
+                           - bit_planes[base + b]) * r[b];
+    }
+    batch_idx += num_bits;
 }
 
 // ── Helper: extract row from flat tensor ────────────────────────────────────
@@ -132,13 +165,17 @@ static uint* upload_tokens(const vector<uint>& tokens) {
 // ── Entropy formula ─────────────────────────────────────────────────────────
 //
 // surprise[t] = -log2(win_prob[t] / total_win[t]) * log_scale
-//             = (-log2(win_prob[t]) + log2(total_win[t])) * log_scale
 //
-// log_wp_table[t] = (log_precision - log2(wp[t])) * log_scale   [from tLookup]
-// log_tw[t]       = log2(total_win[t]) * log_scale              [range-reduced]
+// Quotient-remainder approach:
+//   q[t] = floor(wp[t] * 2^log_precision / tw[t])   ∈ [1, 2^log_precision]
+//   surprise[t] = log_table(q[t])
+//               = (log_precision - log2(q[t])) * log_scale
+//               ≈ -log2(wp[t]/tw[t]) * log_scale
 //
-// => surprise[t] = log_wp_table[t] + log_tw[t] - log_precision * log_scale
-// => H = sum(log_wp + log_tw) - T * log_precision * log_scale
+// ZK proof of the division:
+//   q[t]*tw[t] + r[t] = wp[t]*2^log_precision   where 0 ≤ r[t] < tw[t]
+//   Non-negativity of q, r, (tw-r-1) via bit decomposition
+//   H = sum(surprise)
 
 // ── Batched compute ─────────────────────────────────────────────────────────
 
@@ -187,20 +224,48 @@ Fr_t zkConditionalEntropy::compute(
     cudaDeviceSynchronize();
     cudaFree(tgpu);
 
-    // 6. Clamp + log lookups
+    // 6. Clamp win probs and total_win to >= 1
     clamp_min_one_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
         actual_wp_vec.gpu_data, T);
+    clamp_min_one_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        total_win_vec.gpu_data, T);
     cudaDeviceSynchronize();
 
-    auto [log_wp_vec, m_log_wp] = log_prover.compute(actual_wp_vec);
-    (void)m_log_wp;
-    FrTensor log_tw_vec = range_reduced_log(total_win_vec, log_scale);
+    // 7. Quotient: q[t] = floor(wp[t] * 2^log_precision / tw[t])
+    //    Requires 2^log_precision >= max(total_win) for q >= 1 on all positions.
+    //    In practice, log_precision >= ceil(log2(V * cdf_scale)).
+    uint table_size = 1u << log_precision;
+    Fr_t* cpu_wp = new Fr_t[T];
+    Fr_t* cpu_tw = new Fr_t[T];
+    cudaMemcpy(cpu_wp, actual_wp_vec.gpu_data, T * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(cpu_tw, total_win_vec.gpu_data, T * sizeof(Fr_t), cudaMemcpyDeviceToHost);
 
-    // 7. Entropy
-    FrTensor surprise_raw = log_wp_vec + log_tw_vec;
-    Fr_t H_raw = surprise_raw.sum();
-    Fr_t offset = FR_FROM_INT((unsigned long long)T * log_precision * log_scale);
-    return H_raw - offset;
+    // Pad q to satisfy tLookup D%N==0: D_padded = smallest power of 2 >= max(T, N)
+    uint D_padded = table_size;
+    while (D_padded < T) D_padded *= 2;
+
+    Fr_t* cpu_q = new Fr_t[D_padded];
+    for (uint t = 0; t < T; t++) {
+        unsigned long long wp_val = fr_to_ull(cpu_wp[t]);
+        unsigned long long tw_val = fr_to_ull(cpu_tw[t]);
+        unsigned long long q_val = (wp_val * (unsigned long long)table_size) / tw_val;
+        cpu_q[t] = FR_FROM_INT(q_val);
+    }
+    // Pad with table_size (maps to surprise=0 in log table)
+    for (uint i = T; i < D_padded; i++) cpu_q[i] = FR_FROM_INT(table_size);
+    FrTensor q_padded(D_padded, cpu_q);
+    delete[] cpu_wp;
+    delete[] cpu_tw;
+    delete[] cpu_q;
+
+    // 8. Surprise lookup
+    auto [surprise_padded, m_surprise] = log_prover.compute(q_padded);
+    (void)m_surprise;
+
+    // 9. Entropy = sum of surprise for the first T positions only
+    //    (padded positions have surprise=0 by construction)
+    FrTensor surprise_vec = surprise_padded.trunc(0, T);
+    return surprise_vec.sum();
 }
 
 // ── Batched prove ───────────────────────────────────────────────────────────
@@ -257,19 +322,56 @@ Fr_t zkConditionalEntropy::prove(
     cudaDeviceSynchronize();
     cudaFree(tgpu);
 
-    // 6. Clamp + log lookups
+    // 6. Clamp win probs and total_win to >= 1
     clamp_min_one_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
         actual_wp_vec.gpu_data, T);
+    clamp_min_one_kernel<<<(T + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        total_win_vec.gpu_data, T);
     cudaDeviceSynchronize();
 
-    auto [log_wp_vec, m_log_wp] = log_prover.compute(actual_wp_vec);
-    FrTensor log_tw_vec = range_reduced_log(total_win_vec, log_scale);
+    // 7. Quotient-remainder: q[t] = floor(wp[t] * 2^p / tw[t])
+    uint table_size = 1u << log_precision;
+    Fr_t* cpu_wp = new Fr_t[T];
+    Fr_t* cpu_tw = new Fr_t[T];
+    cudaMemcpy(cpu_wp, actual_wp_vec.gpu_data, T * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(cpu_tw, total_win_vec.gpu_data, T * sizeof(Fr_t), cudaMemcpyDeviceToHost);
 
-    // 7. Entropy
-    FrTensor surprise_raw = log_wp_vec + log_tw_vec;
-    Fr_t H_raw = surprise_raw.sum();
-    Fr_t offset = FR_FROM_INT((unsigned long long)T * log_precision * log_scale);
-    Fr_t H = H_raw - offset;
+    Fr_t* cpu_q = new Fr_t[T];
+    Fr_t* cpu_r = new Fr_t[T];
+    for (uint t = 0; t < T; t++) {
+        unsigned long long wp_val = fr_to_ull(cpu_wp[t]);
+        unsigned long long tw_val = fr_to_ull(cpu_tw[t]);
+        unsigned long long wp_scaled = wp_val * (unsigned long long)table_size;
+        unsigned long long q_val = wp_scaled / tw_val;
+        unsigned long long r_val = wp_scaled - q_val * tw_val;
+        cpu_q[t] = FR_FROM_INT(q_val);
+        cpu_r[t] = FR_FROM_INT(r_val);
+    }
+    FrTensor q_vec(T, cpu_q);
+    FrTensor r_vec(T, cpu_r);
+    delete[] cpu_wp;
+    delete[] cpu_tw;
+    delete[] cpu_q;
+    delete[] cpu_r;
+
+    // wp_scaled = actual_wp * 2^p  (on GPU, for the division relation proof)
+    FrTensor wp_scaled_vec = actual_wp_vec * FR_FROM_INT(table_size);
+
+    // 8. Surprise lookup (padded for tLookup D%N==0 constraint)
+    uint D_padded = table_size;
+    while (D_padded < T) D_padded *= 2;
+
+    Fr_t* cpu_q_pad = new Fr_t[D_padded];
+    cudaMemcpy(cpu_q_pad, q_vec.gpu_data, T * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+    for (uint i = T; i < D_padded; i++) cpu_q_pad[i] = FR_FROM_INT(table_size);
+    FrTensor q_padded(D_padded, cpu_q_pad);
+    delete[] cpu_q_pad;
+
+    auto [surprise_padded, m_surprise] = log_prover.compute(q_padded);
+
+    // 9. Entropy = sum of first T surprise values
+    FrTensor surprise_vec = surprise_padded.trunc(0, T);
+    Fr_t H = surprise_vec.sum();
 
     if (H != claimed_entropy)
         throw std::runtime_error("zkConditionalEntropy::prove: entropy mismatch");
@@ -301,14 +403,29 @@ Fr_t zkConditionalEntropy::prove(
                          r_cdf, alpha, beta, u_cdf, v_cdf, proof);
     }
 
-    // ── 2c. total_win row-sum proof (placeholder) ───────────────────────────
-    // Proves total_win_vec[t] = sum_i win_probs_all[t*V + i].
-    // Full sumcheck TBD; emit MLE evaluation as proof constant for now.
+    // ── 2c. total_win row-sum proof ────────────────────────────────────────
+    // Proves total_win_vec[t] = sum_i win_probs_all[t*V + i] via
+    // partial MLE + inner product sumcheck with all-ones vector.
     std::cout << "  Proving total_win row sums..." << std::endl;
     {
-        auto u_T = random_vec(ceilLog2(T));
-        Fr_t tw_at_u = total_win_vec(u_T);
-        proof.push_back(Polynomial(tw_at_u));
+        // Fix T dimension at random challenge u_t, producing a V-length tensor
+        auto u_t = random_vec(ceilLog2(T));
+        FrTensor wp_partial = win_probs_all.partial_me(u_t, V);
+
+        // Claim: sum(wp_partial) == total_win_vec(u_t)
+        Fr_t tw_claim = total_win_vec(u_t);
+        Fr_t wp_partial_sum = wp_partial.sum();
+        if (tw_claim != wp_partial_sum)
+            throw std::runtime_error("prove: row-sum mismatch at challenge u_t");
+
+        // Prove the sum via inner product with ones
+        Fr_t* ones_cpu = new Fr_t[V];
+        for (uint i = 0; i < V; i++) ones_cpu[i] = FR_FROM_INT(1);
+        FrTensor ones_V(V, ones_cpu);
+        delete[] ones_cpu;
+
+        auto u_v = random_vec(ceilLog2(V));
+        inner_product_sumcheck(wp_partial, ones_V, u_v);
     }
 
     // ── 2d. Actual-token extraction proof ───────────────────────────────────
@@ -338,53 +455,63 @@ Fr_t zkConditionalEntropy::prove(
         proof.push_back(Polynomial(wp_at_u));
     }
 
-    // ── 2e. Win-prob log lookup proof ───────────────────────────────────────
-    // Proves log_wp_vec = log_table(actual_wp_vec) via tLookup.
-    // Pads to satisfy D % N == 0 constraint.
-    std::cout << "  Proving win-prob log lookup..." << std::endl;
+    // ── 2e. Quotient-remainder proof ───────────────────────────────────────
+    // Proves surprise[t] = log_table(q[t]) where q[t] = floor(wp[t]*2^p/tw[t]).
+    // Division relation: q*tw + r = wp*2^p, with 0 <= q < 2^p, 0 <= r < tw.
+    std::cout << "  Proving quotient-remainder division..." << std::endl;
     {
-        uint N = 1u << log_precision;
-        // Smallest power of 2 >= max(T, N), guaranteeing D_padded % N == 0.
-        uint D_padded = N;
-        while (D_padded < T) D_padded *= 2;
+        auto u_qr = random_vec(ceilLog2(T));
 
-        Fr_t* wp_cpu = new Fr_t[D_padded];
-        cudaMemcpy(wp_cpu, actual_wp_vec.gpu_data, T * sizeof(Fr_t),
-                   cudaMemcpyDeviceToHost);
-        Fr_t pad_val = FR_FROM_INT(1);
-        for (uint i = T; i < D_padded; i++) wp_cpu[i] = pad_val;
-        FrTensor wp_padded(D_padded, wp_cpu);
-        delete[] wp_cpu;
+        // 1. Division relation at random point: q(u)*tw(u) + r(u) = wp_scaled(u)
+        Fr_t q_u  = q_vec(u_qr);
+        Fr_t tw_u = total_win_vec(u_qr);
+        Fr_t r_u  = r_vec(u_qr);
+        Fr_t wp_scaled_u = wp_scaled_vec(u_qr);
+        if (q_u * tw_u + r_u != wp_scaled_u)
+            throw std::runtime_error("prove: division relation failed at challenge u");
 
-        auto [log_wp_padded, m_log_wp_p] = log_prover.compute(wp_padded);
+        // 2. Non-negativity via bit decomposition
+        //    - q in [0, 2^(log_precision+1)): log_precision+1 bits (q can equal 2^p)
+        //    - r >= 0: r_bits bits (r < tw <= V * cdf_scale)
+        //    - tw - r - 1 >= 0 (i.e. r < tw): r_bits bits
+        uint q_bits = log_precision + 1;
+        uint r_bits = 1;
+        { unsigned long long max_tw = (unsigned long long)V * cdf_scale;
+          while ((1ULL << r_bits) <= max_tw) r_bits++; }
 
+        FrTensor gap = total_win_vec - r_vec - FR_FROM_INT(1);
+
+        vector<FrTensor> bit_planes;
+        FrTensor combined_error(T);
+        cudaMemset(combined_error.gpu_data, 0, T * sizeof(Fr_t));
+        uint batch_idx = 0;
+
+        std::cout << "    q range proof (" << q_bits << " bits)..." << std::endl;
+        prove_nonneg(q_vec, q_bits, u_qr, bit_planes, combined_error, batch_idx);
+
+        std::cout << "    r range proof (" << r_bits << " bits)..." << std::endl;
+        prove_nonneg(r_vec, r_bits, u_qr, bit_planes, combined_error, batch_idx);
+
+        std::cout << "    gap range proof (" << r_bits << " bits)..." << std::endl;
+        prove_nonneg(gap, r_bits, u_qr, bit_planes, combined_error, batch_idx);
+
+        // 3. Batched binary check: combined_error(u) == 0
+        Fr_t ce_u = combined_error(u_qr);
+        if (ce_u != FR_FROM_INT(0))
+            throw std::runtime_error("prove: batched binary check failed for q/r/gap");
+    }
+
+    // ── 2f. Surprise log lookup proof ───────────────────────────────────────
+    // Proves surprise[t] = log_table(q[t]) via tLookup on the padded q tensor.
+    std::cout << "  Proving surprise log lookup..." << std::endl;
+    {
         auto r_log = random_vec(1)[0];
         auto alpha = random_vec(1)[0];
         auto beta  = random_vec(1)[0];
         auto u_log = random_vec(ceilLog2(D_padded));
         auto v_log = random_vec(ceilLog2(D_padded));
-        log_prover.prove(wp_padded, log_wp_padded, m_log_wp_p,
+        log_prover.prove(q_padded, surprise_padded, m_surprise,
                          r_log, alpha, beta, u_log, v_log, proof);
-    }
-
-    // ── 2f. Range-reduced log of total_win (placeholder proof) ──────────────
-    // Correctly computed; full bit-decomp + mantissa tLookup proof TBD.
-    std::cout << "  Range-reduced log (placeholder)..." << std::endl;
-    {
-        auto u_tw = random_vec(ceilLog2(T));
-        Fr_t log_tw_at_u = log_tw_vec(u_tw);
-        proof.push_back(Polynomial(log_tw_at_u));
-    }
-
-    // ── 2g. Final linear check ──────────────────────────────────────────────
-    // Verify surprise_raw = log_wp + log_tw at a random point (Schwartz-Zippel).
-    {
-        auto u_f = random_vec(ceilLog2(T));
-        Fr_t s   = surprise_raw(u_f);
-        Fr_t lwp = log_wp_vec(u_f);
-        Fr_t ltw = log_tw_vec(u_f);
-        if (s != lwp + ltw)
-            throw std::runtime_error("prove: surprise linear check failed");
     }
 
     std::cout << "zkConditionalEntropy::prove complete (batched, "

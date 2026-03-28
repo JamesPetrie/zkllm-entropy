@@ -17,12 +17,11 @@
 // Proof structure:
 //   1. Batched argmax (bit-decomp range proof on T x V diffs tensor)
 //   2. CDF tLookup proof  (T x V -> T x V, one proof)
-//   3. total_win row-sum proof (inner product with ones, per row)
+//   3. total_win row-sum proof (partial MLE + inner product sumcheck)
 //   4. Actual-token extraction proof (indicator inner product)
-//   5. Win-prob log lookup proof (tLookup on T-element vector)
-//   6. Range-reduced log of total_win (placeholder -- computed correctly,
-//      proof to be added later via bit-decomp + mantissa extraction)
-//   7. Linear subtraction + final sum
+//   5. Quotient-remainder proof for surprise computation:
+//      q*tw + r = wp*2^p, with bit-decomp range proofs on q, r, (tw-r-1)
+//   6. Surprise log lookup proof (tLookup on padded q tensor)
 //
 // Parameters:
 //   vocab_size    : number of tokens (e.g. 32000 for LLaMA)

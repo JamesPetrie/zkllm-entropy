@@ -53,7 +53,7 @@ int main() {
     const uint vocab_size    = 32;   // small vocab for testing
     const uint bit_width     = 16;
     const uint cdf_precision = 16;
-    const uint log_precision = 5;    // 32 entries; 32 % 32 == 0
+    const uint log_precision = 16;   // 65536 entries; must be >= ceil(log2(V*cdf_scale))
     const uint cdf_scale     = 1u << 16;
     const uint log_scale     = 1u << 16;
     const double sigma_eff   = 500.0;
