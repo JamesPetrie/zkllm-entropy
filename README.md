@@ -130,7 +130,7 @@ The hidden state from layer 31 comes from the existing zkLLM layer proof pipelin
 
 All T positions are processed as a single T×V tensor. Only the aggregate entropy H is revealed — no per-token scalars leak.
 
-1. **GPU diffs** — `diffs[t,i] = v*[t] − logits[t,i]` (T×V tensor, all non-negative)
+1. **GPU diffs** — `diffs[t,i] = clamp(v*[t] − logits[t,i], 0, 2^cdf_precision − 1)` (T×V tensor, clamped to CDF table range)
 2. **zkNormalCDF** — CDF tLookup: `win_probs[t,i] = (1 − Φ(diff/σ)) × cdf_scale` (one proof over T×V). Implicitly proves non-negativity of all diffs (and thus argmax correctness) — a negative diff cannot match any CDF table entry in the LogUp identity.
 3. **Row-sum sumcheck** — proves `total_win[t] = Σ_i win_probs[t,i]` via partial MLE + inner product sumcheck
 4. **Indicator extraction** — proves `wp[t] = win_probs[t, token[t]]` via inner product with indicator tensor
@@ -198,7 +198,7 @@ Additional BLS12-381 test binaries: `test_zkargmax` (6), `test_zklog` (5), `test
 
 The entropy prove phase dominates (92.6%), driven by per-token sumcheck rounds for argmax, CDF, and log proofs over the 32K vocabulary. With Goldilocks field arithmetic (9.8× faster multiply), this phase is projected to drop from ~634s to ~65s.
 
-**Goldilocks timed build:** 17.6s for 64 tokens (after 3.7× optimization pass), vs 64.3s before optimization. Full 1024-token Goldilocks timing is pending.
+**Goldilocks timing (H100 PCIe, Llama-2-7B, 1024 tokens):** 9.4s end-to-end (190 proof polynomials). This is ~73× faster than BLS12-381 (684.8s), driven by 9.8× faster field ops, batched proof structure, and interactive challenges eliminating multi-query FRI.
 
 ---
 
@@ -269,7 +269,7 @@ The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The 
 
 ### Proof completeness gaps
 
-1. **Verifier is arithmetic-only.** `verify_entropy.py` recomputes CDF/log/quantization from scalar proof values and checks consistency. It does not verify any sumcheck, commitment opening, tLookup proof, or FRI opening. A full cryptographic verifier has not been implemented.
+1. **Verifier is incomplete.** An interactive verifier (`interactive_verifier`) exists that communicates with the prover via pipes and generates fresh challenges per round, but it does not yet check the sumcheck polynomials, tLookup proofs, or FRI openings. The Python `verify_entropy.py` only does arithmetic consistency checks.
 
 ---
 
@@ -277,9 +277,9 @@ The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The 
 
 Planned improvements, roughly in priority order.
 
-### 1. Build a cryptographic verifier
+### 1. Complete the cryptographic verifier
 
-Replace `verify_entropy.py` with a verifier that checks sumcheck polynomials, tLookup proofs, FRI openings, and commitment bindings. This is the largest remaining engineering effort.
+The interactive verifier infrastructure exists (`interactive_verifier`, `pipe_challenge.cuh`, `challenge.cuh`) and generates per-round challenges, but does not yet check sumcheck polynomials, tLookup proofs, FRI openings, or commitment bindings. Adding these checks is the largest remaining engineering effort.
 
 ### 2. Goldilocks field range validation
 
@@ -306,12 +306,18 @@ src/
   tensor/         fr-tensor.cu/cuh, g1-tensor.cu/cuh — GPU tensor operations
   poly/           polynomial.cu/cuh, ntt.cu/cuh — polynomials and NTT
   commit/         merkle.cu/cuh, fri.cu/cuh, fri_pcs.cu/cuh — commitments
-  proof/          proof.cu/cuh — sumcheck protocols, Weight struct
+  proof/          proof.cu/cuh, challenge.cuh, pipe_challenge.cuh — sumcheck protocols, pluggable challenge source, IPC
   zknn/           tlookup, zkargmax, zknormalcdf, zklog, zkfc,
                   zksoftmax, rescaling, zkrelu — proof modules
   entropy/        zkentropy.cu/cuh — conditional entropy proof
   llm/            rmsnorm, ffn, self-attn, etc. — LLM layer proofs
   util/           ioutils, timer — I/O and timing helpers
+verifier/
+  interactive_verifier.cpp  CPU-only interactive verifier (pipe-based IPC)
+  verifier.cpp              Standalone proof file verifier
+  sumcheck_verifier.h       Sumcheck verification logic
+  tlookup_verifier.h        tLookup verification logic
+  verifier_utils.h          Goldilocks field arithmetic (CPU-only)
 test/
   test_*.cu       Test binaries (Goldilocks and BLS12-381)
 python/
