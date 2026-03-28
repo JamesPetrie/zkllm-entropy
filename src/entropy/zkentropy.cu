@@ -533,18 +533,30 @@ Fr_t zkConditionalEntropy::prove(
                     fr_to_ull(q_u), fr_to_ull(tw_u), fr_to_ull(r_u),
                     fr_to_ull(wp_scaled_u), fr_to_ull(lhs));
             // Check pointwise relation for first few elements
-            Fr_t* dbg_q = new Fr_t[4]; Fr_t* dbg_tw = new Fr_t[4];
-            Fr_t* dbg_r = new Fr_t[4]; Fr_t* dbg_wps = new Fr_t[4];
-            cudaMemcpy(dbg_q, q_vec.gpu_data, 4*sizeof(Fr_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(dbg_tw, total_win_vec.gpu_data, 4*sizeof(Fr_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(dbg_r, r_vec.gpu_data, 4*sizeof(Fr_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(dbg_wps, wp_scaled_vec.gpu_data, 4*sizeof(Fr_t), cudaMemcpyDeviceToHost);
-            for (int i = 0; i < 4; i++) {
+            // Check ALL elements to find mismatches
+            Fr_t* dbg_q = new Fr_t[T]; Fr_t* dbg_tw = new Fr_t[T];
+            Fr_t* dbg_r = new Fr_t[T]; Fr_t* dbg_wps = new Fr_t[T];
+            cudaMemcpy(dbg_q, q_vec.gpu_data, T*sizeof(Fr_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg_tw, total_win_vec.gpu_data, T*sizeof(Fr_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg_r, r_vec.gpu_data, T*sizeof(Fr_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(dbg_wps, wp_scaled_vec.gpu_data, T*sizeof(Fr_t), cudaMemcpyDeviceToHost);
+            uint mismatch_count = 0;
+            for (uint i = 0; i < T; i++) {
                 Fr_t chk = dbg_q[i] * dbg_tw[i] + dbg_r[i];
-                fprintf(stderr, "  [%d] q=%lu tw=%lu r=%lu wps=%lu chk=%lu %s\n",
-                        i, fr_to_ull(dbg_q[i]), fr_to_ull(dbg_tw[i]),
-                        fr_to_ull(dbg_r[i]), fr_to_ull(dbg_wps[i]),
-                        fr_to_ull(chk), chk == dbg_wps[i] ? "OK" : "MISMATCH");
+                if (chk != dbg_wps[i]) {
+                    if (mismatch_count < 5)
+                        fprintf(stderr, "  MISMATCH[%u] q=%lu tw=%lu r=%lu wps=%lu chk=%lu\n",
+                                i, fr_to_ull(dbg_q[i]), fr_to_ull(dbg_tw[i]),
+                                fr_to_ull(dbg_r[i]), fr_to_ull(dbg_wps[i]),
+                                fr_to_ull(chk));
+                    mismatch_count++;
+                }
+            }
+            fprintf(stderr, "  Total mismatches: %u / %u\n", mismatch_count, T);
+            if (mismatch_count == 0) {
+                fprintf(stderr, "  All pointwise OK but MLE fails — checking tensor sizes:\n");
+                fprintf(stderr, "  q_vec.size=%u tw.size=%u r_vec.size=%u wps.size=%u u_qr.size=%zu\n",
+                        q_vec.size, total_win_vec.size, r_vec.size, wp_scaled_vec.size, u_qr.size());
             }
             delete[] dbg_q; delete[] dbg_tw; delete[] dbg_r; delete[] dbg_wps;
             throw std::runtime_error("prove: division relation failed at challenge u");
