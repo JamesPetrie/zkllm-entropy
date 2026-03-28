@@ -432,10 +432,16 @@ static bool verify_hp_batch(
         return false;
     }
 
-    // HP sumcheck uses p(u[i]) == claim (not p(0)+p(1)) because the eq
-    // polynomial is baked into the MLE evaluation at the remaining u points.
-    // Round 0: set claim = p(v[0]) (initial claim is implicit)
-    // Round i>0: check p(u[i]) == claim, then advance claim = p(v[i])
+    // HP sumcheck claim equation: p(0)*(1-u[i]) + p(1)*u[i] == claim.
+    // The HP polynomial is p(x) = sum_j f_j(x)*eq(j, u_remaining), where
+    // f_j(x) = (a[2j]+x*Δa_j)*(b[2j]+x*Δb_j) is degree 2.  The eq weight
+    // over the BOOLEAN hypercube gives: claim = p(0)*(1-u[i]) + p(1)*u[i],
+    // NOT p(u[i]) (which would use the degree-2 extension, overcounting
+    // cross terms).
+    //
+    // Round 0: no check — set claim = p_0(v[0])
+    // Round i>0: check p(0)*(1-u[i]) + p(1)*u[i] == claim, advance via p(v[i])
+    // Final: claim == a_final * b_final (no eq factor — it's absorbed)
 
     auto& e0 = polys[0];
     if (e0.size() < 2) {
@@ -452,32 +458,33 @@ static bool verify_hp_batch(
             stats.error("HP round " + std::to_string(i) + ": poly too short");
             return false;
         }
-        Fr_t check = lagrange_eval(e, hp_u[i]);
+        // Check: p(0)*(1-u[i]) + p(1)*u[i] == claim
+        Fr_t check = fr_add(fr_mul(e[0], fr_sub(FR_ONE, hp_u[i])),
+                            fr_mul(e[1], hp_u[i]));
         if (check != claim) {
             stats.hp_checks_failed++;
-            stats.error("HP round " + std::to_string(i) + ": p(u[" +
-                        std::to_string(i) + "])=" + std::to_string(check.val) +
+            stats.error("HP round " + std::to_string(i) + ": eq_check=" +
+                        std::to_string(check.val) +
                         " != claim=" + std::to_string(claim.val));
             all_ok = false;
         } else {
             stats.hp_checks_passed++;
-            if (verbose) printf("  [HP r%u] p(u[%u])==claim OK\n", i, i);
+            if (verbose) printf("  [HP r%u] eq_check==claim OK\n", i);
         }
         claim = lagrange_eval(e, hp_v[i]);
     }
 
-    // Final check: claim == a * b * eq(u, v)
+    // Final check: claim == a_final * b_final
     Fr_t final_a = polys[hp_rounds].empty() ? FR_ZERO : polys[hp_rounds][0];
     Fr_t final_b = polys[hp_rounds + 1].empty() ? FR_ZERO : polys[hp_rounds + 1][0];
-    Fr_t eq = eq_eval(hp_u, hp_v);
-    Fr_t expected = fr_mul(fr_mul(final_a, final_b), eq);
+    Fr_t expected = fr_mul(final_a, final_b);
 
     if (expected == claim) {
         stats.hp_checks_passed++;
-        if (verbose) printf("  [HP] final a*b*eq(u,v)==claim OK\n");
+        if (verbose) printf("  [HP] final a*b==claim OK\n");
     } else {
         stats.hp_checks_failed++;
-        stats.error("HP final: a*b*eq=" + std::to_string(expected.val) +
+        stats.error("HP final: a*b=" + std::to_string(expected.val) +
                     " != claim=" + std::to_string(claim.val));
         all_ok = false;
     }
