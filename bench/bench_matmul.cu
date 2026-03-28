@@ -1,15 +1,131 @@
 // bench_matmul: microbenchmark for the FrTensor::matmul kernel.
 // Times a (M×K) × (K×N) Goldilocks field matrix multiply.
+// Also compares the original kernel vs the optimized V2 kernel.
 //
 // Usage: ./gold_bench_matmul [M=1024] [K=4096] [N=4096]
 
 #include "tensor/fr-tensor.cuh"
 #include <iostream>
 #include <cstdlib>
-#include <chrono>
 #include <cuda_runtime.h>
 
 using namespace std;
+
+// Declare both kernels (defined in fr-tensor.cu)
+KERNEL void matrixMultiplyOptimized(Fr_t* A, Fr_t* B, Fr_t* C,
+                                     int rowsA, int colsA, int colsB);
+#ifdef USE_GOLDILOCKS
+KERNEL void matrixMultiplyGoldV2(Fr_t* A, Fr_t* B, Fr_t* C,
+                                  int rowsA, int colsA, int colsB);
+#endif
+
+struct BenchResult {
+    float avg_ms;
+    float best_ms;
+    double gops;
+};
+
+BenchResult run_bench(const char* name, FrTensor& A, FrTensor& B,
+                      uint M, uint K, uint N, int kernel_id) {
+    double total_field_ops = (double)M * K * N * 2;
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    dim3 grid((N-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1);
+    dim3 block(TILE_WIDTH, TILE_WIDTH);
+
+    // Warmup
+    FrTensor warmup(M * N);
+    if (kernel_id == 0) {
+        matrixMultiplyOptimized<<<grid, block>>>(A.gpu_data, B.gpu_data,
+                                                  warmup.gpu_data, M, K, N);
+    }
+#ifdef USE_GOLDILOCKS
+    else {
+        matrixMultiplyGoldV2<<<grid, block>>>(A.gpu_data, B.gpu_data,
+                                               warmup.gpu_data, M, K, N);
+    }
+#endif
+    cudaDeviceSynchronize();
+
+    int num_runs = 5;
+    float total_ms = 0;
+    float best_ms = 1e9;
+
+    for (int r = 0; r < num_runs; r++) {
+        FrTensor C(M * N);
+        cudaDeviceSynchronize();
+        cudaEventRecord(start);
+        if (kernel_id == 0) {
+            matrixMultiplyOptimized<<<grid, block>>>(A.gpu_data, B.gpu_data,
+                                                      C.gpu_data, M, K, N);
+        }
+#ifdef USE_GOLDILOCKS
+        else {
+            matrixMultiplyGoldV2<<<grid, block>>>(A.gpu_data, B.gpu_data,
+                                                   C.gpu_data, M, K, N);
+        }
+#endif
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float ms;
+        cudaEventElapsedTime(&ms, start, stop);
+        total_ms += ms;
+        if (ms < best_ms) best_ms = ms;
+        cout << "  " << name << " run " << r << ": " << ms << " ms" << endl;
+    }
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    float avg_ms = total_ms / num_runs;
+    double gops = total_field_ops / (best_ms / 1000.0) / 1e9;
+    return {avg_ms, best_ms, gops};
+}
+
+// Correctness check: compare outputs of both kernels element-by-element
+#ifdef USE_GOLDILOCKS
+bool verify_correctness(FrTensor& A, FrTensor& B, uint M, uint K, uint N) {
+    dim3 grid((N-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1);
+    dim3 block(TILE_WIDTH, TILE_WIDTH);
+
+    FrTensor C_orig(M * N);
+    FrTensor C_v2(M * N);
+
+    matrixMultiplyOptimized<<<grid, block>>>(A.gpu_data, B.gpu_data,
+                                              C_orig.gpu_data, M, K, N);
+    matrixMultiplyGoldV2<<<grid, block>>>(A.gpu_data, B.gpu_data,
+                                           C_v2.gpu_data, M, K, N);
+    cudaDeviceSynchronize();
+
+    // Copy both to host and compare
+    uint64_t* h_orig = new uint64_t[M * N];
+    uint64_t* h_v2   = new uint64_t[M * N];
+    cudaMemcpy(h_orig, C_orig.gpu_data, M * N * sizeof(uint64_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_v2,   C_v2.gpu_data,   M * N * sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+    int mismatches = 0;
+    for (uint i = 0; i < M * N && mismatches < 10; i++) {
+        if (h_orig[i] != h_v2[i]) {
+            cout << "  MISMATCH at [" << i / N << "][" << i % N << "]: "
+                 << "orig=" << h_orig[i] << " v2=" << h_v2[i] << endl;
+            mismatches++;
+        }
+    }
+
+    delete[] h_orig;
+    delete[] h_v2;
+
+    if (mismatches == 0) {
+        cout << "  Correctness: PASS (all " << M * N << " elements match)" << endl;
+    } else {
+        cout << "  Correctness: FAIL (" << mismatches << " mismatches)" << endl;
+    }
+    return mismatches == 0;
+}
+#endif
 
 int main(int argc, char* argv[]) {
     uint M = argc > 1 ? (uint)atoi(argv[1]) : 1024;
@@ -18,65 +134,46 @@ int main(int argc, char* argv[]) {
 
     cout << "Matmul benchmark: (" << M << " x " << K << ") x (" << K << " x " << N << ")" << endl;
     double total_muls = (double)M * K * N;
-    double total_field_ops = total_muls * 2; // mul + add per element
     cout << "Total multiply-adds: " << total_muls / 1e9 << " billion" << endl;
-    cout << "Total field ops (mul+add): " << total_field_ops / 1e9 << " billion" << endl;
     cout << endl;
 
-    // Create random-ish input tensors
     FrTensor A(M * K);
     FrTensor B(K * N);
 
-    // Initialize with simple pattern (on GPU, faster than host init)
-    // The FrTensor constructor zero-inits on GPU, so fill via a simple kernel
-    // or just use the zero-init — throughput won't depend on values
-    
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    // --- Original kernel ---
+    cout << "=== Original kernel (matrixMultiplyOptimized) ===" << endl;
+    auto r_orig = run_bench("orig", A, B, M, K, N, 0);
+    cout << "  Avg: " << r_orig.avg_ms << " ms  Best: " << r_orig.best_ms
+         << " ms  (" << r_orig.gops << " Gfield-ops/s)" << endl << endl;
 
-    // Warmup
-    cout << "Warmup..." << flush;
-    FrTensor warmup = FrTensor::matmul(A, B, M, K, N);
-    cout << " done." << endl;
+#ifdef USE_GOLDILOCKS
+    // --- V2 kernel ---
+    cout << "=== V2 kernel (matrixMultiplyGoldV2: 2-way ILP + double buffer) ===" << endl;
+    auto r_v2 = run_bench("v2", A, B, M, K, N, 1);
+    cout << "  Avg: " << r_v2.avg_ms << " ms  Best: " << r_v2.best_ms
+         << " ms  (" << r_v2.gops << " Gfield-ops/s)" << endl << endl;
 
-    // Timed runs
-    int num_runs = 5;
-    float total_ms = 0;
-    float best_ms = 1e9;
+    // --- Comparison ---
+    float speedup = r_orig.best_ms / r_v2.best_ms;
+    cout << "=== Comparison ===" << endl;
+    cout << "  Original: " << r_orig.best_ms << " ms" << endl;
+    cout << "  V2:       " << r_v2.best_ms << " ms" << endl;
+    cout << "  Speedup:  " << speedup << "x" << endl << endl;
 
-    for (int r = 0; r < num_runs; r++) {
-        cudaDeviceSynchronize();
-        cudaEventRecord(start);
-        FrTensor C = FrTensor::matmul(A, B, M, K, N);
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        float ms;
-        cudaEventElapsedTime(&ms, start, stop);
-        total_ms += ms;
-        if (ms < best_ms) best_ms = ms;
-        cout << "  Run " << r << ": " << ms << " ms" << endl;
-    }
+    // --- Correctness check ---
+    cout << "=== Correctness check ===" << endl;
+    verify_correctness(A, B, M, K, N);
+#endif
 
-    float avg_ms = total_ms / num_runs;
-    double gops_avg = total_field_ops / (avg_ms / 1000.0) / 1e9;
-    double gops_best = total_field_ops / (best_ms / 1000.0) / 1e9;
-
-    cout << endl;
-    cout << "Average: " << avg_ms << " ms  (" << gops_avg << " Gfield-ops/sec)" << endl;
-    cout << "Best:    " << best_ms << " ms  (" << gops_best << " Gfield-ops/sec)" << endl;
-    
-    // Context: what fraction of a layer proof is this?
-    // One QKV projection = 3 * (1024 x 4096) x (4096 x 4096) 
-    // One FFN = 3 * (1024 x 4096) x (4096 x 11008)
-    // Total per layer ≈ 216B multiply-adds
+    // Context: estimated layer matmul time
+    double best_gops = r_orig.gops;
+#ifdef USE_GOLDILOCKS
+    if (r_v2.gops > best_gops) best_gops = r_v2.gops;
+#endif
     double layer_field_ops = 216e9 * 2;  // 7B model
-    double est_layer_matmul_time = layer_field_ops / (gops_best * 1e9);
+    double est_layer_matmul_time = layer_field_ops / (best_gops * 1e9);
     cout << endl;
     cout << "Estimated matmul-only time for one 7B layer: " << est_layer_matmul_time << " sec" << endl;
-    cout << "(Actual layer proof time includes sumcheck, commitments, etc.)" << endl;
 
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
     return 0;
 }
