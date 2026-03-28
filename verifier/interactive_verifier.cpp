@@ -144,10 +144,12 @@ public:
     void challenge_only(const std::string& label) {
         if (ip_finals_pending_ && pending_ == 2) {
             emit(Tag::IP_FINALS_ONLY, label);
-        } else if (ip_finals_pending_ && pending_ > 2) {
-            // IP finals + some other pending polys — shouldn't happen in practice
-            emit(Tag::IP_FINALS_ONLY, label);
         } else {
+            // If ip_finals_pending_ with extra polys (HP sumcheck case),
+            // the finals are buried in a batch with round polys and can't
+            // be verified without replaying the non-interactive rounds.
+            // Just flush everything without IP final check.
+            ip_finals_pending_ = false;
             emit(Tag::CHALLENGE_ONLY, label);
         }
     }
