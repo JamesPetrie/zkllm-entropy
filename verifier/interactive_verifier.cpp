@@ -108,6 +108,9 @@ enum class Tag {
     IP_FINALS_THEN_ROUND,    // batch starts with 2 IP finals, ends with new round poly
     HP_SUMCHECK_BATCH,       // batch has hp_rounds round polys + 2 finals
     TLOOKUP_FINALS,          // batch has 5 tLookup final evaluations (A, S, B, T, m)
+    QR_DIV_RELATION,         // 3 polys: q_tw(u), r(u), wp_scaled(u); check q_tw+r==wp_scaled
+    QR_NONNEG_RECON,         // 1+bits polys: vals(u), bit_0(u)..bit_{n-1}(u); check reconstruction
+    QR_BINARY_CHECK,         // 1 poly: combined_error(u); check == 0
 };
 
 struct Interaction {
@@ -254,7 +257,17 @@ public:
         simulate_zkip(ceil_log2(in), s + " zkip");
     }
 
+    // simulate_prove_nonneg: models the proof elements from prove_nonneg().
+    // Prover sends: 1 vals(u) poly + `bits` bit-plane evaluation polys,
+    // then receives `bits` batching coefficient challenges.
     void simulate_prove_nonneg(uint32_t bits, const std::string& s) {
+        push_poly();  // vals(u)
+        for (uint32_t i = 0; i < bits; i++)
+            push_poly();  // bits_b(u) for each bit plane
+        // Emit a reconstruction check before the batching challenges
+        emit(Tag::QR_NONNEG_RECON, s + " recon", bits);
+        // Now receive batching coefficient challenges (no verification needed
+        // for these — they're random coefficients for the batched binary check)
         for (uint32_t i = 0; i < bits; i++)
             challenge_only(s + " b" + std::to_string(i));
     }
@@ -288,13 +301,33 @@ public:
         for (uint32_t i = 0; i < ceil_log2(T); i++)
             challenge_only("qr u[" + std::to_string(i) + "]");
 
+        // Division relation: 3 MLE evaluation polys (q_tw, r, wp_scaled)
+        // These are flushed together with the first nonneg batch.
+        push_poly();  // q_tw(u)
+        push_poly();  // r(u)
+        push_poly();  // wp_scaled(u)
+
         uint32_t q_bits = p.log_precision + 1;
         uint32_t r_bits = 1;
         { uint64_t max_tw = (uint64_t)V * p.cdf_scale;
           while ((1ULL << r_bits) <= max_tw) r_bits++; }
-        simulate_prove_nonneg(q_bits, "qr-q");
+
+        // First nonneg (q): also carries 3 div_rel polys in same batch
+        push_poly();  // vals(u)
+        for (uint32_t i = 0; i < q_bits; i++) push_poly();  // bits_b(u)
+        // Emit with combined tag that checks div_rel + reconstruction
+        emit(Tag::QR_DIV_RELATION, "qr-q recon", q_bits);
+        for (uint32_t i = 0; i < q_bits; i++)
+            challenge_only("qr-q b" + std::to_string(i));
+
+        // Second nonneg (r)
         simulate_prove_nonneg(r_bits, "qr-r");
+
+        // Third nonneg (gap)
         simulate_prove_nonneg(r_bits, "qr-gap");
+
+        // Combined binary error evaluation poly — flushed with next section
+        push_poly();  // combined_error(u)
 
         // §5: Surprise log tLookup
         uint32_t log_N = 1u << p.log_precision;
@@ -595,6 +628,20 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
         switch (inter.tag) {
 
         case Tag::CHALLENGE_ONLY:
+            // Check for quotient-remainder combined binary error poly.
+            // It's flushed as a pending poly before the log section's first challenge.
+            if (!polys.empty() && inter.label == "log r") {
+                Fr_t ce_u = polys[0].empty() ? FR_ZERO : polys[0][0];
+                if (ce_u == FR_ZERO) {
+                    stats.sc_checks_passed++;
+                    if (verbose) printf("  [%s] QR combined binary error == 0 OK\n",
+                                        inter.label.c_str());
+                } else {
+                    stats.sc_checks_failed++;
+                    stats.error("QR binary check: combined_error(u)=" +
+                                std::to_string(ce_u.val) + " != 0");
+                }
+            }
             break;
 
         case Tag::SUMCHECK_ROUND_FIRST: {
@@ -685,6 +732,100 @@ static void run_verification(int read_fd, int write_fd, bool verbose,
             current_tl = TLookupState{};
             current_tl_section.clear();
             in_tl_phase2 = false;
+            break;
+        }
+
+        case Tag::QR_DIV_RELATION: {
+            // Batch contains: 3 div_rel polys + 1 vals(u) + bits bit_b(u) polys
+            // inter.hp_rounds stores num_bits for the first nonneg
+            uint32_t bits = inter.hp_rounds;
+            uint32_t expected = 3 + 1 + bits;
+            if (polys.size() >= expected) {
+                // Check division relation: q_tw(u) + r(u) == wp_scaled(u)
+                Fr_t q_tw_u = polys[0].empty() ? FR_ZERO : polys[0][0];
+                Fr_t r_u = polys[1].empty() ? FR_ZERO : polys[1][0];
+                Fr_t wp_scaled_u = polys[2].empty() ? FR_ZERO : polys[2][0];
+                Fr_t sum = fr_add(q_tw_u, r_u);
+                if (sum == wp_scaled_u) {
+                    stats.sc_checks_passed++;
+                    if (verbose) printf("  [%s] q_tw+r==wp_scaled OK\n", inter.label.c_str());
+                } else {
+                    stats.sc_checks_failed++;
+                    stats.error("QR div relation: q_tw+r=" + std::to_string(sum.val) +
+                                " != wp_scaled=" + std::to_string(wp_scaled_u.val));
+                }
+
+                // Check first nonneg reconstruction: sum_b 2^b * bits_b(u) == vals(u)
+                Fr_t vals_u = polys[3].empty() ? FR_ZERO : polys[3][0];
+                Fr_t recon = FR_ZERO;
+                Fr_t pow2 = FR_ONE;
+                Fr_t two = fr_from_u64(2);
+                for (uint32_t b = 0; b < bits; b++) {
+                    Fr_t bit_u = polys[4 + b].empty() ? FR_ZERO : polys[4 + b][0];
+                    recon = fr_add(recon, fr_mul(pow2, bit_u));
+                    pow2 = fr_mul(pow2, two);
+                }
+                if (recon == vals_u) {
+                    stats.sc_checks_passed++;
+                    if (verbose) printf("  [%s] bit reconstruction OK\n", inter.label.c_str());
+                } else {
+                    stats.sc_checks_failed++;
+                    stats.error("QR nonneg recon: recon=" + std::to_string(recon.val) +
+                                " != vals_u=" + std::to_string(vals_u.val) +
+                                " at " + inter.label);
+                }
+            } else {
+                stats.error("QR div+recon: expected " + std::to_string(expected) +
+                            " polys, got " + std::to_string(polys.size()));
+            }
+            break;
+        }
+
+        case Tag::QR_NONNEG_RECON: {
+            // Verify: sum_b 2^b * bits_b(u) == vals(u)
+            // inter.hp_rounds is reused to store num_bits
+            uint32_t bits = inter.hp_rounds;
+            if (polys.size() >= 1 + bits) {
+                Fr_t vals_u = polys[0].empty() ? FR_ZERO : polys[0][0];
+                Fr_t recon = FR_ZERO;
+                Fr_t pow2 = FR_ONE;
+                Fr_t two = fr_from_u64(2);
+                for (uint32_t b = 0; b < bits; b++) {
+                    Fr_t bit_u = polys[1 + b].empty() ? FR_ZERO : polys[1 + b][0];
+                    recon = fr_add(recon, fr_mul(pow2, bit_u));
+                    pow2 = fr_mul(pow2, two);
+                }
+                if (recon == vals_u) {
+                    stats.sc_checks_passed++;
+                    if (verbose) printf("  [%s] bit reconstruction OK\n", inter.label.c_str());
+                } else {
+                    stats.sc_checks_failed++;
+                    stats.error("QR nonneg recon: recon=" + std::to_string(recon.val) +
+                                " != vals_u=" + std::to_string(vals_u.val) +
+                                " at " + inter.label);
+                }
+            } else {
+                stats.error("QR nonneg recon: expected " + std::to_string(1 + bits) +
+                            " polys, got " + std::to_string(polys.size()) +
+                            " at " + inter.label);
+            }
+            break;
+        }
+
+        case Tag::QR_BINARY_CHECK: {
+            // Verify: combined_error(u) == 0
+            if (!polys.empty()) {
+                Fr_t ce_u = polys[0].empty() ? FR_ZERO : polys[0][0];
+                if (ce_u == FR_ZERO) {
+                    stats.sc_checks_passed++;
+                    if (verbose) printf("  [%s] combined binary error == 0 OK\n",
+                                        inter.label.c_str());
+                } else {
+                    stats.sc_checks_failed++;
+                    stats.error("QR binary check: combined_error(u)=" +
+                                std::to_string(ce_u.val) + " != 0");
+                }
+            }
             break;
         }
 

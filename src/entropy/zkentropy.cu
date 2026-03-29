@@ -158,11 +158,13 @@ KERNEL void entropy_bit_extract_kernel(const Fr_t* vals, Fr_t* bits_b, uint bit,
 // bit_planes: output parameter; bit-planes are appended here
 // combined_error: running batched binary check tensor (accumulated in-place)
 // batch_idx: starting index for random coefficients in the batched check
+// proof: bit-plane evaluations at u are pushed here for verifier checking
 static void prove_nonneg(const FrTensor& vals, uint num_bits,
                           const vector<Fr_t>& u,
                           vector<FrTensor>& bit_planes,
                           FrTensor& combined_error,
-                          uint& batch_idx) {
+                          uint& batch_idx,
+                          vector<Polynomial>& proof) {
     uint N = vals.size;
     uint blocks = (N + FrNumThread - 1) / FrNumThread;
 
@@ -177,12 +179,16 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
 
     // 2. Reconstruction check at challenge u:
     //    vals(u) == sum_b 2^b * bits_b(u)
+    //    Send vals(u) and each bits_b(u) to verifier for independent verification.
     Fr_t vals_u = vals(u);
+    proof.push_back(Polynomial(vals_u));
+
     Fr_t recon  = FR_FROM_INT(0);
     Fr_t pow2   = FR_FROM_INT(1);
     Fr_t two    = FR_FROM_INT(2);
     for (uint b = 0; b < num_bits; b++) {
         Fr_t bits_b_u = bit_planes[base + b](u);
+        proof.push_back(Polynomial(bits_b_u));
         recon = recon + pow2 * bits_b_u;
         pow2  = pow2 * two;
     }
@@ -518,20 +524,32 @@ Fr_t zkConditionalEntropy::prove(
     // ── 2d. Quotient-remainder proof ───────────────────────────────────────
     // Proves surprise[t] = log_table(q[t]) where q[t] = floor(wp[t]*2^p/tw[t]).
     // Division relation: q*tw + r = wp*2^p, with 0 <= q < 2^p, 0 <= r < tw.
+    //
+    // Proof elements sent to verifier (via proof vector):
+    //   - MLE evaluations: q_tw(u), r(u), wp_scaled(u)  [division relation]
+    //   - Per-nonneg-proof: bit_b(u) for each bit plane  [reconstruction]
+    //   - combined_error(u)                               [batched binary check]
+    // Verifier checks:
+    //   - q_tw(u) + r(u) == wp_scaled(u)
+    //   - For each nonneg: sum_b 2^b * bit_b(u) == vals(u)
+    //   - combined_error(u) == 0
     std::cout << "  Proving quotient-remainder division..." << std::endl;
     {
         auto u_qr = random_vec(ceilLog2(T));
 
         // 1. Division relation at random point using MLE of Hadamard product:
         //    MLE(q*tw, u) + MLE(r, u) = MLE(wp_scaled, u)
-        //    Note: MLE(q,u)*MLE(tw,u) != MLE(q*tw,u) in general (MLE is not
-        //    multiplicative), so we must evaluate the Hadamard product's MLE directly.
         FrTensor q_tw_vec = q_vec * total_win_vec;  // Hadamard product
         Fr_t q_tw_u = q_tw_vec(u_qr);
         Fr_t r_u  = r_vec(u_qr);
         Fr_t wp_scaled_u = wp_scaled_vec(u_qr);
         if (q_tw_u + r_u != wp_scaled_u)
             throw std::runtime_error("prove: division relation failed at challenge u");
+
+        // Send division relation evaluations to verifier
+        proof.push_back(Polynomial(q_tw_u));
+        proof.push_back(Polynomial(r_u));
+        proof.push_back(Polynomial(wp_scaled_u));
 
         // 2. Non-negativity via bit decomposition
         //    - q in [0, 2^(log_precision+1)): log_precision+1 bits (q can equal 2^p)
@@ -550,18 +568,21 @@ Fr_t zkConditionalEntropy::prove(
         uint batch_idx = 0;
 
         std::cout << "    q range proof (" << q_bits << " bits)..." << std::endl;
-        prove_nonneg(q_vec, q_bits, u_qr, bit_planes, combined_error, batch_idx);
+        prove_nonneg(q_vec, q_bits, u_qr, bit_planes, combined_error, batch_idx, proof);
 
         std::cout << "    r range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(r_vec, r_bits, u_qr, bit_planes, combined_error, batch_idx);
+        prove_nonneg(r_vec, r_bits, u_qr, bit_planes, combined_error, batch_idx, proof);
 
         std::cout << "    gap range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(gap, r_bits, u_qr, bit_planes, combined_error, batch_idx);
+        prove_nonneg(gap, r_bits, u_qr, bit_planes, combined_error, batch_idx, proof);
 
         // 3. Batched binary check: combined_error(u) == 0
         Fr_t ce_u = combined_error(u_qr);
         if (ce_u != FR_FROM_INT(0))
             throw std::runtime_error("prove: batched binary check failed for q/r/gap");
+
+        // Send combined error evaluation to verifier
+        proof.push_back(Polynomial(ce_u));
     }
 
     // ── 2e. Surprise log lookup proof ───────────────────────────────────────
