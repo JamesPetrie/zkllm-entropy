@@ -317,6 +317,75 @@ int main() {
         check(!verifier_accepts(corrupt), "wrong vocab_size → structure mismatch");
     }
 
+    // ── 13. Corrupt gap bit decomposition ───────────────────────────────
+    {
+        RawProof p = base;
+        p.polys[L.nonneg_gap_start + 1].evals[0] =
+            fr_add(p.polys[L.nonneg_gap_start + 1].evals[0], FR_ONE);
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "corrupted gap bit → BITDECOMP_gap fails");
+    }
+
+    // ── 14. Corrupt linking: logits(u) ──────────────────────────────────
+    {
+        RawProof p = base;
+        p.polys[L.link_start + 1].evals[0] =
+            fr_add(p.polys[L.link_start + 1].evals[0], FR_ONE);
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "corrupted logits(u) → LINK fails");
+    }
+
+    // ── 15. Corrupt linking: ones_V(u) ──────────────────────────────────
+    {
+        RawProof p = base;
+        p.polys[L.link_start + 3].evals[0] =
+            fr_add(p.polys[L.link_start + 3].evals[0], FR_ONE);
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "corrupted ones_V(u) → LINK fails");
+    }
+
+    // ── 16. Corrupt QR: q*tw(u) ─────────────────────────────────────────
+    {
+        RawProof p = base;
+        p.polys[L.qr_start + 0].evals[0] =
+            fr_add(p.polys[L.qr_start + 0].evals[0], FR_ONE);
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "corrupted q*tw(u) → QR_DIV fails");
+    }
+
+    // ── 17. Corrupt QR: wp_scaled(u) ────────────────────────────────────
+    {
+        RawProof p = base;
+        p.polys[L.qr_start + 2].evals[0] =
+            fr_add(p.polys[L.qr_start + 2].evals[0], FR_ONE);
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "corrupted wp_scaled(u) → QR_DIV fails");
+    }
+
+    // ── 18. Fewer polynomials ───────────────────────────────────────────
+    {
+        RawProof p = base;
+        p.polys.pop_back();
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "missing polynomial rejected");
+    }
+
+    // ── 19. Wrong cdf_precision ─────────────────────────────────────────
+    {
+        RawProof p = base;
+        p.cdf_precision = 12;  // different from real value (16)
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "wrong cdf_precision → structure mismatch");
+    }
+
+    // ── 20. Wrong log_precision ─────────────────────────────────────────
+    {
+        RawProof p = base;
+        p.log_precision = 12;
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "wrong log_precision → structure mismatch");
+    }
+
     printf("\n%d passed, %d failed\n", n_pass, n_fail);
 
     // Cleanup
