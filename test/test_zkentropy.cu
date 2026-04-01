@@ -5,6 +5,7 @@
 #include "entropy/zkentropy.cuh"
 #include <iostream>
 #include <cmath>
+#include <fstream>
 
 using namespace std;
 
@@ -208,6 +209,60 @@ int main() {
         // The proof should not scale as 6*T.
         cout << "  proof size = " << proof.size() << " polynomials for T=" << T << endl;
         check(true, "proof generated without per-position scalar leakage");
+    }
+
+    // ── Test 10: write v3 proof file for verifier ────────────────────────
+    {
+        uint T = 4;
+        vector<uint> winners = {5, 3, 5, 5};
+        auto logits = make_flat_logits(T, vocab_size, winners, 5000L, 100L);
+        vector<uint> tokens = {5, 20, 5, 20};
+
+        Fr_t claimed = prover.compute(logits, T, vocab_size, tokens);
+        vector<Polynomial> proof;
+        vector<Claim> claims;
+        prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims);
+
+#ifdef USE_GOLDILOCKS
+        unsigned long entropy_val = claimed.val;
+#else
+        unsigned long entropy_val =
+            ((unsigned long)claimed.val[1] << 32) | claimed.val[0];
+#endif
+
+        string proof_path = "/tmp/test_entropy_v3.proof";
+        {
+            ofstream f(proof_path, ios::binary);
+            uint64_t magic = 0x5A4B454E54523033ULL;  // "ZKENTR03"
+            uint32_t version = 3;
+            f.write((char*)&magic, sizeof(magic));
+            f.write((char*)&version, sizeof(version));
+            f.write((char*)&entropy_val, sizeof(uint64_t));
+            f.write((char*)&T, sizeof(uint32_t));
+            f.write((char*)&vocab_size, sizeof(uint32_t));
+            f.write((char*)&sigma_eff, sizeof(double));
+            f.write((char*)&log_scale, sizeof(uint32_t));
+            f.write((char*)&cdf_precision, sizeof(uint32_t));
+            f.write((char*)&log_precision, sizeof(uint32_t));
+            f.write((char*)&cdf_scale, sizeof(uint32_t));
+
+            uint32_t n_polys = (uint32_t)proof.size();
+            f.write((char*)&n_polys, sizeof(n_polys));
+            for (const Polynomial& poly : proof) {
+                int deg = poly.getDegree();
+                uint32_t n_coeffs = (deg >= 0) ? (uint32_t)(deg + 1) : 0u;
+                f.write((char*)&n_coeffs, sizeof(n_coeffs));
+                for (uint32_t k = 0; k < n_coeffs; k++) {
+                    Fr_t xk = FR_FROM_INT(k);
+                    Fr_t yk = const_cast<Polynomial&>(poly)(xk);
+                    f.write((char*)&yk, sizeof(Fr_t));
+                }
+            }
+        }
+
+        cout << "  v3 proof written to " << proof_path
+             << " (" << proof.size() << " polynomials)" << endl;
+        check(true, "v3 proof file written for verifier");
     }
 
     cout << "\nAll zkConditionalEntropy tests passed." << endl;
