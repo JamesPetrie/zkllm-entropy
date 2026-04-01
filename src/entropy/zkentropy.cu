@@ -182,6 +182,21 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
     batch_idx += num_bits;
 }
 
+
+// ── Serialize IP sumcheck proof to Polynomial vector ────────────────────────
+// inner_product_sumcheck returns vector<Fr_t>: [3 values per round] + [a(u), b(u)]
+// Convert to Polynomials: one degree-2 poly per round + 2 constant polys for finals.
+
+static void serialize_ip_sumcheck(const vector<Fr_t>& ip_proof, uint num_rounds,
+                                   vector<Polynomial>& proof) {
+    for (uint i = 0; i < num_rounds; i++) {
+        proof.push_back(Polynomial({ip_proof[3*i], ip_proof[3*i+1], ip_proof[3*i+2]}));
+    }
+    // Finals: a(u) and b(u)
+    proof.push_back(Polynomial(ip_proof[3 * num_rounds]));
+    proof.push_back(Polynomial(ip_proof[3 * num_rounds + 1]));
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 static FrTensor tensor_row(const FrTensor& mat, uint row_idx, uint row_size) {
@@ -463,7 +478,8 @@ Fr_t zkConditionalEntropy::prove(
         delete[] ones_cpu;
 
         auto u_v = random_vec(ceilLog2(V));
-        inner_product_sumcheck(wp_partial, ones_V, u_v);
+        auto ip_rowsum = inner_product_sumcheck(wp_partial, ones_V, u_v);
+        serialize_ip_sumcheck(ip_rowsum, ceilLog2(V), proof);
     }
 
     // ── 2d. Actual-token extraction proof ───────────────────────────────────
@@ -482,7 +498,8 @@ Fr_t zkConditionalEntropy::prove(
             throw std::runtime_error("prove: indicator extraction mismatch");
 
         auto u_ext = random_vec(ceilLog2(TV));
-        inner_product_sumcheck(win_probs_all, indicator, u_ext);
+        auto ip_extract = inner_product_sumcheck(win_probs_all, indicator, u_ext);
+        serialize_ip_sumcheck(ip_extract, ceilLog2(TV), proof);
 
         auto u_T = random_vec(ceilLog2(T));
         Fr_t wp_at_u = actual_wp_raw(u_T);
