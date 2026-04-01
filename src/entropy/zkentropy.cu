@@ -434,6 +434,7 @@ Fr_t zkConditionalEntropy::prove(
         proof.push_back(Polynomial(diffs_u));
         proof.push_back(Polynomial(logits_u));
         proof.push_back(Polynomial(vstar_u));
+        proof.push_back(Polynomial(ones_V_u));
 
         // Verifier checks: diffs_u + logits_u == vstar_u * ones_V_u
         if (diffs_u + logits_u != vstar_u * ones_V_u)

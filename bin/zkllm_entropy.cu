@@ -200,26 +200,38 @@ int main(int argc, char* argv[]) {
     verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
 
     // ── Serialise proof ───────────────────────────────────────────────────────
-    // Format (v2 — adds cdf_precision, log_precision, cdf_scale to header):
-    //   [8 bytes]  magic "ZKENTROP"
+    // Format v3 — batched entropy proof with MLE evaluations.
+    //   [8 bytes]  magic "ZKENTR03"
+    //   [4 bytes]  version = 3
     //   [8 bytes]  entropy_val (uint64, in log_scale units)
     //   [4 bytes]  seq_len
     //   [4 bytes]  vocab_size
     //   [8 bytes]  sigma_eff (double)
     //   [4 bytes]  log_scale
-    //   [4 bytes]  cdf_precision    (NEW)
-    //   [4 bytes]  log_precision    (NEW)
-    //   [4 bytes]  cdf_scale        (NEW)
+    //   [4 bytes]  cdf_precision
+    //   [4 bytes]  log_precision
+    //   [4 bytes]  cdf_scale
     //   [4 bytes]  n_polys
     //   For each polynomial:
     //     [4 bytes] n_coeffs
     //     [n_coeffs * sizeof(Fr_t) bytes] coefficients
+    //
+    // Polynomial layout (all constant/degree-0):
+    //   [0] diffs_u        [1] logits_u       [2] vstar_u     [3] ones_V_u
+    //   [4] wp_at_u
+    //   [5] q_tw_u         [6] r_u            [7] wp_scaled_u
+    //   [8..8+q_bits]      prove_nonneg(q):   vals_u, bits_0..bits_{q_bits-1}
+    //   [9+q_bits..9+q_bits+r_bits]  prove_nonneg(r): vals_u, bits_0..bits_{r_bits-1}
+    //   [10+q_bits+r_bits..10+q_bits+2*r_bits] prove_nonneg(gap): vals_u, bits_0..bits_{r_bits-1}
+    //   [last] combined_error_u  (must be 0)
     {
         ofstream f(proof_output, ios::binary);
         if (!f) { cerr << "Cannot write: " << proof_output << endl; return 1; }
 
-        uint64_t magic = 0x5A4B454E54524F50ULL;
+        uint64_t magic = 0x5A4B454E54523033ULL;  // "ZKENTR03"
+        uint32_t version = 3;
         f.write((char*)&magic,         sizeof(magic));
+        f.write((char*)&version,       sizeof(version));
         f.write((char*)&entropy_val,   sizeof(entropy_val));
         f.write((char*)&seq_len,       sizeof(seq_len));
         f.write((char*)&vocab_size,    sizeof(vocab_size));
