@@ -17,7 +17,7 @@
 // Usage:
 //   ./zkllm_entropy <workdir> <tokens_file> <proof_output> <sigma_eff>
 //                  [seq_len=1024] [hidden_size=4096] [vocab_size=32000]
-//                  [bit_width=32] [cdf_precision=12] [log_precision=15]
+//                  [cdf_precision=12] [log_precision=15]
 //                  [cdf_scale=65536] [log_scale=65536]
 //
 // Required files in <workdir>:
@@ -64,7 +64,7 @@ int main(int argc, char* argv[]) {
         cerr << "Usage: " << argv[0]
              << " <workdir> <tokens_file> <proof_output> <sigma_eff>\n"
              << "       [seq_len=1024] [hidden_size=4096] [vocab_size=32000]\n"
-             << "       [bit_width=32] [cdf_precision=12] [log_precision=15]\n"
+             << "       [cdf_precision=12] [log_precision=15]\n"
              << "       [cdf_scale=65536] [log_scale=65536]\n";
         return 1;
     }
@@ -77,11 +77,10 @@ int main(int argc, char* argv[]) {
     uint seq_len      = argc > 5  ? (uint)atoi(argv[5])  : 1024u;
     uint hidden_size  = argc > 6  ? (uint)atoi(argv[6])  : 4096u;
     uint vocab_size   = argc > 7  ? (uint)atoi(argv[7])  : 32000u;
-    uint bit_width    = argc > 8  ? (uint)atoi(argv[8])  : 32u; // logit_scale=65536 * max_gap; 2^32/65536 covers any realistic range
-    uint cdf_precision= argc > 9  ? (uint)atoi(argv[9])  : 15u; // 2^15=32768 > 6*sigma_eff(5223)=31338, covers Phi≈1 at boundary
-    uint log_precision= argc > 10 ? (uint)atoi(argv[10]) : 15u;
-    uint cdf_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
-    uint log_scale    = argc > 12 ? (uint)atoi(argv[12]) : 65536u;
+    uint cdf_precision= argc > 8  ? (uint)atoi(argv[8])  : 15u; // 2^15=32768 > 6*sigma_eff(5223)=31338, covers Phi≈1 at boundary
+    uint log_precision= argc > 9  ? (uint)atoi(argv[9]) : 15u;
+    uint cdf_scale    = argc > 10 ? (uint)atoi(argv[10]) : 65536u;
+    uint log_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
 
     auto path = [&](const string& f) { return workdir + "/" + f; };
 
@@ -156,7 +155,7 @@ int main(int argc, char* argv[]) {
 
     cout << "Building entropy lookup tables..." << endl;
     zkConditionalEntropy entropy_prover(
-        vocab_size, bit_width, cdf_precision, log_precision,
+        vocab_size, cdf_precision, log_precision,
         cdf_scale, log_scale, sigma_eff);
 
     // ── Step 4: Compute entropy (batched, flat T×V tensor) ───────────────────
@@ -176,7 +175,16 @@ int main(int argc, char* argv[]) {
     // ── Step 5: Prove entropy (batched) ──────────────────────────────────────
     cout << "Generating entropy proof..." << endl;
     vector<Polynomial> proof;
-    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof);
+    vector<Claim> entropy_claims;
+    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof, entropy_claims);
+
+    // Verify entropy claims against actual logits tensor
+    for (auto& c : entropy_claims) {
+        Fr_t actual = logits_batch_.multi_dim_me(c.u, c.dims);
+        if (actual != c.claim)
+            throw std::runtime_error("entropy claim on logits does not match");
+    }
+    cout << "Entropy claims verified (" << entropy_claims.size() << " claims)." << endl;
 
     // ── Step 6: Prove lm_head — links logits to committed W_lm ───────────────
     cout << "Proving lm_head (zkFC)..." << endl;
