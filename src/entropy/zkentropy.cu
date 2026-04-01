@@ -564,6 +564,24 @@ Fr_t zkConditionalEntropy::prove(
                          r_log, alpha, beta, u_log, v_log, proof);
     }
 
+    // ── 2g. Entropy summation proof ─────────────────────────────────────────
+    // Prove: <surprise_vec, ones_T> = H (claimed entropy)
+    std::cout << "  Proving entropy summation..." << std::endl;
+    {
+        uint T_padded = 1u << ceilLog2(T);
+        FrTensor surprise_sum_input = surprise_vec.pad({T}, FR_ZERO);
+
+        Fr_t* ones_cpu = new Fr_t[T_padded];
+        for (uint i = 0; i < T; i++) ones_cpu[i] = FR_FROM_INT(1);
+        for (uint i = T; i < T_padded; i++) ones_cpu[i] = FR_ZERO;
+        FrTensor ones_T(T_padded, ones_cpu);
+        delete[] ones_cpu;
+
+        auto u_sum = random_vec(ceilLog2(T_padded));
+        auto ip_sum = inner_product_sumcheck(surprise_sum_input, ones_T, u_sum);
+        serialize_ip_sumcheck(ip_sum, ceilLog2(T_padded), proof);
+    }
+
     std::cout << "zkConditionalEntropy::prove complete (batched, "
               << T << " positions, " << proof.size() << " polynomials)."
               << std::endl;
