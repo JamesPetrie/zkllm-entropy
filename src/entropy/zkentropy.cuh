@@ -81,7 +81,8 @@ public:
                const vector<uint>& tokens,
                Fr_t claimed_entropy,
                vector<Polynomial>& proof,
-               vector<Claim>& claims);
+               vector<Claim>& claims,
+               vector<Fr_t>& challenges);
 
     // ---- Legacy per-position interface (kept for test compatibility) --------
 
@@ -94,7 +95,8 @@ public:
     // Prove from per-position logit vectors (assembles flat tensor, delegates).
     Fr_t prove(const vector<FrTensor>& logits_seq, const vector<uint>& tokens,
                Fr_t claimed_entropy, vector<Polynomial>& proof,
-               vector<Claim>& claims);
+               vector<Claim>& claims,
+               vector<Fr_t>& challenges);
 };
 
 #endif

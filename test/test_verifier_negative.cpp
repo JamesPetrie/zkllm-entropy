@@ -37,6 +37,7 @@ struct RawProof {
         std::vector<Fr_t> evals;
     };
     std::vector<Poly> polys;
+    std::vector<Fr_t> challenges;
 };
 
 static RawProof read_raw_proof(const std::string& path) {
@@ -64,6 +65,16 @@ static RawProof read_raw_proof(const std::string& path) {
             p.polys[i].evals[j] = read_fr(f);
         }
     }
+    // Read challenges section if present
+    if (f.peek() != EOF) {
+        uint32_t nc = read_u32(f);
+        if (nc > 0 && nc < 100000) {
+            p.challenges.resize(nc);
+            for (uint32_t i = 0; i < nc; i++) {
+                p.challenges[i] = read_fr(f);
+            }
+        }
+    }
     return p;
 }
 
@@ -88,6 +99,11 @@ static void write_raw_proof(const RawProof& p, const std::string& path) {
     for (const auto& poly : p.polys) {
         w32((uint32_t)poly.evals.size());
         for (const auto& e : poly.evals) wfr(e);
+    }
+    // Write challenges section
+    if (!p.challenges.empty()) {
+        w32((uint32_t)p.challenges.size());
+        for (const auto& c : p.challenges) wfr(c);
     }
 }
 

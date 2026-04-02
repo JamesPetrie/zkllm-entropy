@@ -146,7 +146,8 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
                           vector<FrTensor>& bit_planes,
                           FrTensor& combined_error,
                           uint& batch_idx,
-                          vector<Polynomial>& proof) {
+                          vector<Polynomial>& proof,
+                          vector<Fr_t>& challenges) {
     uint N = vals.size;
     uint blocks = (N + FrNumThread - 1) / FrNumThread;
 
@@ -175,6 +176,7 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
         throw std::runtime_error("prove_nonneg: bit reconstruction mismatch");
 
     auto r = random_vec(num_bits);
+    challenges.insert(challenges.end(), r.begin(), r.end());
     for (uint b = 0; b < num_bits; b++) {
         combined_error += (bit_planes[base + b] * bit_planes[base + b]
                            - bit_planes[base + b]) * r[b];
@@ -297,7 +299,8 @@ Fr_t zkConditionalEntropy::prove(
     const vector<uint>& tokens,
     Fr_t claimed_entropy,
     vector<Polynomial>& proof,
-    vector<Claim>& claims)
+    vector<Claim>& claims,
+    vector<Fr_t>& challenges)
 {
     if (logits_all.size != T * V)
         throw std::invalid_argument("prove: logits_all.size != T * V");
@@ -417,6 +420,11 @@ Fr_t zkConditionalEntropy::prove(
         auto beta  = random_vec(1)[0];
         auto u_cdf = random_vec(ceilLog2(D_cdf));
         auto v_cdf = random_vec(ceilLog2(D_cdf));
+        challenges.push_back(r_cdf);
+        challenges.push_back(alpha);
+        challenges.push_back(beta);
+        challenges.insert(challenges.end(), u_cdf.begin(), u_cdf.end());
+        challenges.insert(challenges.end(), v_cdf.begin(), v_cdf.end());
         cdf_prover.prove(diffs_padded, cdf_padded, m_cdf_padded,
                          r_cdf, alpha, beta, u_cdf, v_cdf, proof);
     }
@@ -427,6 +435,7 @@ Fr_t zkConditionalEntropy::prove(
     std::cout << "  Proving diffs-to-logits link..." << std::endl;
     {
         auto u_link = random_vec(ceilLog2(TV));
+        challenges.insert(challenges.end(), u_link.begin(), u_link.end());
 
         uint log_V = ceilLog2(V);
         uint log_T = ceilLog2(TV) - log_V;
@@ -465,6 +474,7 @@ Fr_t zkConditionalEntropy::prove(
     std::cout << "  Proving total_win row sums..." << std::endl;
     {
         auto u_t = random_vec(ceilLog2(T));
+        challenges.insert(challenges.end(), u_t.begin(), u_t.end());
         FrTensor wp_partial = win_probs_all.partial_me(u_t, V);
 
         Fr_t tw_claim = total_win_vec(u_t);
@@ -478,6 +488,7 @@ Fr_t zkConditionalEntropy::prove(
         delete[] ones_cpu;
 
         auto u_v = random_vec(ceilLog2(V));
+        challenges.insert(challenges.end(), u_v.begin(), u_v.end());
         auto ip_rowsum = inner_product_sumcheck(wp_partial, ones_V, u_v);
         serialize_ip_sumcheck(ip_rowsum, ceilLog2(V), proof);
     }
@@ -498,10 +509,12 @@ Fr_t zkConditionalEntropy::prove(
             throw std::runtime_error("prove: indicator extraction mismatch");
 
         auto u_ext = random_vec(ceilLog2(TV));
+        challenges.insert(challenges.end(), u_ext.begin(), u_ext.end());
         auto ip_extract = inner_product_sumcheck(win_probs_all, indicator, u_ext);
         serialize_ip_sumcheck(ip_extract, ceilLog2(TV), proof);
 
         auto u_T = random_vec(ceilLog2(T));
+        challenges.insert(challenges.end(), u_T.begin(), u_T.end());
         Fr_t wp_at_u = actual_wp_raw(u_T);
         proof.push_back(Polynomial(wp_at_u));
     }
@@ -512,6 +525,7 @@ Fr_t zkConditionalEntropy::prove(
         FrTensor q_tw_vec = q_vec * total_win_vec;
 
         auto u_qr = random_vec(ceilLog2(T));
+        challenges.insert(challenges.end(), u_qr.begin(), u_qr.end());
 
         Fr_t q_tw_u = q_tw_vec(u_qr);
         Fr_t r_u  = r_vec(u_qr);
@@ -538,13 +552,13 @@ Fr_t zkConditionalEntropy::prove(
         uint batch_idx = 0;
 
         std::cout << "    q range proof (" << q_bits << " bits)..." << std::endl;
-        prove_nonneg(q_vec, q_bits, u_qr, bit_planes, combined_error, batch_idx, proof);
+        prove_nonneg(q_vec, q_bits, u_qr, bit_planes, combined_error, batch_idx, proof, challenges);
 
         std::cout << "    r range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(r_vec, r_bits, u_qr, bit_planes, combined_error, batch_idx, proof);
+        prove_nonneg(r_vec, r_bits, u_qr, bit_planes, combined_error, batch_idx, proof, challenges);
 
         std::cout << "    gap range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(gap, r_bits, u_qr, bit_planes, combined_error, batch_idx, proof);
+        prove_nonneg(gap, r_bits, u_qr, bit_planes, combined_error, batch_idx, proof, challenges);
 
         Fr_t ce_u = combined_error(u_qr);
         proof.push_back(Polynomial(ce_u));
@@ -560,6 +574,11 @@ Fr_t zkConditionalEntropy::prove(
         auto beta  = random_vec(1)[0];
         auto u_log = random_vec(ceilLog2(D_padded));
         auto v_log = random_vec(ceilLog2(D_padded));
+        challenges.push_back(r_log);
+        challenges.push_back(alpha);
+        challenges.push_back(beta);
+        challenges.insert(challenges.end(), u_log.begin(), u_log.end());
+        challenges.insert(challenges.end(), v_log.begin(), v_log.end());
         log_prover.prove(q_padded, surprise_padded, m_surprise,
                          r_log, alpha, beta, u_log, v_log, proof);
     }
@@ -569,21 +588,23 @@ Fr_t zkConditionalEntropy::prove(
     std::cout << "  Proving entropy summation..." << std::endl;
     {
         uint T_padded = 1u << ceilLog2(T);
-        FrTensor surprise_sum_input = surprise_vec.pad({T}, FR_ZERO);
+        FrTensor surprise_sum_input = surprise_vec.pad({T}, FR_FROM_INT(0));
 
         Fr_t* ones_cpu = new Fr_t[T_padded];
         for (uint i = 0; i < T; i++) ones_cpu[i] = FR_FROM_INT(1);
-        for (uint i = T; i < T_padded; i++) ones_cpu[i] = FR_ZERO;
+        for (uint i = T; i < T_padded; i++) ones_cpu[i] = FR_FROM_INT(0);
         FrTensor ones_T(T_padded, ones_cpu);
         delete[] ones_cpu;
 
         auto u_sum = random_vec(ceilLog2(T_padded));
+        challenges.insert(challenges.end(), u_sum.begin(), u_sum.end());
         auto ip_sum = inner_product_sumcheck(surprise_sum_input, ones_T, u_sum);
         serialize_ip_sumcheck(ip_sum, ceilLog2(T_padded), proof);
     }
 
     std::cout << "zkConditionalEntropy::prove complete (batched, "
-              << T << " positions, " << proof.size() << " polynomials)."
+              << T << " positions, " << proof.size() << " polynomials, "
+              << challenges.size() << " challenges)."
               << std::endl;
 
     return H;
@@ -614,7 +635,8 @@ Fr_t zkConditionalEntropy::prove(
     const vector<uint>& tokens,
     Fr_t claimed_entropy,
     vector<Polynomial>& proof,
-    vector<Claim>& claims)
+    vector<Claim>& claims,
+    vector<Fr_t>& challenges)
 {
     if (logits_seq.empty())
         throw std::invalid_argument("prove: empty logits sequence");
@@ -622,5 +644,5 @@ Fr_t zkConditionalEntropy::prove(
     uint T = logits_seq.size();
     uint V = logits_seq[0].size;
     FrTensor logits_all = catTensors(logits_seq);
-    return prove(logits_all, T, V, tokens, claimed_entropy, proof, claims);
+    return prove(logits_all, T, V, tokens, claimed_entropy, proof, claims, challenges);
 }

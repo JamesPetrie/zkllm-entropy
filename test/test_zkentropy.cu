@@ -161,7 +161,8 @@ int main() {
         bool ok = true;
         try {
             vector<Claim> claims;
-            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims);
+            vector<Fr_t> challenges;
+            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges);
         } catch (const std::exception& e) {
             cerr << "  prove threw: " << e.what() << endl;
             ok = false;
@@ -202,7 +203,8 @@ int main() {
         Fr_t claimed = prover.compute(logits, T, vocab_size, tokens);
         vector<Polynomial> proof;
         vector<Claim> claims;
-            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims);
+            vector<Fr_t> challenges;
+            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges);
 
         // Old proof: 6 constants per position = 24 for T=4 + argmax polys.
         // New proof: argmax polys + CDF tLookup + 3 constants + log tLookup.
@@ -221,7 +223,8 @@ int main() {
         Fr_t claimed = prover.compute(logits, T, vocab_size, tokens);
         vector<Polynomial> proof;
         vector<Claim> claims;
-        prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims);
+        vector<Fr_t> challenges;
+        prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges);
 
 #ifdef USE_GOLDILOCKS
         unsigned long entropy_val = claimed.val;
@@ -258,10 +261,18 @@ int main() {
                     f.write((char*)&yk, sizeof(Fr_t));
                 }
             }
+
+            // Write challenges section
+            uint32_t n_chal = (uint32_t)challenges.size();
+            f.write((char*)&n_chal, sizeof(n_chal));
+            for (const Fr_t& c : challenges) {
+                f.write((char*)&c, sizeof(Fr_t));
+            }
         }
 
         cout << "  v3 proof written to " << proof_path
-             << " (" << proof.size() << " polynomials)" << endl;
+             << " (" << proof.size() << " polynomials, "
+             << challenges.size() << " challenges)" << endl;
         check(true, "v3 proof file written for verifier");
     }
 
