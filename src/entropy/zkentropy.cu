@@ -300,7 +300,8 @@ Fr_t zkConditionalEntropy::prove(
     Fr_t claimed_entropy,
     vector<Polynomial>& proof,
     vector<Claim>& claims,
-    vector<Fr_t>& challenges)
+    vector<Fr_t>& challenges,
+    vector<FriPcsCommitment>& commitments)
 {
     if (logits_all.size != T * V)
         throw std::invalid_argument("prove: logits_all.size != T * V");
@@ -386,6 +387,13 @@ Fr_t zkConditionalEntropy::prove(
     FrTensor q_padded(D_padded, cpu_q_pad);
     delete[] cpu_q_pad;
 
+    // COMMIT: q_padded before any challenges that query it
+#ifdef USE_GOLDILOCKS
+    auto q_com = FriPcs::commit(q_padded.gpu_data, D_padded);
+    commitments.push_back(q_com);
+    std::cout << "  Committed q_padded (" << D_padded << " elements)" << std::endl;
+#endif
+
     auto [surprise_padded, m_surprise] = log_prover.compute(q_padded);
 
     FrTensor surprise_vec = surprise_padded.trunc(0, T);
@@ -411,6 +419,13 @@ Fr_t zkConditionalEntropy::prove(
         for (uint i = TV; i < D_cdf; i++) d_cpu[i] = FR_FROM_INT(0);
         FrTensor diffs_padded(D_cdf, d_cpu);
         delete[] d_cpu;
+
+        // COMMIT: diffs_padded before any challenges that query it
+#ifdef USE_GOLDILOCKS
+        auto diffs_com = FriPcs::commit(diffs_padded.gpu_data, D_cdf);
+        commitments.push_back(diffs_com);
+        std::cout << "    Committed diffs_padded (" << D_cdf << " elements)" << std::endl;
+#endif
 
         auto [cdf_padded, m_cdf_padded] = cdf_prover.compute(diffs_padded);
 
@@ -604,7 +619,8 @@ Fr_t zkConditionalEntropy::prove(
 
     std::cout << "zkConditionalEntropy::prove complete (batched, "
               << T << " positions, " << proof.size() << " polynomials, "
-              << challenges.size() << " challenges)."
+              << challenges.size() << " challenges, "
+              << commitments.size() << " commitments)."
               << std::endl;
 
     return H;
@@ -636,7 +652,8 @@ Fr_t zkConditionalEntropy::prove(
     Fr_t claimed_entropy,
     vector<Polynomial>& proof,
     vector<Claim>& claims,
-    vector<Fr_t>& challenges)
+    vector<Fr_t>& challenges,
+    vector<FriPcsCommitment>& commitments)
 {
     if (logits_seq.empty())
         throw std::invalid_argument("prove: empty logits sequence");
@@ -644,5 +661,5 @@ Fr_t zkConditionalEntropy::prove(
     uint T = logits_seq.size();
     uint V = logits_seq[0].size;
     FrTensor logits_all = catTensors(logits_seq);
-    return prove(logits_all, T, V, tokens, claimed_entropy, proof, claims, challenges);
+    return prove(logits_all, T, V, tokens, claimed_entropy, proof, claims, challenges, commitments);
 }

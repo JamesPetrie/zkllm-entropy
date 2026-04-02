@@ -10,6 +10,7 @@
 // Usage: ./test_verifier_negative
 
 #include "verifier_utils.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +39,11 @@ struct RawProof {
     };
     std::vector<Poly> polys;
     std::vector<Fr_t> challenges;
+    struct Commitment {
+        Hash256 root;
+        uint32_t size;
+    };
+    std::vector<Commitment> commitments;
 };
 
 static RawProof read_raw_proof(const std::string& path) {
@@ -75,6 +81,17 @@ static RawProof read_raw_proof(const std::string& path) {
             }
         }
     }
+    // Read commitments section if present
+    if (f.peek() != EOF) {
+        uint32_t ncom = read_u32(f);
+        if (ncom > 0 && ncom < 1000) {
+            p.commitments.resize(ncom);
+            for (uint32_t i = 0; i < ncom; i++) {
+                f.read((char*)&p.commitments[i].root, sizeof(Hash256));
+                p.commitments[i].size = read_u32(f);
+            }
+        }
+    }
     return p;
 }
 
@@ -104,6 +121,14 @@ static void write_raw_proof(const RawProof& p, const std::string& path) {
     if (!p.challenges.empty()) {
         w32((uint32_t)p.challenges.size());
         for (const auto& c : p.challenges) wfr(c);
+    }
+    // Write commitments section
+    if (!p.commitments.empty()) {
+        w32((uint32_t)p.commitments.size());
+        for (const auto& com : p.commitments) {
+            f.write((char*)&com.root, sizeof(Hash256));
+            w32(com.size);
+        }
     }
 }
 
@@ -400,6 +425,26 @@ int main() {
         p.log_precision = 12;
         write_raw_proof(p, corrupt);
         check(!verifier_accepts(corrupt), "wrong log_precision → structure mismatch");
+    }
+
+    // ── 21. Corrupt commitment root ─────────────────────────────────────
+    // NOTE: In the batch (non-interactive) verifier, commitment roots are
+    // informational only. The verifier checks sizes but cannot verify root
+    // authenticity without the original data. This test verifies the verifier
+    // still accepts (root binding is enforced in interactive mode only).
+    if (!base.commitments.empty()) {
+        RawProof p = base;
+        p.commitments[0].root.words[0] ^= 0xDEADBEEF;
+        write_raw_proof(p, corrupt);
+        check(verifier_accepts(corrupt), "corrupted root accepted (non-interactive mode)");
+    }
+
+    // ── 22. Wrong commitment size ───────────────────────────────────────
+    if (!base.commitments.empty()) {
+        RawProof p = base;
+        p.commitments[0].size = 999;
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "wrong commitment size rejected");
     }
 
     printf("\n%d passed, %d failed\n", n_pass, n_fail);

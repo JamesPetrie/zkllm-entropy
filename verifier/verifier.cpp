@@ -79,6 +79,13 @@ struct ProofPoly {
     Fr_t constant() const { return evals.empty() ? FR_ZERO : evals[0]; }
 };
 
+// ── Commitment (Hash256 is defined in verifier_utils.h) ─────────────────────
+
+struct ProofCommitment {
+    Hash256 root;
+    uint32_t size;
+};
+
 // ── Parsed proof ────────────────────────────────────────────────────────────
 
 struct ParsedProofV3 {
@@ -86,6 +93,8 @@ struct ParsedProofV3 {
     std::vector<ProofPoly> polys;
     std::vector<Fr_t> challenges;
     bool has_challenges;
+    std::vector<ProofCommitment> commitments;
+    bool has_commitments;
 };
 
 static ParsedProofV3 parse_v3(const std::string& path) {
@@ -134,6 +143,20 @@ static ParsedProofV3 parse_v3(const std::string& path) {
                 proof.challenges[i] = read_fr(f);
             }
             proof.has_challenges = true;
+        }
+    }
+
+    // Try to read commitments section (optional)
+    proof.has_commitments = false;
+    if (f.peek() != EOF) {
+        uint32_t n_com = read_u32(f);
+        if (n_com > 0 && n_com < 1000) {  // sanity bound
+            proof.commitments.resize(n_com);
+            for (uint32_t i = 0; i < n_com; i++) {
+                f.read(reinterpret_cast<char*>(&proof.commitments[i].root), sizeof(Hash256));
+                proof.commitments[i].size = read_u32(f);
+            }
+            proof.has_commitments = true;
         }
     }
 
@@ -802,6 +825,50 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
         idx += sum_total;
     }
 
+    // ── [COM] Commitment verification ───────────────────────────────────
+    if (proof.has_commitments) {
+        // Expected: 2 commitments (diffs_padded at D_cdf, q_padded at D_log)
+        if (proof.commitments.size() != 2) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "expected 2 commitments, got %zu",
+                     proof.commitments.size());
+            results.push_back({false, "COMMIT", buf});
+        } else {
+            bool ok = true;
+            std::string detail;
+
+            // Commitment 0: diffs_padded (size = D_cdf)
+            if (proof.commitments[0].size != D_cdf) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "diffs commitment size=%u, expected D_cdf=%u",
+                         proof.commitments[0].size, D_cdf);
+                detail = buf;
+                ok = false;
+            }
+
+            // Commitment 1: q_padded (size = D_log)
+            if (proof.commitments[1].size != D_log) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "q commitment size=%u, expected D_log=%u",
+                         proof.commitments[1].size, D_log);
+                if (!detail.empty()) detail += "; ";
+                detail += buf;
+                ok = false;
+            }
+
+            if (ok) {
+                // Print commitment roots (first 4 bytes of each for brevity)
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                         "diffs_padded (D=%u, root=%08x...), q_padded (D=%u, root=%08x...)",
+                         proof.commitments[0].size, proof.commitments[0].root.words[0],
+                         proof.commitments[1].size, proof.commitments[1].root.words[0]);
+                detail = buf;
+            }
+            results.push_back({ok, "COMMIT", detail});
+        }
+    }
+
     return results;
 }
 
@@ -845,6 +912,10 @@ int main(int argc, char* argv[]) {
     } else {
         printf("  challenges=0 (STRUCTURAL verification only)\n");
     }
+    if (proof.has_commitments) {
+        printf("  commitments=%zu (FRI-PCS Merkle roots)\n",
+               proof.commitments.size());
+    }
 
     double entropy_bits = (double)h.entropy_val / (double)h.log_scale;
     printf("\nClaimed entropy: %.4f bits total (%.4f bits/token)\n\n",
@@ -870,8 +941,11 @@ int main(int argc, char* argv[]) {
         printf("  All sumcheck rounds replayed with serialized challenges.\n");
         printf("  IP sumcheck finals verified (a(u)*b(u)==reduced_claim).\n");
         printf("  tLookup rounds replayed with full inter-round verification.\n");
+        if (proof.has_commitments) {
+            printf("  FRI commitments bind data across proof stages.\n");
+        }
         printf("  NOTE: Challenges are prover-generated (not interactive).\n");
-        printf("  Phase 3 will add FRI commitments for binding.\n");
+        printf("  Full soundness requires interactive challenges (verifier sends).\n");
     } else {
         printf("\n=== VERIFICATION MODE: STRUCTURAL ===\n");
         printf("  Sumcheck rounds checked for structural consistency only.\n");

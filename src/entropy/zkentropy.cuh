@@ -2,6 +2,12 @@
 #define ZKENTROPY_CUH
 
 #include "zknn/zknormalcdf.cuh"
+#ifdef USE_GOLDILOCKS
+#include "commit/fri_pcs.cuh"
+#else
+// Stub for BLS build (FRI-PCS is Goldilocks-only)
+struct FriPcsCommitment { uint32_t stub[10]; };
+#endif
 #include "zknn/zklog.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
@@ -82,7 +88,8 @@ public:
                Fr_t claimed_entropy,
                vector<Polynomial>& proof,
                vector<Claim>& claims,
-               vector<Fr_t>& challenges);
+               vector<Fr_t>& challenges,
+               vector<FriPcsCommitment>& commitments);
 
     // ---- Legacy per-position interface (kept for test compatibility) --------
 
@@ -96,7 +103,8 @@ public:
     Fr_t prove(const vector<FrTensor>& logits_seq, const vector<uint>& tokens,
                Fr_t claimed_entropy, vector<Polynomial>& proof,
                vector<Claim>& claims,
-               vector<Fr_t>& challenges);
+               vector<Fr_t>& challenges,
+               vector<FriPcsCommitment>& commitments);
 };
 
 #endif

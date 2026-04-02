@@ -177,7 +177,8 @@ int main(int argc, char* argv[]) {
     vector<Polynomial> proof;
     vector<Claim> entropy_claims;
     vector<Fr_t> challenges;
-    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof, entropy_claims, challenges);
+    vector<FriPcsCommitment> commitments;
+    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof, entropy_claims, challenges, commitments);
 
     // Verify entropy claims against actual logits tensor
     for (auto& c : entropy_claims) {
@@ -261,10 +262,19 @@ int main(int argc, char* argv[]) {
         for (const Fr_t& c : challenges) {
             f.write((char*)&c, sizeof(Fr_t));
         }
+
+        // Write commitments section
+        uint32_t n_com = (uint32_t)commitments.size();
+        f.write((char*)&n_com, sizeof(n_com));
+        for (const auto& com : commitments) {
+            f.write((char*)&com.root, sizeof(Hash256));
+            f.write((char*)&com.size, sizeof(uint32_t));
+        }
     }
     cout << "Proof written to " << proof_output
          << " (" << proof.size() << " polynomials, "
-         << challenges.size() << " challenges)" << endl;
+         << challenges.size() << " challenges, "
+         << commitments.size() << " commitments)" << endl;
 
     return 0;
 }

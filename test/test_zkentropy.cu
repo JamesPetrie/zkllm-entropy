@@ -162,7 +162,8 @@ int main() {
         try {
             vector<Claim> claims;
             vector<Fr_t> challenges;
-            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges);
+            vector<FriPcsCommitment> commitments;
+            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges, commitments);
         } catch (const std::exception& e) {
             cerr << "  prove threw: " << e.what() << endl;
             ok = false;
@@ -204,7 +205,8 @@ int main() {
         vector<Polynomial> proof;
         vector<Claim> claims;
             vector<Fr_t> challenges;
-            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges);
+            vector<FriPcsCommitment> commitments;
+            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges, commitments);
 
         // Old proof: 6 constants per position = 24 for T=4 + argmax polys.
         // New proof: argmax polys + CDF tLookup + 3 constants + log tLookup.
@@ -224,7 +226,8 @@ int main() {
         vector<Polynomial> proof;
         vector<Claim> claims;
         vector<Fr_t> challenges;
-        prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges);
+        vector<FriPcsCommitment> commitments;
+        prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges, commitments);
 
 #ifdef USE_GOLDILOCKS
         unsigned long entropy_val = claimed.val;
@@ -268,11 +271,20 @@ int main() {
             for (const Fr_t& c : challenges) {
                 f.write((char*)&c, sizeof(Fr_t));
             }
+
+            // Write commitments section
+            uint32_t n_com = (uint32_t)commitments.size();
+            f.write((char*)&n_com, sizeof(n_com));
+            for (const auto& com : commitments) {
+                f.write((char*)&com.root, sizeof(Hash256));
+                f.write((char*)&com.size, sizeof(uint32_t));
+            }
         }
 
         cout << "  v3 proof written to " << proof_path
              << " (" << proof.size() << " polynomials, "
-             << challenges.size() << " challenges)" << endl;
+             << challenges.size() << " challenges, "
+             << commitments.size() << " commitments)" << endl;
         check(true, "v3 proof file written for verifier");
     }
 
