@@ -17,7 +17,7 @@
 // Usage:
 //   ./zkllm_entropy <workdir> <tokens_file> <proof_output> <sigma_eff>
 //                  [seq_len=1024] [hidden_size=4096] [vocab_size=32000]
-//                  [bit_width=32] [cdf_precision=12] [log_precision=15]
+//                  [cdf_precision=12] [log_precision=15]
 //                  [cdf_scale=65536] [log_scale=65536]
 //
 // Required files in <workdir>:
@@ -64,7 +64,7 @@ int main(int argc, char* argv[]) {
         cerr << "Usage: " << argv[0]
              << " <workdir> <tokens_file> <proof_output> <sigma_eff>\n"
              << "       [seq_len=1024] [hidden_size=4096] [vocab_size=32000]\n"
-             << "       [bit_width=32] [cdf_precision=12] [log_precision=15]\n"
+             << "       [cdf_precision=12] [log_precision=15]\n"
              << "       [cdf_scale=65536] [log_scale=65536]\n";
         return 1;
     }
@@ -77,11 +77,10 @@ int main(int argc, char* argv[]) {
     uint seq_len      = argc > 5  ? (uint)atoi(argv[5])  : 1024u;
     uint hidden_size  = argc > 6  ? (uint)atoi(argv[6])  : 4096u;
     uint vocab_size   = argc > 7  ? (uint)atoi(argv[7])  : 32000u;
-    uint bit_width    = argc > 8  ? (uint)atoi(argv[8])  : 32u; // logit_scale=65536 * max_gap; 2^32/65536 covers any realistic range
-    uint cdf_precision= argc > 9  ? (uint)atoi(argv[9])  : 15u; // 2^15=32768 > 6*sigma_eff(5223)=31338, covers Phi≈1 at boundary
-    uint log_precision= argc > 10 ? (uint)atoi(argv[10]) : 15u;
-    uint cdf_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
-    uint log_scale    = argc > 12 ? (uint)atoi(argv[12]) : 65536u;
+    uint cdf_precision= argc > 8  ? (uint)atoi(argv[8])  : 15u; // 2^15=32768 > 6*sigma_eff(5223)=31338, covers Phi≈1 at boundary
+    uint log_precision= argc > 9  ? (uint)atoi(argv[9]) : 15u;
+    uint cdf_scale    = argc > 10 ? (uint)atoi(argv[10]) : 65536u;
+    uint log_scale    = argc > 11 ? (uint)atoi(argv[11]) : 65536u;
 
     auto path = [&](const string& f) { return workdir + "/" + f; };
 
@@ -156,7 +155,7 @@ int main(int argc, char* argv[]) {
 
     cout << "Building entropy lookup tables..." << endl;
     zkConditionalEntropy entropy_prover(
-        vocab_size, bit_width, cdf_precision, log_precision,
+        vocab_size, cdf_precision, log_precision,
         cdf_scale, log_scale, sigma_eff);
 
     // ── Step 4: Compute entropy (batched, flat T×V tensor) ───────────────────
@@ -176,7 +175,18 @@ int main(int argc, char* argv[]) {
     // ── Step 5: Prove entropy (batched) ──────────────────────────────────────
     cout << "Generating entropy proof..." << endl;
     vector<Polynomial> proof;
-    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof);
+    vector<Claim> entropy_claims;
+    vector<Fr_t> challenges;
+    vector<FriPcsCommitment> commitments;
+    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof, entropy_claims, challenges, commitments);
+
+    // Verify entropy claims against actual logits tensor
+    for (auto& c : entropy_claims) {
+        Fr_t actual = logits_batch_.multi_dim_me(c.u, c.dims);
+        if (actual != c.claim)
+            throw std::runtime_error("entropy claim on logits does not match");
+    }
+    cout << "Entropy claims verified (" << entropy_claims.size() << " claims)." << endl;
 
     // ── Step 6: Prove lm_head — links logits to committed W_lm ───────────────
     cout << "Proving lm_head (zkFC)..." << endl;
@@ -192,26 +202,38 @@ int main(int argc, char* argv[]) {
     verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
 
     // ── Serialise proof ───────────────────────────────────────────────────────
-    // Format (v2 — adds cdf_precision, log_precision, cdf_scale to header):
-    //   [8 bytes]  magic "ZKENTROP"
+    // Format v3 — batched entropy proof with MLE evaluations.
+    //   [8 bytes]  magic "ZKENTR03"
+    //   [4 bytes]  version = 3
     //   [8 bytes]  entropy_val (uint64, in log_scale units)
     //   [4 bytes]  seq_len
     //   [4 bytes]  vocab_size
     //   [8 bytes]  sigma_eff (double)
     //   [4 bytes]  log_scale
-    //   [4 bytes]  cdf_precision    (NEW)
-    //   [4 bytes]  log_precision    (NEW)
-    //   [4 bytes]  cdf_scale        (NEW)
+    //   [4 bytes]  cdf_precision
+    //   [4 bytes]  log_precision
+    //   [4 bytes]  cdf_scale
     //   [4 bytes]  n_polys
     //   For each polynomial:
     //     [4 bytes] n_coeffs
     //     [n_coeffs * sizeof(Fr_t) bytes] coefficients
+    //
+    // Polynomial layout (all constant/degree-0):
+    //   [0] diffs_u        [1] logits_u       [2] vstar_u     [3] ones_V_u
+    //   [4] wp_at_u
+    //   [5] q_tw_u         [6] r_u            [7] wp_scaled_u
+    //   [8..8+q_bits]      prove_nonneg(q):   vals_u, bits_0..bits_{q_bits-1}
+    //   [9+q_bits..9+q_bits+r_bits]  prove_nonneg(r): vals_u, bits_0..bits_{r_bits-1}
+    //   [10+q_bits+r_bits..10+q_bits+2*r_bits] prove_nonneg(gap): vals_u, bits_0..bits_{r_bits-1}
+    //   [last] combined_error_u  (must be 0)
     {
         ofstream f(proof_output, ios::binary);
         if (!f) { cerr << "Cannot write: " << proof_output << endl; return 1; }
 
-        uint64_t magic = 0x5A4B454E54524F50ULL;
+        uint64_t magic = 0x5A4B454E54523033ULL;  // "ZKENTR03"
+        uint32_t version = 3;
         f.write((char*)&magic,         sizeof(magic));
+        f.write((char*)&version,       sizeof(version));
         f.write((char*)&entropy_val,   sizeof(entropy_val));
         f.write((char*)&seq_len,       sizeof(seq_len));
         f.write((char*)&vocab_size,    sizeof(vocab_size));
@@ -233,9 +255,26 @@ int main(int argc, char* argv[]) {
                 f.write((char*)&yk, sizeof(Fr_t));
             }
         }
+
+        // Write challenges section
+        uint32_t n_chal = (uint32_t)challenges.size();
+        f.write((char*)&n_chal, sizeof(n_chal));
+        for (const Fr_t& c : challenges) {
+            f.write((char*)&c, sizeof(Fr_t));
+        }
+
+        // Write commitments section
+        uint32_t n_com = (uint32_t)commitments.size();
+        f.write((char*)&n_com, sizeof(n_com));
+        for (const auto& com : commitments) {
+            f.write((char*)&com.root, sizeof(Hash256));
+            f.write((char*)&com.size, sizeof(uint32_t));
+        }
     }
     cout << "Proof written to " << proof_output
-         << " (" << proof.size() << " polynomials)" << endl;
+         << " (" << proof.size() << " polynomials, "
+         << challenges.size() << " challenges, "
+         << commitments.size() << " commitments)" << endl;
 
     return 0;
 }

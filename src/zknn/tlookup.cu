@@ -19,21 +19,21 @@ KERNEL void count_to_m(uint* counts, Fr_t* m_ptr, uint N){
     if (tid < N) m_ptr[tid] = FR_FROM_INT(counts[tid]);
 }
 
-// 
+//
 FrTensor tLookup::prep(const uint* indices, const uint D){
     // //copy indices to indices_cpu
     // uint indices_cpu[D];
     // cudaMemcpy(indices_cpu, indices, sizeof(uint) * D, cudaMemcpyDeviceToHost);
     // // for (uint i=0; i < D; ++ i) cout << indices_cpu[i] << " ";
     // // cout << endl;
-    
+
     FrTensor m(table.size);
     uint* counts;
     cudaMalloc((void **)&counts, sizeof(uint) * table.size);
     cudaMemset(counts, 0, sizeof(uint) * table.size); // cnm
 
     tlookup_kernel<<<(D+FrNumThread-1)/FrNumThread,FrNumThread>>>(indices, D, counts);
-    
+
     // //copy counts to cpu_counts
     // uint cpu_counts[table.size];
     // cudaMemcpy(cpu_counts, counts, sizeof(uint) * table.size, cudaMemcpyDeviceToHost);
@@ -49,7 +49,7 @@ FrTensor tLookup::prep(const uint* indices, const uint D){
 KERNEL void tlookup_inv_kernel(Fr_t* in_data, Fr_t beta, Fr_t* out_data, uint N)
 {
     const uint tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if(tid < N){ 
+    if(tid < N){
         out_data[tid] = blstrs__scalar__Scalar_unmont(
             blstrs__scalar__Scalar_inverse(
                 blstrs__scalar__Scalar_mont(
@@ -96,7 +96,7 @@ KERNEL void tLookup_phase1_reduce_kernel(const Fr_t* A_data, const Fr_t* S_data,
     if (tid < N_out)
     {
         Fr_t v_mont = blstrs__scalar__Scalar_mont(v);
-        new_A_data[tid] = blstrs__scalar__Scalar_add(A_data[tid], blstrs__scalar__Scalar_mul(v_mont, blstrs__scalar__Scalar_sub(A_data[tid + N_out], A_data[tid])));  
+        new_A_data[tid] = blstrs__scalar__Scalar_add(A_data[tid], blstrs__scalar__Scalar_mul(v_mont, blstrs__scalar__Scalar_sub(A_data[tid + N_out], A_data[tid])));
         new_S_data[tid] = blstrs__scalar__Scalar_add(S_data[tid], blstrs__scalar__Scalar_mul(v_mont, blstrs__scalar__Scalar_sub(S_data[tid + N_out], S_data[tid])));
     }
 }
@@ -165,7 +165,7 @@ KERNEL void tLookup_phase2_reduce_kernel(const Fr_t* A_data, const Fr_t* S_data,
     if (tid < N_out)
     {
         Fr_t v_mont = blstrs__scalar__Scalar_mont(v);
-        new_A_data[tid] = blstrs__scalar__Scalar_add(A_data[tid], blstrs__scalar__Scalar_mul(v_mont, blstrs__scalar__Scalar_sub(A_data[tid + N_out], A_data[tid])));  
+        new_A_data[tid] = blstrs__scalar__Scalar_add(A_data[tid], blstrs__scalar__Scalar_mul(v_mont, blstrs__scalar__Scalar_sub(A_data[tid + N_out], A_data[tid])));
         new_S_data[tid] = blstrs__scalar__Scalar_add(S_data[tid], blstrs__scalar__Scalar_mul(v_mont, blstrs__scalar__Scalar_sub(S_data[tid + N_out], S_data[tid])));
         new_B_data[tid] = blstrs__scalar__Scalar_add(B_data[tid], blstrs__scalar__Scalar_mul(v_mont, blstrs__scalar__Scalar_sub(B_data[tid + N_out], B_data[tid])));
         new_T_data[tid] = blstrs__scalar__Scalar_add(T_data[tid], blstrs__scalar__Scalar_mul(v_mont, blstrs__scalar__Scalar_sub(T_data[tid + N_out], T_data[tid])));
@@ -185,7 +185,7 @@ const Fr_t TWO_INV {2147483649, 2147483647, 2147429887, 2849952257, 80800770, 42
 // const Fr_t TEMP_ZERO {0, 0, 0, 0, 0, 0, 0, 0};
 // const Fr_t TEMP_ONE {1, 0, 0, 0, 0, 0, 0, 0};
 
-Polynomial tLookup_phase1_step_poly(const FrTensor& A, const FrTensor& S, 
+Polynomial tLookup_phase1_step_poly(const FrTensor& A, const FrTensor& S,
     const Fr_t& alpha, const Fr_t& beta, const Fr_t& C, const vector<Fr_t>& u)
 {
     if (A.size != S.size) throw std::runtime_error("A.size != S.size");
@@ -258,7 +258,7 @@ Polynomial tLookup_phase2_step_poly(const FrTensor& A, const FrTensor& S, const 
         A.gpu_data, S.gpu_data, alpha_, beta, temp0.gpu_data, temp1.gpu_data, temp2.gpu_data, N_out
     );
     Polynomial p0 ({temp0(u_), temp1(u_), temp2(u_)});
-    
+
     Fr_t coef = inv_size_ratio * alpha_sq;
     tLookup_phase2_poly_eval_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(
         B.gpu_data, T.gpu_data, coef, beta, temp0.gpu_data, temp1.gpu_data, temp2.gpu_data, N_out
@@ -274,17 +274,27 @@ Polynomial tLookup_phase2_step_poly(const FrTensor& A, const FrTensor& S, const 
         m.gpu_data, B.gpu_data, temp0.gpu_data, temp1.gpu_data, temp2.gpu_data, N_out
     );
     Polynomial p2 ({temp0.sum(), temp1.sum(), temp2.sum()});
-    return Polynomial::eq(u.back()) * p0 + p1 - p2 * inv_size_ratio; 
+    return Polynomial::eq(u.back()) * p0 + p1 - p2 * inv_size_ratio;
 }
 
 Fr_t tLookup_phase2(const Fr_t& claim, const FrTensor& A, const FrTensor& S, const FrTensor& B, const FrTensor& T, const FrTensor& m,
-    const Fr_t& alpha_, const Fr_t& beta, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq, const vector<Fr_t>& u, const vector<Fr_t>& v2)
+    const Fr_t& alpha_, const Fr_t& beta, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq, const vector<Fr_t>& u, const vector<Fr_t>& v2,
+    vector<Polynomial>& proof)
 {
-    if (!v2.size()) return claim;
+    if (!v2.size()) {
+        // Base case: push final evaluations for verifier
+        proof.push_back(Polynomial(A(0)));  // A(u) = 1/(S(u)+beta)
+        proof.push_back(Polynomial(S(0)));  // S(u)
+        proof.push_back(Polynomial(B(0)));  // B(v) = 1/(T(v)+beta)
+        proof.push_back(Polynomial(T(0)));  // T(v)
+        proof.push_back(Polynomial(m(0)));  // m(v)
+        return claim;
+    }
     auto p = tLookup_phase2_step_poly(A, S, B, T, m, alpha_, beta, inv_size_ratio, alpha_sq, u);
     FrTensor new_A(A.size >> 1), new_S(S.size >> 1), new_B(B.size >> 1), new_T(T.size >> 1), new_m(m.size >> 1);
 
     if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1))) throw std::runtime_error("tLookup_phase2: claim != p(0) + p(1)");
+    proof.push_back(p);
 
     tLookup_phase2_reduce_kernel<<<((A.size >> 1)+FrNumThread-1)/FrNumThread,FrNumThread>>>(
         A.gpu_data, S.gpu_data, B.gpu_data, T.gpu_data, m.gpu_data,
@@ -292,27 +302,29 @@ Fr_t tLookup_phase2(const Fr_t& claim, const FrTensor& A, const FrTensor& S, con
         v2.back(), A.size >> 1
     );
 
-    return tLookup_phase2(p(v2.back()), new_A, new_S, new_B, new_T, new_m, alpha_ * Polynomial::eq(u.back(), v2.back()), beta, inv_size_ratio, alpha_sq * Polynomial::eq(u.back(), v2.back()), {u.begin(), u.end() - 1}, {v2.begin(), v2.end() - 1});
+    return tLookup_phase2(p(v2.back()), new_A, new_S, new_B, new_T, new_m, alpha_ * Polynomial::eq(u.back(), v2.back()), beta, inv_size_ratio, alpha_sq * Polynomial::eq(u.back(), v2.back()), {u.begin(), u.end() - 1}, {v2.begin(), v2.end() - 1}, proof);
 }
 
 Fr_t tLookup_phase1(const Fr_t& claim, const FrTensor& A, const FrTensor& S, const FrTensor& B, const FrTensor& T, const FrTensor& m,
-    const Fr_t& alpha, const Fr_t& beta, const Fr_t& C, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq, 
-    const vector<Fr_t>& u, const vector<Fr_t>& v1, const vector<Fr_t>& v2)
+    const Fr_t& alpha, const Fr_t& beta, const Fr_t& C, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq,
+    const vector<Fr_t>& u, const vector<Fr_t>& v1, const vector<Fr_t>& v2,
+    vector<Polynomial>& proof)
 {
     if (!v1.size())
     {
-        return tLookup_phase2(claim, A, S, B, T, m, alpha, beta, inv_size_ratio, alpha_sq, u, v2);
+        return tLookup_phase2(claim, A, S, B, T, m, alpha, beta, inv_size_ratio, alpha_sq, u, v2, proof);
     }
     else{
         auto p = tLookup_phase1_step_poly(A, S, alpha, beta, C, u);
         FrTensor new_A(A.size >> 1), new_S(S.size >> 1);
-        
+
         if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1))) throw std::runtime_error("tLookup_phase1: claim != p(0) + p(1)");
-        
+        proof.push_back(p);
+
         tLookup_phase1_reduce_kernel<<<(A.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(
             A.gpu_data, S.gpu_data, new_A.gpu_data, new_S.gpu_data, v1.back(), A.size >> 1
         );
-        return tLookup_phase1(p(v1.back()), new_A, new_S, B, T, m, alpha * Polynomial::eq(u.back(), v1.back()), beta, C * TWO_INV, inv_size_ratio, alpha_sq, {u.begin(), u.end() - 1}, {v1.begin(), v1.end() - 1}, v2);
+        return tLookup_phase1(p(v1.back()), new_A, new_S, B, T, m, alpha * Polynomial::eq(u.back(), v1.back()), beta, C * TWO_INV, inv_size_ratio, alpha_sq, {u.begin(), u.end() - 1}, {v1.begin(), v1.end() - 1}, v2, proof);
     }
 }
 
@@ -353,16 +365,16 @@ Fr_t tLookup::prove(const FrTensor& S, const FrTensor& m, const Fr_t& alpha, con
     vector<Fr_t> v2 = {v.begin() + ceilLog2(D / N), v.end()};
 
     Fr_t C = alpha * alpha - (B * m).sum();
-    
+
     Fr_t alpha_sq = alpha * alpha;
     Fr_t claim = alpha + alpha_sq;
     Fr_t N_Fr = FR_FROM_INT(N);
     Fr_t D_Fr = FR_FROM_INT(D);
 
-    return tLookup_phase1(claim, A, S, B, table, m, 
-        alpha, beta, C, N_Fr / D_Fr, alpha_sq, 
-        u, v1, v2);
-} 
+    return tLookup_phase1(claim, A, S, B, table, m,
+        alpha, beta, C, N_Fr / D_Fr, alpha_sq,
+        u, v1, v2, proof);
+}
 
 KERNEL void tlookuprange_init_kernel(Fr_t* table_ptr, int low, uint len, uint table_size)
 {
@@ -465,12 +477,12 @@ pair<FrTensor, FrTensor> tLookupRangeMapping::operator()(const int* vals, const 
     // convert vals (which should be on gpu) to indices
     lookuprange_prep_kernel<<<(D+FrNumThread-1)/FrNumThread,FrNumThread>>>(vals, low, indices, D);
     auto m = tLookup::prep(indices, D);
-    
+
     FrTensor y(D);
     lookuprangemapping_kernel<<<(D+FrNumThread-1)/FrNumThread,FrNumThread>>>(indices, mapped_vals.gpu_data, y.gpu_data, D);
     cudaDeviceSynchronize();
     cudaFree(indices);
-    return {y, m};   
+    return {y, m};
 }
 
 pair<FrTensor, FrTensor> tLookupRangeMapping::operator()(const FrTensor& vals)
@@ -484,7 +496,7 @@ pair<FrTensor, FrTensor> tLookupRangeMapping::operator()(const FrTensor& vals)
     lookuprangemapping_kernel<<<(vals.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(indices, mapped_vals.gpu_data, y.gpu_data, vals.size);
     cudaDeviceSynchronize();
     cudaFree(indices);
-    return {y, m};   
+    return {y, m};
 }
 
 KERNEL void tlookuprange_pad_m(Fr_t* m_ptr, uint index_padded, uint num_added)
@@ -493,8 +505,8 @@ KERNEL void tlookuprange_pad_m(Fr_t* m_ptr, uint index_padded, uint num_added)
         m_ptr[index_padded] = blstrs__scalar__Scalar_add(m_ptr[index_padded], FR_FROM_INT(num_added));
 }
 
-Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, const FrTensor& m, 
-        const Fr_t& r, const Fr_t& alpha, const Fr_t& beta, 
+Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, const FrTensor& m,
+        const Fr_t& r, const Fr_t& alpha, const Fr_t& beta,
         const vector<Fr_t>& u, const vector<Fr_t>& v, vector<Polynomial>& proof)
 {
     const uint D = S_in.size;
@@ -538,13 +550,13 @@ Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, con
     vector<Fr_t> v2 = {v.begin() + ceilLog2(D / N), v.end()};
 
     Fr_t C = alpha * alpha - (B * m).sum();
-    
+
     Fr_t alpha_sq = alpha * alpha;
     Fr_t claim = alpha + alpha_sq;
     Fr_t N_Fr = FR_FROM_INT(N);
     Fr_t D_Fr = FR_FROM_INT(D);
 
-    return tLookup_phase1(claim, A, S_com, B, T_com, m, 
-        alpha, beta, C, N_Fr / D_Fr, alpha_sq, 
-        u, v1, v2);
+    return tLookup_phase1(claim, A, S_com, B, T_com, m,
+        alpha, beta, C, N_Fr / D_Fr, alpha_sq,
+        u, v1, v2, proof);
 }

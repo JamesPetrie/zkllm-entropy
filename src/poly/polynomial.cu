@@ -333,6 +333,7 @@ __global__ void polyEvalKernel(int deg, const Fr_t* coefs, Fr_t x, Fr_t* result_
         *result_ptr = blstrs__scalar__Scalar_add(*result_ptr, blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(coefs[i], pow)));
         pow = blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(pow, x));
     }
+    *result_ptr = blstrs__scalar__Scalar_unmont(*result_ptr);
 }
 
 Fr_t Polynomial::operator()(const Fr_t& x)
@@ -372,8 +373,8 @@ std::ostream& operator<<(std::ostream& os, const Polynomial& poly)
 
 __global__ void eqPolyKernel(Fr_t u, Fr_t* coefs)
 {
-    coefs[0] = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ONE, u);
-    coefs[1] = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_double(u), blstrs__scalar__Scalar_ONE);
+    coefs[0] = blstrs__scalar__Scalar_sub(FR_FROM_INT(1), u);
+    coefs[1] = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_double(u), FR_FROM_INT(1));
 }
 
 Polynomial Polynomial::eq(const Fr_t& u){
@@ -386,7 +387,7 @@ __global__ void eqEvalKernel(Fr_t u, Fr_t v, Fr_t* eval)
 {
     *eval = blstrs__scalar__Scalar_double(blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(u, v)));
     *eval = blstrs__scalar__Scalar_sub(*eval, blstrs__scalar__Scalar_add(u, v));
-    *eval = blstrs__scalar__Scalar_add(*eval, blstrs__scalar__Scalar_ONE);
+    *eval = blstrs__scalar__Scalar_add(*eval, FR_FROM_INT(1));
 }
 
 Fr_t Polynomial::eq(const Fr_t& u, const Fr_t& v)
