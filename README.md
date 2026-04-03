@@ -8,7 +8,7 @@ This repository forks [zkLLM](https://github.com/jvhs0706/zkllm-ccs2024) and add
 
 ## Summary
 
-We developed a zero-knowledge proof system that verifies LLM inference without requiring exact floating-point reproducibility. Instead of proving "the model produced exactly these tokens," we prove "at most H bits of hidden information could be encoded in this output." This handles real-world GPU non-determinism while still bounding covert channels like model weight exfiltration. Proof generation is ~1000× slower than inference, but random sampling makes it practical.
+We developed a zero-knowledge proof system that verifies LLM inference without requiring exact floating-point reproducibility. Instead of proving "the model produced exactly these tokens," we prove "at most H bits of hidden information could be encoded in this output." This handles real-world GPU non-determinism while still bounding covert channels like model weight exfiltration. Proof generation is ~3,000× slower than inference, but random sampling makes it practical.
 
 ### Applications
 
@@ -185,21 +185,26 @@ Additional BLS12-381 test binaries: `test_zkargmax` (6), `test_zklog` (5), `test
 
 ### Performance (H100 PCIe, Llama-2-7B, 1024 tokens)
 
-**BLS12-381 baseline timing:**
+**Entropy layer only** (final RMSNorm + lm_head + entropy prove, via `gold_zkllm_entropy_timed`):
 
-| Phase | Time (s) | % |
+| Phase | BLS12-381 | Goldilocks |
 |---|---|---|
-| lm_head compute | 30.1 | 4.4% |
-| Entropy compute | 3.6 | 0.5% |
-| **Entropy prove** | **634.3** | **92.6%** |
-| lm_head prove | 7.9 | 1.2% |
-| RMSNorm prove | 4.1 | 0.6% |
-| Other | 4.6 | 0.7% |
-| **Total** | **684.8** | |
+| Load data + weights | 2.9 s | 2.8 s |
+| lm_head compute | 4.7 s | 0.4 s |
+| Entropy compute | 0.2 s | 0.1 s |
+| **Entropy prove** | **2.0 s** | **1.6 s** |
+| lm_head prove | 1.4 s | 0.05 s |
+| RMSNorm prove | 0.8 s | 0.03 s |
+| **Total (entropy layer)** | **12.2 s** | **5.1 s** |
 
-The entropy prove phase dominates (92.6%), driven by per-token sumcheck rounds for argmax, CDF, and log proofs over the 32K vocabulary. With Goldilocks field arithmetic (9.8× faster multiply), this phase is projected to drop from ~634s to ~65s.
+**Full 32-layer pipeline** (via `run_proofs.py`):
 
-**Goldilocks timed build:** 17.6s for 64 tokens (after 3.7× optimization pass), vs 64.3s before optimization. Full 1024-token Goldilocks timing is pending.
+| Configuration | 32 layers | Per layer | Entropy layer | Total |
+|---|---|---|---|---|
+| BLS12-381 (separate processes) | 11 min 3 sec | ~20.7 s | 12.2 s | ~11 min 15 sec |
+| Goldilocks (persistent CUDA server) | 56 sec | ~1.75 s | 5.1 s | **~61 sec** |
+
+The Goldilocks + persistent server configuration is ~11× faster end-to-end, due to ~10× faster 64-bit field arithmetic and elimination of per-process CUDA context initialization (~2s per launch).
 
 ---
 
