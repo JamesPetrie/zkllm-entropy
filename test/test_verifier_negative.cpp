@@ -44,6 +44,7 @@ struct RawProof {
         uint32_t size;
     };
     std::vector<Commitment> commitments;
+    std::vector<uint32_t> tokens;
 };
 
 static RawProof read_raw_proof(const std::string& path) {
@@ -92,6 +93,16 @@ static RawProof read_raw_proof(const std::string& path) {
             }
         }
     }
+    // Read tokens section if present
+    if (f.peek() != EOF) {
+        uint32_t nt = read_u32(f);
+        if (nt > 0 && nt < 1000000) {
+            p.tokens.resize(nt);
+            for (uint32_t i = 0; i < nt; i++) {
+                p.tokens[i] = read_u32(f);
+            }
+        }
+    }
     return p;
 }
 
@@ -129,6 +140,11 @@ static void write_raw_proof(const RawProof& p, const std::string& path) {
             f.write((char*)&com.root, sizeof(Hash256));
             w32(com.size);
         }
+    }
+    // Write tokens section
+    if (!p.tokens.empty()) {
+        w32((uint32_t)p.tokens.size());
+        for (uint32_t tok : p.tokens) w32(tok);
     }
 }
 
@@ -457,7 +473,15 @@ int main() {
         check(!verifier_accepts(corrupt), "wrong commitment size rejected");
     }
 
-    printf("\n%d passed, %d failed\n", n_pass, n_fail);
+    // ── 24. Corrupted token ─────────────────────────────────────────────
+    if (!base.tokens.empty()) {
+        RawProof p = base;
+        p.tokens[0] = (p.tokens[0] + 1) % p.vocab_size;
+        write_raw_proof(p, corrupt);
+        check(!verifier_accepts(corrupt), "wrong token -> INDICATOR fails");
+    }
+
+        printf("\n%d passed, %d failed\n", n_pass, n_fail);
 
     // Cleanup
     remove(corrupt.c_str());

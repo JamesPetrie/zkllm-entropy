@@ -95,6 +95,8 @@ struct ParsedProofV3 {
     bool has_challenges;
     std::vector<ProofCommitment> commitments;
     bool has_commitments;
+    std::vector<uint32_t> tokens;
+    bool has_tokens;
 };
 
 static ParsedProofV3 parse_v3(const std::string& path) {
@@ -160,7 +162,91 @@ static ParsedProofV3 parse_v3(const std::string& path) {
         }
     }
 
+    // Try to read tokens section (optional)
+    proof.has_tokens = false;
+    if (f.peek() != EOF) {
+        uint32_t n_tok = read_u32(f);
+        if (n_tok > 0 && n_tok < 1000000) {  // sanity bound
+            proof.tokens.resize(n_tok);
+            for (uint32_t i = 0; i < n_tok; i++) {
+                proof.tokens[i] = read_u32(f);
+            }
+            proof.has_tokens = true;
+        }
+    }
+
     return proof;
+}
+
+// ── Compute MLE of indicator tensor at point u ──────────────────────────────
+// indicator[t*V + tokens[t]] = 1, all others 0.
+// MLE(indicator, u) = sum_t eq(u_T, t) * eq(u_V, tokens[t])
+// where u = (u_T, u_V), u_T has logT components, u_V has logV components.
+
+static Fr_t compute_indicator_mle(
+    const std::vector<uint32_t>& tokens,
+    uint32_t T, uint32_t V,
+    const std::vector<Fr_t>& u_ext
+) {
+    uint32_t logT = ceil_log2(T);
+    uint32_t logV = ceil_log2(V);
+    uint32_t logTV = ceil_log2(T * V);
+
+    // Split u_ext into V and T components
+    // indicator is T*V elements laid out as [row0_col0, row0_col1, ..., row1_col0, ...]
+    // Flat index = t*V + v. Sumcheck processes LSB first, so:
+    //   u_ext[0..logV-1] = V bits (low bits of flat index)
+    //   u_ext[logV..logV+logT-1] = T bits (high bits of flat index)
+    std::vector<Fr_t> u_V(u_ext.begin(), u_ext.begin() + logV);
+    std::vector<Fr_t> u_T(u_ext.begin() + logV, u_ext.begin() + logV + logT);
+
+    // If logT + logV < logTV, there are padding bits
+    // For now, handle the common case where TV is padded to next power of 2
+
+    Fr_t result = FR_ZERO;
+    for (uint32_t t = 0; t < T; t++) {
+        uint32_t tok = tokens[t];
+        if (tok >= V) continue;  // invalid token
+
+        // eq(u_T, t) = product over bits of t
+        Fr_t eq_T = FR_ONE;
+        for (uint32_t i = 0; i < logT; i++) {
+            uint32_t bit = (t >> i) & 1;
+            if (bit) {
+                eq_T = fr_mul(eq_T, u_T[i]);
+            } else {
+                eq_T = fr_mul(eq_T, fr_sub(FR_ONE, u_T[i]));
+            }
+        }
+
+        // eq(u_V, tok)
+        Fr_t eq_V = FR_ONE;
+        for (uint32_t i = 0; i < logV; i++) {
+            uint32_t bit = (tok >> i) & 1;
+            if (bit) {
+                eq_V = fr_mul(eq_V, u_V[i]);
+            } else {
+                eq_V = fr_mul(eq_V, fr_sub(FR_ONE, u_V[i]));
+            }
+        }
+
+        result = fr_add(result, fr_mul(eq_T, eq_V));
+    }
+
+    // Handle padding: if TV is not power of 2 but padded, the indicator
+    // entries beyond T*V are 0, contributing nothing to the MLE.
+    // If T*V < 2^logTV but logT+logV == logTV, this is already correct.
+    // If logT+logV < logTV (padding adds extra bits), we need the eq factor
+    // for those bits at index 0, which is product of (1 - u_pad[i]).
+    if (logT + logV < logTV) {
+        Fr_t pad_factor = FR_ONE;
+        for (uint32_t i = logT + logV; i < logTV; i++) {
+            pad_factor = fr_mul(pad_factor, fr_sub(FR_ONE, u_ext[i]));
+        }
+        result = fr_mul(result, pad_factor);
+    }
+
+    return result;
 }
 
 // ── Check result ────────────────────────────────────────────────────────────
@@ -709,6 +795,7 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
     idx += rowsum_total;
 
     // ── [EX] Extraction IP sumcheck ─────────────────────────────────────
+    uint32_t L_extract_start = idx;
     if (full) {
         auto r = verify_ip_sumcheck_full(FR_ZERO, false, polys, idx,
                                          extract_rounds, u_ext, "EXTRACT_IP");
@@ -725,6 +812,36 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
         Fr_t wp_at_u = polys[idx].constant();
         if (verbose) printf("  Extract wp_at_u = %lu\n", wp_at_u.val);
         idx += 1;
+    }
+
+    // ── [IND] Indicator-token binding check ─────────────────────────────
+    if (full && proof.has_tokens) {
+        // The extraction IP sumcheck's b(u) = indicator(u_ext).
+        // With public tokens, verify this independently.
+        uint32_t ext_b_idx = (idx - 1) - 1;  // b(u) is second-to-last before wp_at_u
+        // Actually: extraction polys start at extract_start, finals at extract_start + extract_rounds
+        uint32_t ext_final_b_idx = L_extract_start + extract_rounds + 1;
+        Fr_t prover_indicator_u = polys[ext_final_b_idx].constant();
+
+        Fr_t computed_indicator_u = compute_indicator_mle(
+            proof.tokens, h.T, h.vocab_size, u_ext);
+
+        bool ok = fr_eq(prover_indicator_u, computed_indicator_u);
+        char buf[256];
+        if (ok) {
+            snprintf(buf, sizeof(buf),
+                     "indicator(u) matches public tokens (%zu tokens)",
+                     proof.tokens.size());
+        } else {
+            snprintf(buf, sizeof(buf),
+                     "indicator(u)=%lu != computed=%lu from public tokens",
+                     prover_indicator_u.val, computed_indicator_u.val);
+        }
+        results.push_back({ok, "INDICATOR", buf});
+    } else if (proof.has_tokens) {
+        results.push_back({true, "INDICATOR", "tokens present (structural mode, not verified)"});
+    } else {
+        results.push_back({true, "INDICATOR", "no public tokens in proof (skipped)"});
     }
 
     // ── [Q] QR division check ───────────────────────────────────────────

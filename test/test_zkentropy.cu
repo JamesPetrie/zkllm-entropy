@@ -279,12 +279,20 @@ int main() {
                 f.write((char*)&com.root, sizeof(Hash256));
                 f.write((char*)&com.size, sizeof(uint32_t));
             }
+
+            // Write tokens section (public tokens for indicator binding)
+            uint32_t n_tok = (uint32_t)tokens.size();
+            f.write((char*)&n_tok, sizeof(n_tok));
+            for (uint32_t tok : tokens) {
+                f.write((char*)&tok, sizeof(uint32_t));
+            }
         }
 
         cout << "  v3 proof written to " << proof_path
              << " (" << proof.size() << " polynomials, "
              << challenges.size() << " challenges, "
-             << commitments.size() << " commitments)" << endl;
+             << commitments.size() << " commitments, "
+             << tokens.size() << " tokens)" << endl;
         check(true, "v3 proof file written for verifier");
     }
 
