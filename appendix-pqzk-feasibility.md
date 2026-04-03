@@ -35,7 +35,7 @@ where $c_1, \ldots, c_k$ are random field elements chosen by the prover.
 
 **Degree increase:** Each $\tilde{f}$ is multilinear (degree 1 per variable). After masking, $Z_f$ is degree 2 per variable. For a sumcheck proving $y = Wx$ with both $W$ and $x$ masked, the round polynomial $g(X_j) = Z_W(r, X_j, \ldots) \cdot Z_x(X_j, \ldots)$ has degree $2 + 2 = 4$ per round variable, up from degree $1 + 1 = 2$ without masking.
 
-**Which variables to mask.** For a weight matrix $W$ with MLE variables $(c_1, \ldots, c_b, r_1, \ldots, r_a)$ where $c$ indexes columns and $r$ indexes rows, only the column (sumcheck) variables receive masking terms. The row variables are set to a verifier-chosen random point $r$ — they are not summed over, so masking them would add a non-vanishing constant to the sum and break the sumcheck relation. The column-only masking still hides $\tilde{W}(r, s^*)$ at the final evaluation point, because the correction $\sum_i c_i \cdot s_i^*(1-s_i^*)$ depends on the secret coefficients $c_i$ and the random sumcheck point $s^*$.
+**Which variables to mask.** For a weight matrix $W$ with MLE variables $(c_1, \ldots, c_b, r_1, \ldots, r_a)$ where $c$ indexes columns and $r$ indexes rows, only the column (sumcheck) variables receive masking terms. The row variables are set to a verifier-chosen random point $r$ — they are not summed over, so masking them would add a non-vanishing constant to the sum and break the sumcheck relation. The column-only masking still hides $\tilde{W}(r, s^{*})$ at the final evaluation point, because the correction $\sum_i c_i \cdot s_i^{*}(1-s_i^{*})$ depends on the secret coefficients $c_i$ and the random sumcheck point $s^{*}$.
 
 **Coefficient count requirement.** Each opening of a masked polynomial at a random point gives the verifier one linear equation in the masking coefficients. If a polynomial is opened at $m$ points, the prover needs strictly more than $m$ masking coefficients to keep the system underdetermined. With $k$ variables, there are $k$ degree-2 vanishing terms $X_i(1-X_i)$, providing $k$ coefficients. For intermediate values opened at 2 points (once as the output of one layer, once as the input of the next), this requires $k > 2$. For realistic vector sizes ($k = \log_2 4096 = 12$), this is trivially satisfied. For small $k$ (e.g., $k = 2$), the polynomial can be extended with random blinding entries to add variables, keeping the masking at degree 2 while adding one extra sumcheck round per variable.
 
@@ -55,9 +55,9 @@ Each operation in the forward pass is proven via an independent sumcheck, exactl
 
 1. **Claim:** $\tilde{y}(r) = \sum_{s \in \{0,1\}^k} Z_W(r, s) \cdot Z_x(s)$ for a random $r$ chosen by the verifier
 2. **Sumcheck:** $k$ rounds, degree 4 per round (5 evaluations per round instead of 3)
-3. **Final check:** The verifier needs $Z_W(r, s^*)$ and $Z_x(s^*)$ at the sumcheck's terminal point $s^*$. The prover opens these via BaseFold.
+3. **Final check:** The verifier needs $Z_W(r, s^{*})$ and $Z_x(s^{*})$ at the sumcheck's terminal point $s^{*}$. The prover opens these via BaseFold.
 
-The verifier sees $Z_W(r, s^*)$ and $Z_x(s^*)$ — the masked values — not the raw $\tilde{W}(r, s^*)$ or $\tilde{x}(s^*)$.
+The verifier sees $Z_W(r, s^{*})$ and $Z_x(s^{*})$ — the masked values — not the raw $\tilde{W}(r, s^{*})$ or $\tilde{x}(s^{*})$.
 
 **Cross-layer binding:** If layer $\ell$ proves $y^{(\ell)} = W^{(\ell)} x^{(\ell)}$ and layer $\ell+1$ proves $y^{(\ell+1)} = W^{(\ell+1)} x^{(\ell+1)}$ where $x^{(\ell+1)} = y^{(\ell)}$, the verifier checks that the committed polynomial for $x^{(\ell+1)}$ is the same commitment as $y^{(\ell)}$. This is a Merkle root equality check — no information is revealed beyond what the sumchecks already expose.
 
@@ -73,11 +73,11 @@ The prover generates a random masking polynomial $p(X_1, \ldots, X_b) = a_0 + \s
 
 At each sumcheck round, the prover sends evaluations of $g(X) + \rho \cdot p(X)$ instead of $g(X)$ alone, where $g$ is the honest round polynomial. Since $p$ is random and independent of the witness, the combined round polynomial $g + \rho \cdot p$ is statistically indistinguishable from random.
 
-At the final check, the prover reveals $p(s^*)$ (the masking polynomial evaluated at the sumcheck's terminal point). The verifier checks:
+At the final check, the prover reveals $p(s^{*})$ (the masking polynomial evaluated at the sumcheck's terminal point). The verifier checks:
 
-$$Z_W(r, s^*) \cdot Z_x(s^*) + \rho \cdot p(s^*) = \text{current\_claim}$$
+$$Z_W(r, s^{*}) \cdot Z_x(s^{*}) + \rho \cdot p(s^{*}) = \text{current\_claim}$$
 
-Revealing $p(s^*)$ is safe because $p$ is purely random and carries no information about the witness. The degree of the combined polynomial is $\max(d_g, d_p) = 4$, so the number of evaluations per round is unchanged.
+Revealing $p(s^{*})$ is safe because $p$ is purely random and carries no information about the witness. The degree of the combined polynomial is $\max(d_g, d_p) = 4$, so the number of evaluations per round is unchanged.
 
 ### Step 6: tLookup (Non-Arithmetic Operations)
 
@@ -118,9 +118,9 @@ In the interactive setting (verifier sends fresh challenges), the prover cannot 
 
 The ZK property rests on three mechanisms:
 
-**1. Vanishing polynomial masking (witness hiding).** Each private polynomial $\tilde{f}$ is masked as $Z_f = \tilde{f} + \sum c_i \cdot X_i(1-X_i)$. At the sumcheck's random evaluation point $s^*$, the verifier sees $Z_f(s^*) = \tilde{f}(s^*) + \sum c_i \cdot s_i^*(1-s_i^*)$. The correction is a random linear combination of the $c_i$ values (which are unknown to the verifier), so $Z_f(s^*)$ is uniformly distributed and reveals nothing about $\tilde{f}(s^*)$. The number of masking coefficients must exceed the number of openings for this to hold (see Step 2).
+**1. Vanishing polynomial masking (witness hiding).** Each private polynomial $\tilde{f}$ is masked as $Z_f = \tilde{f} + \sum c_i \cdot X_i(1-X_i)$. At the sumcheck's random evaluation point $s^{*}$, the verifier sees $Z_f(s^{*}) = \tilde{f}(s^{*}) + \sum c_i \cdot s_i^{*}(1-s_i^{*})$. The correction is a random linear combination of the $c_i$ values (which are unknown to the verifier), so $Z_f(s^{*})$ is uniformly distributed and reveals nothing about $\tilde{f}(s^{*})$. The number of masking coefficients must exceed the number of openings for this to hold (see Step 2).
 
-**2. Sumcheck transcript masking ($g + \rho \cdot p$).** Without masking, the round polynomials sent during each sumcheck are deterministic functions of the witness and leak information. Adding $\rho \cdot p(X)$ (where $p$ is a random sum-of-univariates polynomial and $\rho$ is a verifier challenge) makes the round polynomials statistically indistinguishable from random (XZZ+19). The prover reveals $p(s^*)$ at the final check, which is safe because $p$ is independent of the witness.
+**2. Sumcheck transcript masking ($g + \rho \cdot p$).** Without masking, the round polynomials sent during each sumcheck are deterministic functions of the witness and leak information. Adding $\rho \cdot p(X)$ (where $p$ is a random sum-of-univariates polynomial and $\rho$ is a verifier challenge) makes the round polynomials statistically indistinguishable from random (XZZ+19). The prover reveals $p(s^{*})$ at the final check, which is safe because $p$ is independent of the witness.
 
 **3. BaseFold commitment hiding.** BaseFold commits via Merkle trees over salted evaluations. Openings reveal only the requested evaluation, not surrounding data. The Merkle root itself reveals nothing about the polynomial's values.
 
@@ -133,8 +133,8 @@ The ZK property rests on three mechanisms:
 | $\rho$ | Verifier's own challenge | No |
 | Round polynomials ($b$ rounds $\times$ 5 evals) | Prover sends $g + \rho \cdot p$ | No — masked by $\rho \cdot p$, statistically random |
 | Round challenges $\alpha_j$ | Verifier's own challenges | No |
-| $Z_W(r, s^*)$, $Z_x(s^*)$ | BaseFold openings | No — masked by vanishing polynomial corrections |
-| $p(s^*)$ | Prover reveals | No — random, independent of witness |
+| $Z_W(r, s^{*})$, $Z_x(s^{*})$ | BaseFold openings | No — masked by vanishing polynomial corrections |
+| $p(s^{*})$ | Prover reveals | No — random, independent of witness |
 | Merkle roots | BaseFold commitments | No — hash outputs, computationally hiding |
 
 **No cross-layer junction problem.** Unlike approaches that chain sumchecks (where the output of one sumcheck feeds as input to the next, forcing the verifier to learn intermediate evaluations), this design uses independent sumchecks bound by commitments. The verifier checks cross-layer consistency by comparing Merkle roots, not by inspecting polynomial evaluations.
