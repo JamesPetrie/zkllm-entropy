@@ -101,13 +101,47 @@ def lagrange_eval(evals, t):
 # ==================================================================
 # Vanishing polynomial masking
 # ==================================================================
+#
+# Each masking term X_i(1-X_i) is degree 2 and vanishes on {0,1}^k.
+# We need strictly more masking coefficients than the number of
+# openings (points where the verifier sees the masked value).
+#
+# With k variables we get k degree-2 terms. If k > num_openings,
+# we're fine. If not (e.g. k=2 with 2 openings for an intermediate
+# that appears in two sumchecks), we extend the data with random
+# blinding entries to add variables, keeping the degree at 2.
+#
+# Extending from k to k+1 variables doubles the data size (random
+# padding) and adds one sumcheck round. For realistic sizes (k=12+)
+# this is never needed — k already exceeds the number of openings.
 
-def make_masking_coeffs(k):
-    """Generate k random masking coefficients for vanishing polynomial."""
+def extend_for_masking(data, k, num_openings):
+    """
+    If k <= num_openings, extend data with random blinding entries
+    to get enough variables for ZK masking. Returns (extended_data, new_k).
+
+    The original data occupies the first half (extra variable = 0).
+    The second half is random blinding data.
+    """
+    while k <= num_openings:
+        # Double the data: original in first half, random in second half
+        blinding = [frand() for _ in range(len(data))]
+        data = data + blinding
+        k += 1
+    return data, k
+
+def make_masking_coeffs(k, num_openings=1):
+    """
+    Generate k masking coefficients (one per X_i(1-X_i) term).
+    Caller must ensure k > num_openings (via extend_for_masking if needed).
+    """
+    assert k > num_openings, \
+        f"Need k > num_openings for ZK, got k={k}, num_openings={num_openings}. " \
+        f"Use extend_for_masking first."
     return [frand() for _ in range(k)]
 
 def vanishing_correction(point, coeffs):
-    """Compute sum_i c_i * point_i * (1 - point_i). Vanishes on {0,1}^k."""
+    """Compute sum_i c_i * point_i * (1 - point_i). All terms are degree 2."""
     total = 0
     for i in range(min(len(coeffs), len(point))):
         term = fmul(point[i], fsub(1, point[i]))
@@ -301,23 +335,17 @@ def main():
     print("PQ-ZK PROTOTYPE: Two-layer matmul with committed masked intermediates")
     print("=" * 70)
 
-    # ---- Setup: two 4x4 layers ----
-    M, N = 4, 4
-    a = 2  # log2(M)
-    b = 2  # log2(N)
-    pM, pN = 4, 4
+    # ---- Setup: two 8x8 layers ----
+    # 8x8 gives k_vec=3 variables for vectors, so 3 degree-2 vanishing terms.
+    # Intermediates opened at 2 points need 3 > 2 coefficients — fits exactly.
+    M, N = 8, 8
+    a = 3  # log2(M)
+    b = 3  # log2(N)
+    pM, pN = 8, 8
 
-    W1 = [[2, 3, 1, 0],
-           [1, 0, 2, 1],
-           [4, 1, 3, 2],
-           [0, 2, 1, 3]]
-
-    W2 = [[1, 2, 0, 1],
-           [3, 1, 2, 0],
-           [0, 1, 3, 2],
-           [2, 0, 1, 1]]
-
-    x_vec = [1, 2, 3, 1]
+    W1 = [[random.randint(0, P-1) for _ in range(N)] for _ in range(M)]
+    W2 = [[random.randint(0, P-1) for _ in range(N)] for _ in range(M)]
+    x_vec = [random.randint(0, P-1) for _ in range(N)]
 
     # Forward pass
     y1 = matvec(W1, x_vec, M, N)
@@ -343,11 +371,15 @@ def main():
     k_W_mask = b  # only column variables (the ones summed over)
     k_vec = b     # vector variables
 
-    c_W1 = make_masking_coeffs(k_W_mask)
-    c_W2 = make_masking_coeffs(k_W_mask)
-    c_x  = make_masking_coeffs(k_vec)
-    c_y1 = make_masking_coeffs(k_vec)
-    c_y2 = make_masking_coeffs(k_vec)
+    # Weights are opened once (in one sumcheck), intermediates are opened twice
+    # (as output of one layer and input of the next). Need strictly more masking
+    # coefficients than openings. With k_vec=3 (8-element vectors) and 2 openings,
+    # we have 3 > 2 — sufficient with pure degree-2 terms, no extension needed.
+    c_W1 = make_masking_coeffs(k_W_mask, num_openings=1)
+    c_W2 = make_masking_coeffs(k_W_mask, num_openings=1)
+    c_x  = make_masking_coeffs(k_vec, num_openings=1)  # input: opened once
+    c_y1 = make_masking_coeffs(k_vec, num_openings=2)  # intermediate: opened twice!
+    c_y2 = make_masking_coeffs(k_vec, num_openings=1)  # final output: opened once
 
     # Verify masking preserves Boolean hypercube values
     k_W = a + b  # total W MLE variables
@@ -419,7 +451,7 @@ def main():
     print("\n  Step 5: Zero-knowledge analysis")
     print("\n    What the verifier learns:")
     print(f"      - y2 (public output): {y2}")
-    print(f"      - Model architecture: 2 layers, 4x4 (public)")
+    print(f"      - Model architecture: 2 layers, {M}x{N} (public)")
     print(f"      - 5 Merkle roots (random-looking hashes)")
     for layer, t in [("Layer 1", t1), ("Layer 2", t2)]:
         print(f"      - {layer}: Z_W(r,s*) = {t['learned']['Z_W(r, s*)']} (masked)")
@@ -445,6 +477,10 @@ def main():
     print(f"    Commitments: 5 Merkle roots (W1, W2, x, y1, y2)")
     print(f"    Openings: 2 per sumcheck × 2 layers = 4 total")
     print(f"    Cross-layer checks: 1 root equality")
+    print(f"\n    ZK masking coefficients:")
+    print(f"      W1, W2: {len(c_W1)} coeffs (k_col={b} vars, 1 opening)")
+    print(f"      x, y2:  {len(c_x)} coeffs (k_vec={b} vars, 1 opening)")
+    print(f"      y1:     {len(c_y1)} coeffs (k_vec={b} vars, 2 openings, need >2)")
 
     # ---- Step 7: Soundness check — try cheating ----
     print("\n  Step 7: Soundness test — prover tries to cheat")
@@ -452,7 +488,7 @@ def main():
     # Cheating prover: claims y1_fake instead of real y1
     y1_fake = [(y + 1) % P for y in y1]  # slightly wrong
     y1_fake_pad = pad_pow2(y1_fake, pM)
-    c_y1_fake = make_masking_coeffs(k_vec)
+    c_y1_fake = make_masking_coeffs(k_vec, num_openings=1)
 
     # Layer 1 with fake output: should fail
     print("\n    --- Fake Layer 1: claims y1_fake = W1*x ---")
