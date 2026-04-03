@@ -124,7 +124,7 @@ bench_commitment: $(BUILD)/bench/bench_commitment.o $(CU_OBJS) $(CPP_OBJS)
 # ── Standalone Goldilocks targets (no BLS12-381 dependency) ──────────────────
 GOLD_FLAG := -DUSE_GOLDILOCKS
 GOLD_SRCS := src/field/goldilocks.cu src/tensor/fr-tensor.cu src/proof/proof.cu \
-             src/proof/zk_mask.cu \
+             src/proof/zk_mask.cu src/proof/zk_sumcheck.cu \
              src/poly/polynomial.cu src/util/ioutils.cu src/poly/ntt.cu \
              src/commit/merkle.cu src/commit/fri.cu src/commit/fri_pcs.cu \
              src/zknn/zkrelu.cu src/zknn/zkfc.cu src/zknn/tlookup.cu \
@@ -186,6 +186,9 @@ gold_test_zkentropy: $(BUILD)/gold/test/test_zkentropy.o $(GOLD_OBJS)
 gold_test_zk_mask: $(BUILD)/gold/test/test_zk_mask.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
+gold_test_zk_sumcheck: $(BUILD)/gold/test/test_zk_sumcheck.o $(GOLD_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $^ -o $@
+
 gold_self-attn: $(BUILD)/gold/llm/self-attn.o $(GOLD_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $^ -o $@
 
@@ -241,7 +244,7 @@ clean:
 	rm -rf $(BUILD)
 	rm -f $(BLS_TARGETS) test_goldilocks test_gold_tensor test_ntt test_merkle \
 	      test_fri test_fri_pcs gold_zkllm_entropy gold_zkllm_entropy_timed \
-	      gold_test_zkargmax gold_test_zkentropy gold_test_zk_mask \
+	      gold_test_zkargmax gold_test_zkentropy gold_test_zk_mask gold_test_zk_sumcheck \
 	      gold_self-attn gold_ffn gold_rmsnorm \
 	      gold_skip-connection gold_commit-param bench_field gold_bench_field \
 	      gold_bench_matmul gold_rmsnorm_linear gold_post_attn gold_layer_server \
