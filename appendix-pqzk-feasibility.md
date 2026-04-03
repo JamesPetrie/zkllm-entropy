@@ -206,6 +206,152 @@ The per-operation design avoids Spartan's global sumcheck overhead ($\log_2(\tex
 
 5. **The $1.5\times$ estimate assumes the current sumcheck is purely degree-2.** Operations that already have degree 3 (e.g., tLookup's LogUp sumcheck) would increase to degree 5 with masking, a $6/4 = 1.5\times$ overhead — the same ratio. The overhead is consistent across operation types.
 
+## Protocol Pseudocode
+
+The following pseudocode corresponds to the prototype implementation in `docs/analysis/pqzk_prototype.py`.
+
+### Full Protocol (Multi-Layer Inference)
+
+```
+PROVER:
+  // Step 1: Forward pass
+  y[0] = x                                    // input
+  for ℓ = 1 to L:
+      y[ℓ] = W[ℓ] · y[ℓ-1]                   // (+ activations, skip connections, etc.)
+
+  // Step 2: Mask all private polynomials
+  for each private polynomial f with k variables, opened at m points:
+      assert k > m                             // ZK requirement
+      c_f = [random() for i in 1..k]           // masking coefficients
+      Z_f(X) = f_mle(X) + Σ_i c_f[i] · X_i(1-X_i)
+
+  // Step 3: Commit
+  for each masked polynomial Z_f:
+      commitment[f] = BaseFold.commit(Z_f)     // Merkle root
+  send all commitment roots to verifier
+
+  // Steps 4-5: Prove each layer
+  for ℓ = 1 to L:
+      run MASKED_SUMCHECK(W[ℓ], y[ℓ-1], y[ℓ])
+
+VERIFIER:
+  receive commitment roots
+  for ℓ = 1 to L:
+      verify MASKED_SUMCHECK for layer ℓ
+  check commitment[y[ℓ]] == commitment[x[ℓ+1]] for all ℓ  // cross-layer binding
+  check T_final == y_public(r)                              // final output
+```
+
+### Masked Sumcheck for $y = Wx$ (Single Layer)
+
+```
+MASKED_SUMCHECK(W_data, x_data, y_data, W_coeffs, x_coeffs, W_commit, x_commit):
+  // Setup
+  b = log2(cols)                               // number of sumcheck variables
+  d = 4                                        // degree per round (2+2 from masking)
+
+  V → P: r = [random() for i in 1..log2(rows)] // row challenge
+  P: T = y_mle(r)                              // claim
+  P → V: T
+
+  // g + ρ·p masking (XZZ+19)
+  P: p(X_1,...,X_b) = a_0 + Σ_i p_i(X_i)      // random, degree d per variable
+  P: P_sum = Σ_{c ∈ {0,1}^b} p(c)
+  P → V: P_sum
+  V → P: ρ = random()                          // masking challenge
+  P, V: current_claim = T + ρ · P_sum
+
+  // Sumcheck rounds
+  for j = 0 to b-1:
+      P: compute s(X) = Σ_{tail ∈ {0,1}^{b-j-1}}
+             [ Z_W(α_0,..,α_{j-1}, X, tail, r) · Z_x(α_0,..,α_{j-1}, X, tail)
+               + ρ · p(α_0,..,α_{j-1}, X, tail) ]
+      P → V: s(0), s(1), s(2), s(3), s(4)      // 5 evaluations (degree 4)
+      V: check s(0) + s(1) == current_claim
+      V → P: α_j = random()
+      P, V: current_claim = s(α_j)              // via Lagrange interpolation
+
+  // Final check
+  s* = (α_0, ..., α_{b-1})
+  P: open Z_W at (s*, r) via BaseFold → z_w
+  P: open Z_x at s* via BaseFold → z_x
+  P → V: z_w, z_x, p(s*)
+  V: check BaseFold openings against commitments
+  V: check z_w · z_x + ρ · p(s*) == current_claim
+```
+
+### Helper: Masked Evaluation
+
+```
+Z_f(point) = f_mle(point) + Σ_{i=1}^{k} c_i · point_i · (1 - point_i)
+```
+
+where $k = \min(\text{num\_coefficients}, \text{num\_variables})$ and coefficients only cover the sumcheck variables (not verifier-chosen variables like row indices).
+
+## Computational Complexity
+
+### Per-Sumcheck Cost (Single Matmul $y = Wx$, $M \times N$ matrix)
+
+Let $a = \log_2 M$ (row variables), $b = \log_2 N$ (column variables, summed over).
+
+**Prover cost per round.** At round $j$, the prover evaluates the round polynomial at 5 points ($X = 0, 1, 2, 3, 4$). For each point, it sums over $2^{b-j-1}$ Boolean tail assignments. Each inner iteration requires:
+
+- 2 MLE evaluations ($\tilde{W}$ and $\tilde{x}$ at the full point): $O(2^{a+b-j})$ and $O(2^{b-j})$ via folding
+- 2 vanishing corrections: $O(b)$ each (one multiply-add per masking coefficient)
+- 1 product $Z_W \cdot Z_x$: $O(1)$
+- 1 masking polynomial evaluation $p(\text{full\_c})$: $O(b \cdot d)$ where $d = 4$
+
+With folding (precomputing partial MLE sums), the dominant cost per round is $O(N)$ field operations for the MLE evaluations, matching the unmasked sumcheck. The masking adds $O(b)$ per inner iteration — negligible compared to the MLE cost.
+
+| Component | Cost per round | Rounds | Total |
+|---|---|---|---|
+| MLE evaluations (with folding) | $O(N)$ | $b$ | $O(N \cdot b) = O(N \log N)$ |
+| Vanishing corrections | $O(b \cdot N)$ | $b$ | $O(N \cdot b^2)$ |
+| Masking polynomial $p$ | $O(b \cdot d \cdot N)$ | $b$ | $O(N \cdot b^2 \cdot d)$ |
+| Lagrange interpolation (verifier) | $O(d^2)$ | $b$ | $O(b \cdot d^2)$ |
+| **Total prover** | | | $O(N \log N)$ field ops |
+| **Total verifier** | | | $O(b \cdot d)$ field ops (plus 2 BaseFold openings) |
+
+The $O(N \log N)$ prover cost is the same asymptotic complexity as the unmasked sumcheck. The constant factor increases by approximately $5/3$ from the degree increase (5 evaluation points instead of 3).
+
+### Per-Sumcheck Cost: Naive vs. Folded Implementation
+
+The prototype uses a naive implementation (recomputing MLEs from scratch at each round) for clarity. A production implementation would use **folding**: at each round, the MLE data arrays are halved by binding one variable to the challenge $\alpha_j$. This reduces the per-round cost from $O(N \cdot 2^{a})$ to $O(N)$:
+
+| Implementation | Cost per round | Total over $b$ rounds |
+|---|---|---|
+| Naive (prototype) | $O(5 \cdot 2^{b-j} \cdot 2^{a+b})$ | $O(M \cdot N^2)$ |
+| Folded (production) | $O(5 \cdot 2^{b-j})$ | $O(N)$ |
+
+### Commitment Cost (BaseFold)
+
+| Operation | Cost | Notes |
+|---|---|---|
+| Commit (per polynomial of size $N$) | $O(N)$ SHA-256 hashes | Merkle tree construction |
+| Open (per evaluation point) | $O(\log N)$ hashes + FRI queries | Merkle path + proximity proof |
+| Verify opening | $O(\log N)$ hashes | Merkle path check |
+
+### Full Inference (L-Layer Transformer)
+
+For a transformer with $L$ layers, hidden dimension $d$, FFN dimension $d_{ff}$, $h$ attention heads, head dimension $d_h$, sequence length $n$, and vocabulary size $V$:
+
+| Operation type | Count | Sumcheck size | Rounds per |
+|---|---|---|---|
+| FC layers (QKV, output, gate, up, down) | $\sim 7L$ | $n \times d$ to $n \times d_{ff}$ | $\log_2 d$ to $\log_2 d_{ff}$ |
+| Attention ($QK^T$, $\text{softmax} \cdot V$) | $2Lh$ | $n^2 \times d_h$ | $\log_2(n \cdot d_h)$ |
+| RMSNorm, skip connections | $\sim 4L$ | $n \times d$ | $\log_2 d$ |
+| Entropy (CDF lookup, log lookup) | $\sim 2n$ | $V$ to $n \times V$ | $\log_2 V$ |
+
+**Total field operations (prover):**
+
+$$\text{Prover cost} \approx \frac{5}{3} \times \text{current sumcheck cost}$$
+
+The $5/3$ factor is the ratio of evaluations per round (degree 4 vs. degree 2). The number of rounds, number of sumcheck instances, and the folded per-round cost are all unchanged.
+
+**Commitment cost:** One BaseFold commitment per intermediate polynomial. For $L = 32$ layers with $\sim$9 intermediates per layer plus entropy intermediates: $\sim$300 commitments, each over $O(n \cdot d)$ to $O(n \cdot d_{ff})$ elements. Total hashing: $O(L \cdot n \cdot d_{ff})$ SHA-256 operations.
+
+**Verifier cost:** Per sumcheck: $O(b)$ rounds $\times$ $O(d)$ Lagrange interpolation = $O(b \cdot d^2)$ field ops, plus 2 BaseFold opening verifications at $O(\log N)$ each. Total across all sumchecks: $O(\text{num\_sumchecks} \cdot \log N \cdot d^2)$ — seconds on a single CPU.
+
 ## Conclusion
 
 Post-quantum zero-knowledge inference verification is feasible with minimal overhead over the current proof system. By adding vanishing polynomial masking to hide intermediate evaluations and replacing Pedersen commitments with BaseFold (hash-based, post-quantum), the proof achieves both properties without restructuring the existing per-operation sumcheck pipeline. The sumcheck overhead is approximately $1.5\times$ from the degree increase, and the commitment cost decreases (Merkle trees vs. MSM). The main implementation work is integrating BaseFold as the polynomial commitment scheme and adding masking to each sumcheck invocation — both are modular changes to the existing codebase.
