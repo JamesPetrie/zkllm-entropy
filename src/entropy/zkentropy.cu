@@ -138,18 +138,31 @@ KERNEL void entropy_bit_extract_kernel(const Fr_t* vals, Fr_t* bits_b, uint bit,
     }
 }
 
+// ── Serialize IP sumcheck proof to Polynomial vector ────────────────────────
+// inner_product_sumcheck returns vector<Fr_t>: [3 values per round] + [a(u), b(u)]
+// Convert to Polynomials: one degree-2 poly per round + 2 constant polys for finals.
+
+static void serialize_ip_sumcheck(const vector<Fr_t>& ip_proof, uint num_rounds,
+                                   vector<Polynomial>& proof) {
+    for (uint i = 0; i < num_rounds; i++) {
+        proof.push_back(Polynomial({ip_proof[3*i], ip_proof[3*i+1], ip_proof[3*i+2]}));
+    }
+    // Finals: a(u) and b(u)
+    proof.push_back(Polynomial(ip_proof[3 * num_rounds]));
+    proof.push_back(Polynomial(ip_proof[3 * num_rounds + 1]));
+}
+
 // ── Bit-decomposition non-negativity proof ──────────────────────────────────
 // Emits proof elements: vals(u), then bits_b(u) for each bit plane.
 
 static void prove_nonneg(const FrTensor& vals, uint num_bits,
                           const vector<Fr_t>& u,
+                          const vector<Fr_t>& v_bin,
                           vector<FrTensor>& bit_planes,
-                          FrTensor& combined_error,
-                          uint& batch_idx,
-                          vector<Polynomial>& proof,
-                          vector<Fr_t>& challenges) {
+                          vector<Polynomial>& proof) {
     uint N = vals.size;
     uint blocks = (N + FrNumThread - 1) / FrNumThread;
+    uint log_size = v_bin.size();
 
     uint base = bit_planes.size();
     for (uint b = 0; b < num_bits; b++) {
@@ -175,29 +188,20 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
     if (recon != vals_u)
         throw std::runtime_error("prove_nonneg: bit reconstruction mismatch");
 
-    auto r = random_vec(num_bits);
-    challenges.insert(challenges.end(), r.begin(), r.end());
+    // Prove each bit plane is binary via IP sumcheck: <B, B-1> = 0
+    // If B is binary, B*(B-1) = 0 for every element, so the sum is 0.
+    FrTensor ones(N);
+    {
+        vector<Fr_t> ones_host(N, FR_FROM_INT(1));
+        cudaMemcpy(ones.gpu_data, ones_host.data(), N * sizeof(Fr_t), cudaMemcpyHostToDevice);
+    }
     for (uint b = 0; b < num_bits; b++) {
-        combined_error += (bit_planes[base + b] * bit_planes[base + b]
-                           - bit_planes[base + b]) * r[b];
+        FrTensor b_minus_1 = bit_planes[base + b] - ones;
+        auto ip_proof = inner_product_sumcheck(bit_planes[base + b], b_minus_1, v_bin);
+        serialize_ip_sumcheck(ip_proof, log_size, proof);
     }
-    batch_idx += num_bits;
 }
 
-
-// ── Serialize IP sumcheck proof to Polynomial vector ────────────────────────
-// inner_product_sumcheck returns vector<Fr_t>: [3 values per round] + [a(u), b(u)]
-// Convert to Polynomials: one degree-2 poly per round + 2 constant polys for finals.
-
-static void serialize_ip_sumcheck(const vector<Fr_t>& ip_proof, uint num_rounds,
-                                   vector<Polynomial>& proof) {
-    for (uint i = 0; i < num_rounds; i++) {
-        proof.push_back(Polynomial({ip_proof[3*i], ip_proof[3*i+1], ip_proof[3*i+2]}));
-    }
-    // Finals: a(u) and b(u)
-    proof.push_back(Polynomial(ip_proof[3 * num_rounds]));
-    proof.push_back(Polynomial(ip_proof[3 * num_rounds + 1]));
-}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -562,23 +566,17 @@ Fr_t zkConditionalEntropy::prove(
         FrTensor gap = total_win_vec - r_vec - FR_FROM_INT(1);
 
         vector<FrTensor> bit_planes;
-        FrTensor combined_error(T);
-        cudaMemset(combined_error.gpu_data, 0, T * sizeof(Fr_t));
-        uint batch_idx = 0;
+        auto v_bin = random_vec(ceilLog2(T));
+        challenges.insert(challenges.end(), v_bin.begin(), v_bin.end());
 
         std::cout << "    q range proof (" << q_bits << " bits)..." << std::endl;
-        prove_nonneg(q_vec, q_bits, u_qr, bit_planes, combined_error, batch_idx, proof, challenges);
+        prove_nonneg(q_vec, q_bits, u_qr, v_bin, bit_planes, proof);
 
         std::cout << "    r range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(r_vec, r_bits, u_qr, bit_planes, combined_error, batch_idx, proof, challenges);
+        prove_nonneg(r_vec, r_bits, u_qr, v_bin, bit_planes, proof);
 
         std::cout << "    gap range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(gap, r_bits, u_qr, bit_planes, combined_error, batch_idx, proof, challenges);
-
-        Fr_t ce_u = combined_error(u_qr);
-        proof.push_back(Polynomial(ce_u));
-        if (ce_u != FR_FROM_INT(0))
-            throw std::runtime_error("prove: batched binary check failed");
+        prove_nonneg(gap, r_bits, u_qr, v_bin, bit_planes, proof);
     }
 
     // ── 2f. Surprise log lookup proof ───────────────────────────────────────

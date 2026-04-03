@@ -168,7 +168,9 @@ struct ProofLayout {
     uint32_t nonneg_q_start;
     uint32_t nonneg_r_start;
     uint32_t nonneg_gap_start;
-    uint32_t ce_idx;
+    uint32_t bin_sc_q_start;  // start of binary sumchecks for q
+    uint32_t bin_sc_r_start;
+    uint32_t bin_sc_gap_start;
     uint32_t log_start;
     uint32_t log_total;
     uint32_t sum_start;
@@ -211,20 +213,27 @@ static ProofLayout compute_layout(const RawProof& p) {
     uint32_t extract_total = extract_rounds + 2 + 1;
     L.qr_start = L.extract_start + extract_total;
 
+    uint32_t logT = ceil_log2(T);
+    uint32_t bin_sc_per_plane = logT + 2;  // IP sumcheck: logT degree-2 polys + 2 finals
     L.nonneg_q_start = L.qr_start + 3;
     uint32_t nonneg_q = 1 + q_bits;
-    L.nonneg_r_start = L.nonneg_q_start + nonneg_q;
+    L.bin_sc_q_start = L.nonneg_q_start + nonneg_q;
+    uint32_t q_bin_total = q_bits * bin_sc_per_plane;
+    L.nonneg_r_start = L.bin_sc_q_start + q_bin_total;
     uint32_t nonneg_r = 1 + r_bits;
-    L.nonneg_gap_start = L.nonneg_r_start + nonneg_r;
+    L.bin_sc_r_start = L.nonneg_r_start + nonneg_r;
+    uint32_t r_bin_total = r_bits * bin_sc_per_plane;
+    L.nonneg_gap_start = L.bin_sc_r_start + r_bin_total;
     uint32_t nonneg_gap = 1 + r_bits;
-    L.ce_idx = L.nonneg_gap_start + nonneg_gap;
+    L.bin_sc_gap_start = L.nonneg_gap_start + nonneg_gap;
+    uint32_t gap_bin_total = r_bits * bin_sc_per_plane;
 
     uint32_t N_log = 1u << p.log_precision;
     uint32_t D_log = N_log * 2;
     while (D_log < T) D_log *= 2;
     uint32_t log_p1 = ceil_log2(D_log / N_log);
     uint32_t log_p2 = ceil_log2(N_log);
-    L.log_start = L.ce_idx + 1;
+    L.log_start = L.bin_sc_gap_start + gap_bin_total;
     L.log_total = log_p1 + log_p2 + 5;
 
     uint32_t T_padded = 1u << ceil_log2(T);
@@ -326,12 +335,13 @@ int main() {
         check(!verifier_accepts(corrupt), "corrupted r bit → BITDECOMP_r fails");
     }
 
-    // ── 9. Corrupt combined error ───────────────────────────────────────
+    // ── 9. Corrupt binary sumcheck round polynomial ────────────────────
     {
         RawProof p = base;
-        p.polys[L.ce_idx].evals[0] = FR_ONE;
+        // Corrupt first binary sumcheck round poly for q_vec bit 0
+        p.polys[L.bin_sc_q_start].evals[0] = FR_ONE;
         write_raw_proof(p, corrupt);
-        check(!verifier_accepts(corrupt), "nonzero combined_error → BINARY fails");
+        check(!verifier_accepts(corrupt), "corrupted binary sumcheck → BINARY fails");
     }
 
     // ── 10. Wrong entropy in header ─────────────────────────────────────

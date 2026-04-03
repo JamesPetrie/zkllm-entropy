@@ -529,10 +529,14 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
     uint32_t extract_rounds = ceil_log2(TV);
     uint32_t extract_total = extract_rounds + 2 + 1;
 
+    uint32_t logT = ceil_log2(T);
     uint32_t nonneg_q = 1 + q_bits;
     uint32_t nonneg_r = 1 + r_bits;
     uint32_t nonneg_gap = 1 + r_bits;
-    uint32_t qr_total = 3 + nonneg_q + nonneg_r + nonneg_gap + 1;
+    uint32_t bin_sc_per_plane = logT + 2;  // IP sumcheck: logT degree-2 polys + 2 finals
+    uint32_t total_bits = q_bits + r_bits + r_bits;
+    uint32_t qr_total = 3 + nonneg_q + nonneg_r + nonneg_gap
+                         + total_bits * bin_sc_per_plane;
 
     uint32_t log_phase1 = ceil_log2(D_log / N_log);
     uint32_t log_phase2 = ceil_log2(N_log);
@@ -553,8 +557,8 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
         printf("  Row-sum IP:     %u (rounds=%u, finals=2)\n", rowsum_total, rowsum_rounds);
         printf("  Extraction IP:  %u (rounds=%u, finals=2, wp=1)\n",
                extract_total, extract_rounds);
-        printf("  QR + nonneg:    %u (qr=3, q=%u, r=%u, gap=%u, ce=1)\n",
-               qr_total, nonneg_q, nonneg_r, nonneg_gap);
+        printf("  QR + nonneg:    %u (qr=3, q=%u, r=%u, gap=%u, bin_ip=%u*%u)\n",
+               qr_total, nonneg_q, nonneg_r, nonneg_gap, total_bits, bin_sc_per_plane);
         printf("  Log tLookup:    %u (phase1=%u, phase2=%u, finals=5)\n",
                log_total, log_phase1, log_phase2);
         printf("  Entropy sum IP: %u (rounds=%u, finals=2)\n", sum_total, sum_rounds);
@@ -590,7 +594,7 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
     std::vector<Fr_t> u_link;
     std::vector<Fr_t> u_t, u_v_rowsum;
     std::vector<Fr_t> u_ext, u_T_ext;
-    std::vector<Fr_t> u_qr, r_nonneg_q, r_nonneg_r, r_nonneg_gap;
+    std::vector<Fr_t> u_qr, v_bin;
     Fr_t log_r, log_alpha, log_beta;
     std::vector<Fr_t> log_u, log_v;
     std::vector<Fr_t> u_sum;
@@ -617,10 +621,8 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
         u_T_ext = cr.read_vec(ceil_log2(T));
 
         // 2e: QR + nonneg
-        u_qr         = cr.read_vec(ceil_log2(T));
-        r_nonneg_q   = cr.read_vec(q_bits);
-        r_nonneg_r   = cr.read_vec(r_bits);
-        r_nonneg_gap = cr.read_vec(r_bits);
+        u_qr  = cr.read_vec(ceil_log2(T));
+        v_bin = cr.read_vec(ceil_log2(T));
 
         // 2f: Log tLookup
         log_r     = cr.read_one();
@@ -748,9 +750,6 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
     // ── [B] Bit decomposition checks ────────────────────────────────────
     uint32_t nonneg_bits[3] = {q_bits, r_bits, r_bits};
     const char* nonneg_names[3] = {"q_vec", "r_vec", "gap"};
-    const std::vector<Fr_t>* nonneg_randoms[3] = {
-        &r_nonneg_q, &r_nonneg_r, &r_nonneg_gap
-    };
 
     for (int b = 0; b < 3; b++) {
         Fr_t vals_u = polys[idx].constant();
@@ -776,25 +775,65 @@ static std::vector<CheckResult> verify_v3(const ParsedProofV3& proof, bool verbo
                      nonneg_names[b], vals_u.val, recon.val, nonneg_bits[b]);
         }
         results.push_back({ok, std::string("BITDECOMP_") + nonneg_names[b], buf});
-    }
 
-    // ── [E] Combined binary error check ─────────────────────────────────
-    {
-        Fr_t ce_u = polys[idx].constant();
-        idx++;
-        bool ok = fr_eq(ce_u, FR_ZERO);
-        std::string detail;
-        if (ok) {
-            detail = "combined_error(u) == 0";
-            // Note: the verifier cannot cross-check combined_error from individual
-            // bit MLE evaluations because MLE(f^2, u) ≠ MLE(f, u)^2. The prover's
-            // combined_error tensor is the correct accumulation.
+        // Binary IP sumcheck per bit plane: proves <B, B-1> = 0
+        // If B is binary, every element satisfies B*(B-1)=0, so the sum is 0.
+        // The IP sumcheck finals are a(v)=B(v) and b(v)=(B-1)(v).
+        // Cross-check: b(v) = a(v) - 1 (since MLE(ones, v) = 1).
+        if (full) {
+            bool all_ok = true;
+            std::string fail_detail;
+            for (uint32_t bit = 0; bit < nonneg_bits[b]; bit++) {
+                char tag[64];
+                snprintf(tag, sizeof(tag), "BINARY_%s_bit%u", nonneg_names[b], bit);
+                // Replay IP sumcheck with initial claim 0
+                auto r = verify_ip_sumcheck_full(
+                    FR_ZERO, true, polys, idx, logT, v_bin, tag);
+                if (!r.ok) {
+                    all_ok = false;
+                    fail_detail = r.detail;
+                    idx += bin_sc_per_plane;
+                    // Skip remaining bits
+                    for (uint32_t rem = bit + 1; rem < nonneg_bits[b]; rem++)
+                        idx += bin_sc_per_plane;
+                    break;
+                }
+                // Cross-check finals: b(v) should equal a(v) - 1
+                Fr_t a_v = polys[idx + logT].constant();
+                Fr_t b_v = polys[idx + logT + 1].constant();
+                Fr_t expected_b = fr_sub(a_v, FR_ONE);
+                if (!fr_eq(b_v, expected_b)) {
+                    all_ok = false;
+                    char xbuf[256];
+                    snprintf(xbuf, sizeof(xbuf),
+                             "bit%u: b(v)=%lu != a(v)-1=%lu (a(v)=%lu)",
+                             bit, b_v.val, expected_b.val, a_v.val);
+                    fail_detail = xbuf;
+                    idx += bin_sc_per_plane;
+                    for (uint32_t rem = bit + 1; rem < nonneg_bits[b]; rem++)
+                        idx += bin_sc_per_plane;
+                    break;
+                }
+                idx += bin_sc_per_plane;
+            }
+            if (all_ok) {
+                char buf2[256];
+                snprintf(buf2, sizeof(buf2),
+                         "%s: all %u bit planes verified binary via IP sumcheck",
+                         nonneg_names[b], nonneg_bits[b]);
+                results.push_back({true, std::string("BINARY_") + nonneg_names[b], buf2});
+            } else {
+                results.push_back({false, std::string("BINARY_") + nonneg_names[b], fail_detail});
+            }
         } else {
-            char buf[128];
-            snprintf(buf, sizeof(buf), "combined_error(u) = %lu, expected 0", ce_u.val);
-            detail = buf;
+            // Structural mode: skip binary IP sumcheck polys
+            idx += nonneg_bits[b] * bin_sc_per_plane;
+            char buf2[256];
+            snprintf(buf2, sizeof(buf2),
+                     "%s: %u binary IP sumchecks skipped (structural mode)",
+                     nonneg_names[b], nonneg_bits[b]);
+            results.push_back({true, std::string("BINARY_") + nonneg_names[b], buf2});
         }
-        results.push_back({ok, "BINARY", detail});
     }
 
     // ── [LOG] Log tLookup verification ──────────────────────────────────
