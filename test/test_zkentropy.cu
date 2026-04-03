@@ -275,10 +275,12 @@ int main() {
             // Write commitments section
             uint32_t n_com = (uint32_t)commitments.size();
             f.write((char*)&n_com, sizeof(n_com));
+#ifdef USE_GOLDILOCKS
             for (const auto& com : commitments) {
                 f.write((char*)&com.root, sizeof(Hash256));
                 f.write((char*)&com.size, sizeof(uint32_t));
             }
+#endif
 
             // Write tokens section (public tokens for indicator binding)
             uint32_t n_tok = (uint32_t)tokens.size();
