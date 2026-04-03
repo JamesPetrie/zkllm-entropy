@@ -8,7 +8,7 @@ This repository forks [zkLLM](https://github.com/jvhs0706/zkllm-ccs2024) and add
 
 ## Summary
 
-We developed a zero-knowledge proof system that verifies LLM inference without requiring exact floating-point reproducibility. Instead of proving "the model produced exactly these tokens," we prove "at most H bits of hidden information could be encoded in this output." This handles real-world GPU non-determinism while still bounding covert channels like model weight exfiltration. Proof generation is ~3,000× slower than inference, but random sampling makes it practical.
+We developed a zero-knowledge proof system that verifies LLM inference without requiring exact floating-point reproducibility. Instead of proving "the model produced exactly these tokens," we prove "at most H bits of hidden information could be encoded in this output." This handles real-world GPU non-determinism while still bounding covert channels like model weight exfiltration. Proof generation is ~1,300× slower than FP16 inference (~125× vs FP32), but random sampling makes it practical.
 
 ### Applications
 
