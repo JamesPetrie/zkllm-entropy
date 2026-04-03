@@ -26,14 +26,6 @@ Fr_t operator/(const Fr_t& a, const Fr_t& b) {
     return gold_div(a, b);
 }
 
-bool operator==(const Fr_t& a, const Fr_t& b) {
-    return gold_eq(a, b);
-}
-
-bool operator!=(const Fr_t& a, const Fr_t& b) {
-    return !gold_eq(a, b);
-}
-
 Fr_t inv(const Fr_t& a) {
     if (a.val == 0) throw std::runtime_error("inverse of zero");
     return gold_inverse(a);
@@ -189,14 +181,6 @@ Fr_t inv(const Fr_t& a)
     cudaFree(a_cuda);
     cudaFree(c_cuda);
     return c;
-}
-
-bool operator==(const Fr_t& a, const Fr_t& b) {
-    return blstrs__scalar__Scalar_eq(a, b);
-}
-
-bool operator!=(const Fr_t& a, const Fr_t& b) {
-    return !blstrs__scalar__Scalar_eq(a, b);
 }
 
 #endif
