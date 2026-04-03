@@ -70,7 +70,7 @@ We compute Q(O | D) by recomputing token probabilities autoregressively and mult
 
 Taking the log gives the **estimated covert message capacity**, the sum of per-token surprisals:
 
-$$\hat{C}(O) = -\sum_{i=1}^{m} \log_2 \hat{q}(o_i; W, I, o_{<i})$$
+$$\hat{C}(O) = -\sum_{i=1}^{m} \log_2 \hat{q}(o_i; W, I, o_{\lt i})$$
 
 ### Handling hardware non-determinism
 
