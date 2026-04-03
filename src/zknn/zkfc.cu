@@ -84,6 +84,7 @@ vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y, bool zk_enabled)
     auto W_reduced = weights.partial_me(u_output, outputSize, 1);
     vector<Polynomial> proof;
 
+#ifdef USE_GOLDILOCKS
     if (zk_enabled) {
         // X (activations) is private → mask; W (weights) is public → no mask
         uint k = u_input.size();
@@ -97,7 +98,9 @@ vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y, bool zk_enabled)
         // For ZK, the final check is: za * zb + rho * p == final_claim
         // The verifier will check this; the prover just needs to ensure consistency.
         (void)final_claim;
-    } else {
+    } else
+#endif
+    {
         auto final_claim = zkip(claim, X_reduced, W_reduced, u_input, proof);
         auto claim_X = X.multi_dim_me({u_batch, u_input}, {batchSize, inputSize});
         auto claim_W = weights.multi_dim_me({u_input, u_output}, {inputSize, outputSize});
@@ -324,6 +327,7 @@ void zkFCStacked::prove(const vector<Fr_t>& u_num, const vector<Fr_t>& v_num, co
     auto X_reduced = X.partial_me(u_batch, batchSize, inputSize);
     auto W_reduced = W.partial_me(u_output, outputSize, 1);
 
+#ifdef USE_GOLDILOCKS
     if (zk_enabled) {
         // X (activations) is private → mask; W (weights) is public → no mask
         uint total_vars = u_num.size() + u_input.size();
@@ -335,7 +339,9 @@ void zkFCStacked::prove(const vector<Fr_t>& u_num, const vector<Fr_t>& v_num, co
         ZkIpResult result;
         zkip_stacked_zk(claim, X_reduced, W_reduced, u_num, u_input, v_num, num, inputSize,
                          mask_a, mask_b, tmask, rho, proof, result);
-    } else {
+    } else
+#endif
+    {
         auto final_claim = zkip_stacked(claim, X_reduced, W_reduced, u_num, u_input, v_num, num, inputSize, proof);
         auto opening = X.multi_dim_me({v_num, u_batch, u_input}, {num, batchSize, inputSize}) * W.multi_dim_me({v_num, u_input, u_output}, {num, inputSize, outputSize});
         if (final_claim != opening) throw std::runtime_error("final claim != opening");

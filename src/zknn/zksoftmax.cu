@@ -271,6 +271,7 @@ Fr_t zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, cons
     auto out_vec1 = V.partial_me(w_matmul_out, d, 1);
 
     Fr_t out_matmul_claim;
+#ifdef USE_GOLDILOCKS
     if (zk_enabled) {
         uint k_vars = v_matmul_out.size();
         auto mask_a = generate_vanishing_mask(k_vars);
@@ -280,7 +281,9 @@ Fr_t zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, cons
         Fr_t rho = random_vec(1)[0];
         ZkIpResult result;
         out_matmul_claim = zkip_zk(out_claim, out_vec0, out_vec1, v_matmul_out, mask_a, mask_b, tmask, rho, proof, result);
-    } else {
+    } else
+#endif
+    {
         out_matmul_claim = zkip(out_claim, out_vec0, out_vec1, v_matmul_out, proof);
     }
 
@@ -298,6 +301,7 @@ Fr_t zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, cons
     auto q = Q.partial_me(u_matmul_in, m, d);
     auto k = K.partial_me(w_matmul_in, n, d);
 
+#ifdef USE_GOLDILOCKS
     if (zk_enabled) {
         uint k_vars = v_matmul_in.size();
         auto mask_a = generate_vanishing_mask(k_vars);
@@ -307,7 +311,9 @@ Fr_t zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, cons
         Fr_t rho = random_vec(1)[0];
         ZkIpResult result;
         return zkip_zk(sm_in_claim, q, k, v_matmul_in, mask_a, mask_b, tmask, rho, proof, result);
-    } else {
+    } else
+#endif
+    {
         return zkip(sm_in_claim, q, k, v_matmul_in, proof);
     }
 }
@@ -330,6 +336,7 @@ Fr_t zkAttnStacked::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& 
     auto V_reduced = V.partial_me(w_matmul_out, d, 1);
 
     Fr_t out_matmul_claim;
+#ifdef USE_GOLDILOCKS
     if (zk_enabled) {
         uint total_vars = u_matmul_out_num.size() + v_matmul_out.size();
         auto mask_a = generate_vanishing_mask(total_vars);
@@ -340,7 +347,9 @@ Fr_t zkAttnStacked::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& 
         ZkIpResult result;
         out_matmul_claim = zkip_stacked_zk(out_claim, sm_out_reduced, V_reduced, u_matmul_out_num, v_matmul_out, v_matmul_out_num, num, n,
                                             mask_a, mask_b, tmask, rho, proof, result);
-    } else {
+    } else
+#endif
+    {
         out_matmul_claim = zkip_stacked(out_claim, sm_out_reduced, V_reduced, u_matmul_out_num, v_matmul_out, v_matmul_out_num, num, n, proof);
     }
 
@@ -359,6 +368,7 @@ Fr_t zkAttnStacked::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& 
     auto Q_reduced = Q.partial_me(u_matmul_in, m, d);
     auto K_reduced = K.partial_me(w_matmul_in, n, d);
 
+#ifdef USE_GOLDILOCKS
     if (zk_enabled) {
         uint total_vars = u_matmul_in_num.size() + v_matmul_in.size();
         auto mask_a = generate_vanishing_mask(total_vars);
@@ -369,7 +379,9 @@ Fr_t zkAttnStacked::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& 
         ZkIpResult result;
         return zkip_stacked_zk(sm_in_claim, Q_reduced, K_reduced, u_matmul_in_num, v_matmul_in, v_matmul_in_num, num, d,
                                 mask_a, mask_b, tmask, rho, proof, result);
-    } else {
+    } else
+#endif
+    {
         return zkip_stacked(sm_in_claim, Q_reduced, K_reduced, u_matmul_in_num, v_matmul_in, v_matmul_in_num, num, d, proof);
     }
 }

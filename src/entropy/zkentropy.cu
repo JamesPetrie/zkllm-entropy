@@ -152,6 +152,7 @@ static void serialize_ip_sumcheck(const vector<Fr_t>& ip_proof, uint num_rounds,
     proof.push_back(Polynomial(ip_proof[3 * num_rounds + 1]));
 }
 
+#ifdef USE_GOLDILOCKS
 // ── Serialize ZK IP sumcheck proof to Polynomial vector ─────────────────────
 // inner_product_sumcheck_zk returns vector<Fr_t>: [5 evals per round] + [za, zb, p]
 // Convert to Polynomials: one degree-4 poly per round + 3 constant polys for finals.
@@ -168,6 +169,7 @@ static void serialize_ip_sumcheck_zk(const vector<Fr_t>& ip_proof, uint num_roun
     proof.push_back(Polynomial(ip_proof[5 * num_rounds + 1]));
     proof.push_back(Polynomial(ip_proof[5 * num_rounds + 2]));
 }
+#endif // USE_GOLDILOCKS (serialize_ip_sumcheck_zk)
 
 // ── Bit-decomposition non-negativity proof ──────────────────────────────────
 // Emits proof elements: vals(u), then bits_b(u) for each bit plane.
@@ -215,6 +217,7 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
     }
     for (uint b = 0; b < num_bits; b++) {
         FrTensor b_minus_1 = bit_planes[base + b] - ones;
+#ifdef USE_GOLDILOCKS
         if (zk_enabled) {
             // Both operands are private (derived from private data)
             auto mask_a = generate_vanishing_mask(log_size);
@@ -223,7 +226,9 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
             Fr_t rho = random_vec(1)[0];
             auto ip_proof = inner_product_sumcheck_zk(bit_planes[base + b], b_minus_1, v_bin, mask_a, mask_b, tmask, rho);
             serialize_ip_sumcheck_zk(ip_proof, log_size, proof);
-        } else {
+        } else
+#endif
+        {
             auto ip_proof = inner_product_sumcheck(bit_planes[base + b], b_minus_1, v_bin);
             serialize_ip_sumcheck(ip_proof, log_size, proof);
         }
@@ -537,6 +542,7 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_v = random_vec(ceilLog2(V));
         challenges.insert(challenges.end(), u_v.begin(), u_v.end());
+#ifdef USE_GOLDILOCKS
         if (zk_enabled) {
             auto mask_a = generate_vanishing_mask(ceilLog2(V));
             ZkMaskConfig mask_b;  // ones_V is public — no masking
@@ -545,7 +551,9 @@ Fr_t zkConditionalEntropy::prove(
             Fr_t rho = random_vec(1)[0];
             auto ip_rowsum = inner_product_sumcheck_zk(wp_partial, ones_V, u_v, mask_a, mask_b, tmask, rho);
             serialize_ip_sumcheck_zk(ip_rowsum, ceilLog2(V), proof);
-        } else {
+        } else
+#endif
+        {
             auto ip_rowsum = inner_product_sumcheck(wp_partial, ones_V, u_v);
             serialize_ip_sumcheck(ip_rowsum, ceilLog2(V), proof);
         }
@@ -568,6 +576,7 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_ext = random_vec(ceilLog2(TV));
         challenges.insert(challenges.end(), u_ext.begin(), u_ext.end());
+#ifdef USE_GOLDILOCKS
         if (zk_enabled) {
             auto mask_a = generate_vanishing_mask(ceilLog2(TV));
             ZkMaskConfig mask_b;  // indicator is public — no masking
@@ -576,7 +585,9 @@ Fr_t zkConditionalEntropy::prove(
             Fr_t rho = random_vec(1)[0];
             auto ip_extract = inner_product_sumcheck_zk(win_probs_all, indicator, u_ext, mask_a, mask_b, tmask, rho);
             serialize_ip_sumcheck_zk(ip_extract, ceilLog2(TV), proof);
-        } else {
+        } else
+#endif
+        {
             auto ip_extract = inner_product_sumcheck(win_probs_all, indicator, u_ext);
             serialize_ip_sumcheck(ip_extract, ceilLog2(TV), proof);
         }
@@ -660,6 +671,7 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_sum = random_vec(ceilLog2(T_padded));
         challenges.insert(challenges.end(), u_sum.begin(), u_sum.end());
+#ifdef USE_GOLDILOCKS
         if (zk_enabled) {
             auto mask_a = generate_vanishing_mask(ceilLog2(T_padded));
             ZkMaskConfig mask_b;  // ones_T is public — no masking
@@ -668,7 +680,9 @@ Fr_t zkConditionalEntropy::prove(
             Fr_t rho = random_vec(1)[0];
             auto ip_sum = inner_product_sumcheck_zk(surprise_sum_input, ones_T, u_sum, mask_a, mask_b, tmask, rho);
             serialize_ip_sumcheck_zk(ip_sum, ceilLog2(T_padded), proof);
-        } else {
+        } else
+#endif
+        {
             auto ip_sum = inner_product_sumcheck(surprise_sum_input, ones_T, u_sum);
             serialize_ip_sumcheck(ip_sum, ceilLog2(T_padded), proof);
         }
