@@ -64,4 +64,18 @@ std::vector<Fr_t> inner_product_sumcheck_zk(
     const ZkMaskConfig& mask_a, const ZkMaskConfig& mask_b,
     const ZkTranscriptMask& tmask, Fr_t rho);
 
+// ── ZK stacked inner product sumcheck ──────────────────────────────────────
+// Degree-4 masked version of zkip_stacked. Operates on A (N×D), B (N×D)
+// tensors with separate challenge vectors for N and D dimensions.
+// Falls back to zkip_zk when the N dimension is exhausted.
+Fr_t zkip_stacked_zk(
+    const Fr_t& claim,
+    const FrTensor& A, const FrTensor& B,
+    const std::vector<Fr_t>& uN, const std::vector<Fr_t>& uD,
+    const std::vector<Fr_t> vN, uint N, uint D,
+    const ZkMaskConfig& mask_a, const ZkMaskConfig& mask_b,
+    const ZkTranscriptMask& tmask, Fr_t rho,
+    std::vector<Polynomial>& proof,
+    ZkIpResult& result);
+
 #endif // ZK_SUMCHECK_CUH

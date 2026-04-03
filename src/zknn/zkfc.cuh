@@ -13,6 +13,8 @@
 #include "commit/commitment.cuh"
 #endif
 #include "poly/polynomial.cuh"
+#include "proof/zk_sumcheck.cuh"
+#include "proof/zk_mask.cuh"
 
 
 
@@ -35,7 +37,7 @@ public:
     FrTensor operator()(const FrTensor& X) const;
     // void prove(const FrTensor& X, const FrTensor& Z, Commitment& generators) const;
 
-    vector<Claim> prove(const FrTensor& X, const FrTensor& Y) const;
+    vector<Claim> prove(const FrTensor& X, const FrTensor& Y, bool zk_enabled = false) const;
 
     static zkFC from_float_gpu_ptr (uint input_size, uint output_size, unsigned long scaling_factor, float* weight_ptr, float* bias_ptr);
     static zkFC from_float_gpu_ptr (uint input_size, uint output_size, unsigned long scaling_factor, float* weight_ptr);
@@ -58,9 +60,9 @@ class zkFCStacked {
 
     zkFCStacked(bool has_bias, uint num, uint batch_size, uint input_size, uint output_size, const vector <zkFC>& layers, const vector <FrTensor>& Xs, const vector <FrTensor>& Ys);
     
-    void prove(vector<Polynomial>& proof) const;
+    void prove(vector<Polynomial>& proof, bool zk_enabled = false) const;
 
-    void prove(const vector<Fr_t>& u_num, const vector<Fr_t>& v_num, const vector<Fr_t>& u_batch, const vector<Fr_t>& u_input, const vector<Fr_t>& u_output, vector<Polynomial>& proof) const;
+    void prove(const vector<Fr_t>& u_num, const vector<Fr_t>& v_num, const vector<Fr_t>& u_batch, const vector<Fr_t>& u_input, const vector<Fr_t>& u_output, vector<Polynomial>& proof, bool zk_enabled = false) const;
 };
 
 // TODO: move this to somewhere else

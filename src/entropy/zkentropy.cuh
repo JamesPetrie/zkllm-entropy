@@ -11,6 +11,8 @@ struct FriPcsCommitment { uint32_t stub[10]; };
 #include "zknn/zklog.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
+#include "proof/zk_sumcheck.cuh"
+#include "proof/zk_mask.cuh"
 #include "poly/polynomial.cuh"
 
 // Zero-knowledge conditional entropy calculator (batched).
@@ -89,7 +91,8 @@ public:
                vector<Polynomial>& proof,
                vector<Claim>& claims,
                vector<Fr_t>& challenges,
-               vector<FriPcsCommitment>& commitments);
+               vector<FriPcsCommitment>& commitments,
+               bool zk_enabled = false);
 
     // ---- Legacy per-position interface (kept for test compatibility) --------
 
@@ -104,7 +107,8 @@ public:
                Fr_t claimed_entropy, vector<Polynomial>& proof,
                vector<Claim>& claims,
                vector<Fr_t>& challenges,
-               vector<FriPcsCommitment>& commitments);
+               vector<FriPcsCommitment>& commitments,
+               bool zk_enabled = false);
 };
 
 #endif

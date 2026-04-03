@@ -261,31 +261,55 @@ vector<Claim> zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor
 Fr_t zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
         const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
-        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out, 
-        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
+        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out,
+        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
         const vector<Fr_t>& v_matmul_in,
-        vector<Polynomial>& proof)
+        vector<Polynomial>& proof, bool zk_enabled)
 {
     auto out_claim = out.multi_dim_me({u_matmul_out, w_matmul_out}, {m, d});
     auto out_vec0 = sm_out.partial_me(u_matmul_out, m, n);
     auto out_vec1 = V.partial_me(w_matmul_out, d, 1);
-    auto out_matmul_claim = zkip(out_claim, out_vec0, out_vec1, v_matmul_out, proof);
 
-    
+    Fr_t out_matmul_claim;
+    if (zk_enabled) {
+        uint k_vars = v_matmul_out.size();
+        auto mask_a = generate_vanishing_mask(k_vars);
+        ZkMaskConfig mask_b;
+        mask_b.enabled = false;
+        auto tmask = generate_transcript_mask(k_vars, 4);
+        Fr_t rho = random_vec(1)[0];
+        ZkIpResult result;
+        out_matmul_claim = zkip_zk(out_claim, out_vec0, out_vec1, v_matmul_out, mask_a, mask_b, tmask, rho, proof, result);
+    } else {
+        out_matmul_claim = zkip(out_claim, out_vec0, out_vec1, v_matmul_out, proof);
+    }
 
     auto V_claim = V.multi_dim_me({v_matmul_out, w_matmul_out}, {n, d});
     auto sm_out_claim = sm_out.multi_dim_me({u_matmul_out, v_matmul_out}, {m, n});
 
-    if (out_matmul_claim != V_claim * sm_out_claim) throw std::runtime_error("out_matmul_claim is not correct");
+    if (!zk_enabled && out_matmul_claim != V_claim * sm_out_claim)
+        throw std::runtime_error("out_matmul_claim is not correct");
 
     auto sm_in_claim = zkSoftmax::prove(sm_out, sm_in, sm_shift, sm_in_shifted, sm_in_segments, sm_out_segments, sm_m_segments,
         concatenate<Fr_t>({v_matmul_out, u_matmul_out}), v_sm, r_seg, alpha_seg, beta_seg, proof);
 
     vector<Fr_t> u_matmul_in (v_sm.end() - ceilLog2(m), v_sm.end());
-    vector<Fr_t> w_matmul_in (v_sm.begin(), v_sm.end() - ceilLog2(m)); 
+    vector<Fr_t> w_matmul_in (v_sm.begin(), v_sm.end() - ceilLog2(m));
     auto q = Q.partial_me(u_matmul_in, m, d);
-    auto k = K.partial_me(w_matmul_in, n, d); // TRANSPOSE!!! Es correcto!
-    return zkip(sm_in_claim, q, k, v_matmul_in, proof);
+    auto k = K.partial_me(w_matmul_in, n, d);
+
+    if (zk_enabled) {
+        uint k_vars = v_matmul_in.size();
+        auto mask_a = generate_vanishing_mask(k_vars);
+        ZkMaskConfig mask_b;
+        mask_b.enabled = false;
+        auto tmask = generate_transcript_mask(k_vars, 4);
+        Fr_t rho = random_vec(1)[0];
+        ZkIpResult result;
+        return zkip_zk(sm_in_claim, q, k, v_matmul_in, mask_a, mask_b, tmask, rho, proof, result);
+    } else {
+        return zkip(sm_in_claim, q, k, v_matmul_in, proof);
+    }
 }
 
 zkAttnStacked::zkAttnStacked(uint num, unsigned long sf_Q, unsigned long sf_K, const vector<uint>& bs, uint L, uint M, const vector<double>& thetas, uint m, uint n, uint d, uint E): 
@@ -295,29 +319,57 @@ Fr_t zkAttnStacked::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& 
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
         const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
         const vector<Fr_t>& u_matmul_out_num, const vector<Fr_t>& v_matmul_out_num,
-        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out, 
-        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
+        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out,
+        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
         const vector<Fr_t>& v_matmul_in_num, const vector<Fr_t>& v_matmul_in,
-        vector<Polynomial>& proof )
+        vector<Polynomial>& proof, bool zk_enabled)
 {
     auto out_claim = out.multi_dim_me({u_matmul_out_num, u_matmul_out, w_matmul_out}, {num, m, d});
-    
+
     auto sm_out_reduced = sm_out.partial_me(u_matmul_out, m, n);
     auto V_reduced = V.partial_me(w_matmul_out, d, 1);
-    auto out_matmul_claim = zkip_stacked(out_claim, sm_out_reduced, V_reduced, u_matmul_out_num, v_matmul_out, v_matmul_out_num, num, n, proof);
+
+    Fr_t out_matmul_claim;
+    if (zk_enabled) {
+        uint total_vars = u_matmul_out_num.size() + v_matmul_out.size();
+        auto mask_a = generate_vanishing_mask(total_vars);
+        ZkMaskConfig mask_b;
+        mask_b.enabled = false;
+        auto tmask = generate_transcript_mask(total_vars, 4);
+        Fr_t rho = random_vec(1)[0];
+        ZkIpResult result;
+        out_matmul_claim = zkip_stacked_zk(out_claim, sm_out_reduced, V_reduced, u_matmul_out_num, v_matmul_out, v_matmul_out_num, num, n,
+                                            mask_a, mask_b, tmask, rho, proof, result);
+    } else {
+        out_matmul_claim = zkip_stacked(out_claim, sm_out_reduced, V_reduced, u_matmul_out_num, v_matmul_out, v_matmul_out_num, num, n, proof);
+    }
 
     auto V_claim = V.multi_dim_me({v_matmul_out_num, v_matmul_out, w_matmul_out}, {num, n, d});
     auto sm_out_claim = sm_out.multi_dim_me({v_matmul_out_num, u_matmul_out, v_matmul_out}, {num, m, n});
 
-    if (out_matmul_claim != V_claim * sm_out_claim) throw std::runtime_error("out_matmul_claim is not correct");
+    if (!zk_enabled && out_matmul_claim != V_claim * sm_out_claim)
+        throw std::runtime_error("out_matmul_claim is not correct");
 
     auto sm_in_claim = zkSoftmax::prove(sm_out, sm_in, sm_shift, sm_in_shifted, sm_in_segments, sm_out_segments, sm_m_segments,
         concatenate<Fr_t>({v_matmul_out, u_matmul_out, v_matmul_out_num}), v_sm, r_seg, alpha_seg, beta_seg, proof);
 
     vector<Fr_t> u_matmul_in_num (v_sm.end() - ceilLog2(num), v_sm.end());
     vector<Fr_t> u_matmul_in (v_sm.end() - ceilLog2(num) - ceilLog2(m), v_sm.end() - ceilLog2(num));
-    vector<Fr_t> w_matmul_in (v_sm.begin(), v_sm.end() - ceilLog2(num) - ceilLog2(m)); 
+    vector<Fr_t> w_matmul_in (v_sm.begin(), v_sm.end() - ceilLog2(num) - ceilLog2(m));
     auto Q_reduced = Q.partial_me(u_matmul_in, m, d);
     auto K_reduced = K.partial_me(w_matmul_in, n, d);
-    return zkip_stacked(sm_in_claim, Q_reduced, K_reduced, u_matmul_in_num, v_matmul_in, v_matmul_in_num, num, d, proof);
+
+    if (zk_enabled) {
+        uint total_vars = u_matmul_in_num.size() + v_matmul_in.size();
+        auto mask_a = generate_vanishing_mask(total_vars);
+        ZkMaskConfig mask_b;
+        mask_b.enabled = false;
+        auto tmask = generate_transcript_mask(total_vars, 4);
+        Fr_t rho = random_vec(1)[0];
+        ZkIpResult result;
+        return zkip_stacked_zk(sm_in_claim, Q_reduced, K_reduced, u_matmul_in_num, v_matmul_in, v_matmul_in_num, num, d,
+                                mask_a, mask_b, tmask, rho, proof, result);
+    } else {
+        return zkip_stacked(sm_in_claim, Q_reduced, K_reduced, u_matmul_in_num, v_matmul_in, v_matmul_in_num, num, d, proof);
+    }
 }

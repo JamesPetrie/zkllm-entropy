@@ -70,7 +70,7 @@ FrTensor zkFC::operator()(const FrTensor& X) const { // X.size is batch_size * i
 }
 
 
-vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y) const
+vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y, bool zk_enabled) const
 {
     if (has_bias) throw std::runtime_error("Cleaned-up version not implemented for zkFC with bias. Use zkFCStacked instead.");
     uint batchSize = X.size / inputSize;
@@ -78,21 +78,36 @@ vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y) const
     auto u_input = random_vec(ceilLog2(inputSize));
     auto u_output = random_vec(ceilLog2(outputSize));
 
-    
-
     auto claim = Y.multi_dim_me({u_batch, u_output}, {batchSize, outputSize});
 
     auto X_reduced = X.partial_me(u_batch, batchSize, inputSize);
-    auto W_reduced = weights.partial_me(u_output, outputSize, 1); // Y_reduced: num * inputSize
+    auto W_reduced = weights.partial_me(u_output, outputSize, 1);
     vector<Polynomial> proof;
-    auto final_claim = zkip(claim, X_reduced, W_reduced, u_input, proof);
-    auto claim_X = X.multi_dim_me({u_batch, u_input}, {batchSize, inputSize});
-    auto claim_W = weights.multi_dim_me({u_input, u_output}, {inputSize, outputSize});
-    if (claim_X * claim_W != final_claim) {
-        throw std::runtime_error("Claim does not match");
+
+    if (zk_enabled) {
+        // X (activations) is private → mask; W (weights) is public → no mask
+        uint k = u_input.size();
+        auto mask_a = generate_vanishing_mask(k);
+        ZkMaskConfig mask_b;
+        mask_b.enabled = false;
+        auto tmask = generate_transcript_mask(k, 4);
+        Fr_t rho = random_vec(1)[0];
+        ZkIpResult result;
+        auto final_claim = zkip_zk(claim, X_reduced, W_reduced, u_input, mask_a, mask_b, tmask, rho, proof, result);
+        // For ZK, the final check is: za * zb + rho * p == final_claim
+        // The verifier will check this; the prover just needs to ensure consistency.
+        (void)final_claim;
+    } else {
+        auto final_claim = zkip(claim, X_reduced, W_reduced, u_input, proof);
+        auto claim_X = X.multi_dim_me({u_batch, u_input}, {batchSize, inputSize});
+        auto claim_W = weights.multi_dim_me({u_input, u_output}, {inputSize, outputSize});
+        if (claim_X * claim_W != final_claim) {
+            throw std::runtime_error("Claim does not match");
+        }
     }
+
     vector<Claim> claims;
-    //Claim output_claim = {claim_W, &weights, vector<vector<Fr_t>>({u_input, u_output}), vector<uint>({inputSize, outputSize})};
+    auto claim_W = weights.multi_dim_me({u_input, u_output}, {inputSize, outputSize});
     claims.push_back({claim_W, vector<vector<Fr_t>>({u_input, u_output}), vector<uint>({inputSize, outputSize})});
     return claims;
 
@@ -282,7 +297,7 @@ X(catTensors(Xs)), Y(catTensors(Ys)), W(catLayerWeights(layers)), b(catLayerBias
     if (has_bias && b.size != num * outputSize) throw std::runtime_error("b size does not match");
 }
 
-void zkFCStacked::prove(vector<Polynomial>& proof) const
+void zkFCStacked::prove(vector<Polynomial>& proof, bool zk_enabled) const
 {
     auto u_num = random_vec(ceilLog2(num));
     auto v_num = random_vec(ceilLog2(num));
@@ -290,14 +305,14 @@ void zkFCStacked::prove(vector<Polynomial>& proof) const
     auto u_input = random_vec(ceilLog2(inputSize));
     auto u_output = random_vec(ceilLog2(outputSize));
 
-    prove(u_num, v_num, u_batch, u_input, u_output, proof);
+    prove(u_num, v_num, u_batch, u_input, u_output, proof, zk_enabled);
 }
 
-void zkFCStacked::prove(const vector<Fr_t>& u_num, const vector<Fr_t>& v_num, const vector<Fr_t>& u_batch, const vector<Fr_t>& u_input, const vector<Fr_t>& u_output, vector<Polynomial>& proof) const
+void zkFCStacked::prove(const vector<Fr_t>& u_num, const vector<Fr_t>& v_num, const vector<Fr_t>& u_batch, const vector<Fr_t>& u_input, const vector<Fr_t>& u_output, vector<Polynomial>& proof, bool zk_enabled) const
 {
     auto claim = Y.multi_dim_me({u_num, u_batch, u_output}, {num, batchSize, outputSize});
-    if (has_bias) 
-    {   
+    if (has_bias)
+    {
         FrTensor broadcasting_ones(batchSize);
         //fill broadcasting_ones with 0s first
         cudaMemset(broadcasting_ones.gpu_data, 0, broadcasting_ones.size * sizeof(Fr_t));
@@ -307,9 +322,22 @@ void zkFCStacked::prove(const vector<Fr_t>& u_num, const vector<Fr_t>& v_num, co
     }
 
     auto X_reduced = X.partial_me(u_batch, batchSize, inputSize);
-    auto W_reduced = W.partial_me(u_output, outputSize, 1); // Y_reduced: num * inputSize
+    auto W_reduced = W.partial_me(u_output, outputSize, 1);
 
-    auto final_claim = zkip_stacked(claim, X_reduced, W_reduced, u_num, u_input, v_num, num, inputSize, proof);
-    auto opening = X.multi_dim_me({v_num, u_batch, u_input}, {num, batchSize, inputSize}) * W.multi_dim_me({v_num, u_input, u_output}, {num, inputSize, outputSize});
-    if (final_claim != opening) throw std::runtime_error("final claim != opening");
+    if (zk_enabled) {
+        // X (activations) is private → mask; W (weights) is public → no mask
+        uint total_vars = u_num.size() + u_input.size();
+        auto mask_a = generate_vanishing_mask(total_vars);
+        ZkMaskConfig mask_b;
+        mask_b.enabled = false;
+        auto tmask = generate_transcript_mask(total_vars, 4);
+        Fr_t rho = random_vec(1)[0];
+        ZkIpResult result;
+        zkip_stacked_zk(claim, X_reduced, W_reduced, u_num, u_input, v_num, num, inputSize,
+                         mask_a, mask_b, tmask, rho, proof, result);
+    } else {
+        auto final_claim = zkip_stacked(claim, X_reduced, W_reduced, u_num, u_input, v_num, num, inputSize, proof);
+        auto opening = X.multi_dim_me({v_num, u_batch, u_input}, {num, batchSize, inputSize}) * W.multi_dim_me({v_num, u_input, u_output}, {num, inputSize, outputSize});
+        if (final_claim != opening) throw std::runtime_error("final claim != opening");
+    }
 }

@@ -40,10 +40,10 @@ class zkAttn : public zkSoftmax {
     Fr_t prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
         const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
-        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out, 
-        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
+        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out,
+        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
         const vector<Fr_t>& v_matmul_in,
-        vector<Polynomial>& proof);
+        vector<Polynomial>& proof, bool zk_enabled = false);
 
     vector<Claim> prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
@@ -58,10 +58,10 @@ class zkAttnStacked : public zkAttn {
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
         const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
         const vector<Fr_t>& u_matmul_out_num, const vector<Fr_t>& v_matmul_out_num,
-        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out, 
-        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
+        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out,
+        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
         const vector<Fr_t>& v_matmul_in_num, const vector<Fr_t>& v_matmul_in,
-        vector<Polynomial>& proof );
+        vector<Polynomial>& proof, bool zk_enabled = false);
 
     vector<Claim> prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,

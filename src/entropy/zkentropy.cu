@@ -152,6 +152,23 @@ static void serialize_ip_sumcheck(const vector<Fr_t>& ip_proof, uint num_rounds,
     proof.push_back(Polynomial(ip_proof[3 * num_rounds + 1]));
 }
 
+// ── Serialize ZK IP sumcheck proof to Polynomial vector ─────────────────────
+// inner_product_sumcheck_zk returns vector<Fr_t>: [5 evals per round] + [za, zb, p]
+// Convert to Polynomials: one degree-4 poly per round + 3 constant polys for finals.
+
+static void serialize_ip_sumcheck_zk(const vector<Fr_t>& ip_proof, uint num_rounds,
+                                      vector<Polynomial>& proof) {
+    for (uint i = 0; i < num_rounds; i++) {
+        vector<Fr_t> evals(5);
+        for (uint t = 0; t < 5; t++) evals[t] = ip_proof[5*i + t];
+        proof.push_back(Polynomial::from_evaluations(evals));
+    }
+    // Finals: za, zb, p(s*)
+    proof.push_back(Polynomial(ip_proof[5 * num_rounds]));
+    proof.push_back(Polynomial(ip_proof[5 * num_rounds + 1]));
+    proof.push_back(Polynomial(ip_proof[5 * num_rounds + 2]));
+}
+
 // ── Bit-decomposition non-negativity proof ──────────────────────────────────
 // Emits proof elements: vals(u), then bits_b(u) for each bit plane.
 
@@ -159,7 +176,8 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
                           const vector<Fr_t>& u,
                           const vector<Fr_t>& v_bin,
                           vector<FrTensor>& bit_planes,
-                          vector<Polynomial>& proof) {
+                          vector<Polynomial>& proof,
+                          bool zk_enabled = false) {
     uint N = vals.size;
     uint blocks = (N + FrNumThread - 1) / FrNumThread;
     uint log_size = v_bin.size();
@@ -197,8 +215,18 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
     }
     for (uint b = 0; b < num_bits; b++) {
         FrTensor b_minus_1 = bit_planes[base + b] - ones;
-        auto ip_proof = inner_product_sumcheck(bit_planes[base + b], b_minus_1, v_bin);
-        serialize_ip_sumcheck(ip_proof, log_size, proof);
+        if (zk_enabled) {
+            // Both operands are private (derived from private data)
+            auto mask_a = generate_vanishing_mask(log_size);
+            auto mask_b = generate_vanishing_mask(log_size);
+            auto tmask = generate_transcript_mask(log_size, 4);
+            Fr_t rho = random_vec(1)[0];
+            auto ip_proof = inner_product_sumcheck_zk(bit_planes[base + b], b_minus_1, v_bin, mask_a, mask_b, tmask, rho);
+            serialize_ip_sumcheck_zk(ip_proof, log_size, proof);
+        } else {
+            auto ip_proof = inner_product_sumcheck(bit_planes[base + b], b_minus_1, v_bin);
+            serialize_ip_sumcheck(ip_proof, log_size, proof);
+        }
     }
 }
 
@@ -305,7 +333,8 @@ Fr_t zkConditionalEntropy::prove(
     vector<Polynomial>& proof,
     vector<Claim>& claims,
     vector<Fr_t>& challenges,
-    vector<FriPcsCommitment>& commitments)
+    vector<FriPcsCommitment>& commitments,
+    bool zk_enabled)
 {
     if (logits_all.size != T * V)
         throw std::invalid_argument("prove: logits_all.size != T * V");
@@ -508,8 +537,18 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_v = random_vec(ceilLog2(V));
         challenges.insert(challenges.end(), u_v.begin(), u_v.end());
-        auto ip_rowsum = inner_product_sumcheck(wp_partial, ones_V, u_v);
-        serialize_ip_sumcheck(ip_rowsum, ceilLog2(V), proof);
+        if (zk_enabled) {
+            auto mask_a = generate_vanishing_mask(ceilLog2(V));
+            ZkMaskConfig mask_b;  // ones_V is public — no masking
+            mask_b.enabled = false;
+            auto tmask = generate_transcript_mask(ceilLog2(V), 4);
+            Fr_t rho = random_vec(1)[0];
+            auto ip_rowsum = inner_product_sumcheck_zk(wp_partial, ones_V, u_v, mask_a, mask_b, tmask, rho);
+            serialize_ip_sumcheck_zk(ip_rowsum, ceilLog2(V), proof);
+        } else {
+            auto ip_rowsum = inner_product_sumcheck(wp_partial, ones_V, u_v);
+            serialize_ip_sumcheck(ip_rowsum, ceilLog2(V), proof);
+        }
     }
 
     // ── 2d. Actual-token extraction proof ───────────────────────────────────
@@ -529,8 +568,18 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_ext = random_vec(ceilLog2(TV));
         challenges.insert(challenges.end(), u_ext.begin(), u_ext.end());
-        auto ip_extract = inner_product_sumcheck(win_probs_all, indicator, u_ext);
-        serialize_ip_sumcheck(ip_extract, ceilLog2(TV), proof);
+        if (zk_enabled) {
+            auto mask_a = generate_vanishing_mask(ceilLog2(TV));
+            ZkMaskConfig mask_b;  // indicator is public — no masking
+            mask_b.enabled = false;
+            auto tmask = generate_transcript_mask(ceilLog2(TV), 4);
+            Fr_t rho = random_vec(1)[0];
+            auto ip_extract = inner_product_sumcheck_zk(win_probs_all, indicator, u_ext, mask_a, mask_b, tmask, rho);
+            serialize_ip_sumcheck_zk(ip_extract, ceilLog2(TV), proof);
+        } else {
+            auto ip_extract = inner_product_sumcheck(win_probs_all, indicator, u_ext);
+            serialize_ip_sumcheck(ip_extract, ceilLog2(TV), proof);
+        }
 
         auto u_T = random_vec(ceilLog2(T));
         challenges.insert(challenges.end(), u_T.begin(), u_T.end());
@@ -570,13 +619,13 @@ Fr_t zkConditionalEntropy::prove(
         challenges.insert(challenges.end(), v_bin.begin(), v_bin.end());
 
         std::cout << "    q range proof (" << q_bits << " bits)..." << std::endl;
-        prove_nonneg(q_vec, q_bits, u_qr, v_bin, bit_planes, proof);
+        prove_nonneg(q_vec, q_bits, u_qr, v_bin, bit_planes, proof, zk_enabled);
 
         std::cout << "    r range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(r_vec, r_bits, u_qr, v_bin, bit_planes, proof);
+        prove_nonneg(r_vec, r_bits, u_qr, v_bin, bit_planes, proof, zk_enabled);
 
         std::cout << "    gap range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(gap, r_bits, u_qr, v_bin, bit_planes, proof);
+        prove_nonneg(gap, r_bits, u_qr, v_bin, bit_planes, proof, zk_enabled);
     }
 
     // ── 2f. Surprise log lookup proof ───────────────────────────────────────
@@ -611,8 +660,18 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_sum = random_vec(ceilLog2(T_padded));
         challenges.insert(challenges.end(), u_sum.begin(), u_sum.end());
-        auto ip_sum = inner_product_sumcheck(surprise_sum_input, ones_T, u_sum);
-        serialize_ip_sumcheck(ip_sum, ceilLog2(T_padded), proof);
+        if (zk_enabled) {
+            auto mask_a = generate_vanishing_mask(ceilLog2(T_padded));
+            ZkMaskConfig mask_b;  // ones_T is public — no masking
+            mask_b.enabled = false;
+            auto tmask = generate_transcript_mask(ceilLog2(T_padded), 4);
+            Fr_t rho = random_vec(1)[0];
+            auto ip_sum = inner_product_sumcheck_zk(surprise_sum_input, ones_T, u_sum, mask_a, mask_b, tmask, rho);
+            serialize_ip_sumcheck_zk(ip_sum, ceilLog2(T_padded), proof);
+        } else {
+            auto ip_sum = inner_product_sumcheck(surprise_sum_input, ones_T, u_sum);
+            serialize_ip_sumcheck(ip_sum, ceilLog2(T_padded), proof);
+        }
     }
 
     std::cout << "zkConditionalEntropy::prove complete (batched, "
@@ -651,7 +710,8 @@ Fr_t zkConditionalEntropy::prove(
     vector<Polynomial>& proof,
     vector<Claim>& claims,
     vector<Fr_t>& challenges,
-    vector<FriPcsCommitment>& commitments)
+    vector<FriPcsCommitment>& commitments,
+    bool zk_enabled)
 {
     if (logits_seq.empty())
         throw std::invalid_argument("prove: empty logits sequence");
@@ -659,5 +719,5 @@ Fr_t zkConditionalEntropy::prove(
     uint T = logits_seq.size();
     uint V = logits_seq[0].size;
     FrTensor logits_all = catTensors(logits_seq);
-    return prove(logits_all, T, V, tokens, claimed_entropy, proof, claims, challenges, commitments);
+    return prove(logits_all, T, V, tokens, claimed_entropy, proof, claims, challenges, commitments, zk_enabled);
 }

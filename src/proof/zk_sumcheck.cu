@@ -269,6 +269,269 @@ Fr_t zkip_zk(
     return current_claim;
 }
 
+// ── Degree-4 masked stacked inner product kernel ────────────────────────────
+// Same layout as zkip_stacked_poly_kernel but evaluates Za(t)*Zb(t) at t=0..4
+// with vanishing corrections. A and B are (N x D) tensors stored contiguously.
+KERNEL void zkip_stacked_zk_poly_kernel(
+    GLOBAL Fr_t *a, GLOBAL Fr_t *b,
+    GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2,
+    GLOBAL Fr_t *out3, GLOBAL Fr_t *out4,
+    Fr_t c_a, Fr_t c_b,
+    uint N_in, uint N_out, uint D)
+{
+    const uint gid = GET_GLOBAL_ID();
+    if (gid >= N_out * D) return;
+
+    Fr_t a0 = a[gid];
+    Fr_t b0 = b[gid];
+    Fr_t a1 = (gid + N_out * D < N_in * D) ? a[gid + N_out * D] : blstrs__scalar__Scalar_ZERO;
+    Fr_t b1 = (gid + N_out * D < N_in * D) ? b[gid + N_out * D] : blstrs__scalar__Scalar_ZERO;
+
+    Fr_t da = blstrs__scalar__Scalar_sub(a1, a0);
+    Fr_t db = blstrs__scalar__Scalar_sub(b1, b0);
+
+    // t=0: vanishing terms are 0
+    out0[gid] = blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(a0, b0));
+
+    // t=1: vanishing terms are 0
+    out1[gid] = blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(a1, b1));
+
+    // t=2,3,4: include vanishing corrections
+    Fr_t t2 = {2ULL};
+    Fr_t za2 = eval_masked_linear(a0, da, c_a, t2);
+    Fr_t zb2 = eval_masked_linear(b0, db, c_b, t2);
+    out2[gid] = blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(za2, zb2));
+
+    Fr_t t3 = {3ULL};
+    Fr_t za3 = eval_masked_linear(a0, da, c_a, t3);
+    Fr_t zb3 = eval_masked_linear(b0, db, c_b, t3);
+    out3[gid] = blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(za3, zb3));
+
+    Fr_t t4 = {4ULL};
+    Fr_t za4 = eval_masked_linear(a0, da, c_a, t4);
+    Fr_t zb4 = eval_masked_linear(b0, db, c_b, t4);
+    out4[gid] = blstrs__scalar__Scalar_mont(blstrs__scalar__Scalar_mul(za4, zb4));
+}
+
+// ── Stacked reduce kernel (ZK variant, duplicated for module independence) ──
+KERNEL void zkip_stacked_zk_reduce_kernel(
+    GLOBAL Fr_t *a, GLOBAL Fr_t *b,
+    GLOBAL Fr_t *new_a, GLOBAL Fr_t *new_b,
+    Fr_t v, uint N_in, uint N_out, uint D)
+{
+    const uint gid = GET_GLOBAL_ID();
+    if (gid >= N_out * D) return;
+
+    v = blstrs__scalar__Scalar_mont(v);
+    Fr_t a0 = a[gid];
+    Fr_t b0 = b[gid];
+    Fr_t a1 = (gid + N_out * D < N_in * D) ? a[gid + N_out * D] : blstrs__scalar__Scalar_ZERO;
+    a1 = blstrs__scalar__Scalar_sub(a1, a0);
+    Fr_t b1 = (gid + N_out * D < N_in * D) ? b[gid + N_out * D] : blstrs__scalar__Scalar_ZERO;
+    b1 = blstrs__scalar__Scalar_sub(b1, b0);
+    new_a[gid] = blstrs__scalar__Scalar_add(a0, blstrs__scalar__Scalar_mul(v, a1));
+    new_b[gid] = blstrs__scalar__Scalar_add(b0, blstrs__scalar__Scalar_mul(v, b1));
+}
+
+// ── Single-round step for stacked ZK: compute degree-4 round polynomial ────
+static Polynomial zkip_stacked_zk_step_poly(
+    const FrTensor& A, const FrTensor& B,
+    const std::vector<Fr_t>& uN,
+    Fr_t c_a, Fr_t c_b,
+    uint N, uint D)
+{
+    if (A.size != N * D) throw std::runtime_error("zkip_stacked_zk_step_poly: A.size != N*D");
+    if (B.size != N * D) throw std::runtime_error("zkip_stacked_zk_step_poly: B.size != N*D");
+    uint N_out = (1 << ceilLog2(N)) >> 1;
+    uint size_out = N_out * D;
+    FrTensor out0(size_out), out1(size_out), out2(size_out), out3(size_out), out4(size_out);
+
+    zkip_stacked_zk_poly_kernel<<<(size_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+        A.gpu_data, B.gpu_data,
+        out0.gpu_data, out1.gpu_data, out2.gpu_data,
+        out3.gpu_data, out4.gpu_data,
+        c_a, c_b, N, N_out, D);
+
+    std::vector<Fr_t> u_(uN.begin(), uN.end() - 1);
+    if (u_.size() > 0) {
+        return Polynomial::from_evaluations({
+            out0.partial_me(u_, N_out, D).sum(),
+            out1.partial_me(u_, N_out, D).sum(),
+            out2.partial_me(u_, N_out, D).sum(),
+            out3.partial_me(u_, N_out, D).sum(),
+            out4.partial_me(u_, N_out, D).sum()
+        });
+    } else {
+        return Polynomial::from_evaluations({
+            out0.sum(), out1.sum(), out2.sum(), out3.sum(), out4.sum()
+        });
+    }
+}
+
+// ── ZK stacked inner product sumcheck ───────────────────────────────────────
+Fr_t zkip_stacked_zk(
+    const Fr_t& claim,
+    const FrTensor& A, const FrTensor& B,
+    const std::vector<Fr_t>& uN, const std::vector<Fr_t>& uD,
+    const std::vector<Fr_t> vN, uint N, uint D,
+    const ZkMaskConfig& mask_a, const ZkMaskConfig& mask_b,
+    const ZkTranscriptMask& tmask, Fr_t rho,
+    std::vector<Polynomial>& proof,
+    ZkIpResult& result)
+{
+    // When N dimension is exhausted, fall back to zkip_zk for D dimension
+    if (!uN.size()) {
+        return zkip_zk(claim, A, B, uD, mask_a, mask_b, tmask, rho, proof, result);
+    }
+
+    uint total_rounds = uN.size() + uD.size();
+    Fr_t current_claim = claim;
+    FrTensor cur_A = A;
+    FrTensor cur_B = B;
+    uint cur_N = N;
+    std::vector<Fr_t> cur_uN = uN;
+    std::vector<Fr_t> cur_vN = vN;
+    std::vector<Fr_t> bound_challenges;
+
+    // Process N-dimension rounds
+    // The stacked sumcheck binds variables from the N dimension first,
+    // processing uN.back() first (same as zkip_stacked).
+    // Round index for transcript masking is 0..uN.size()-1.
+    // Variable index for vanishing masking: the N-dimension variables
+    // are the "high" variables, indexed from uD.size() to total_rounds-1.
+    for (uint j = 0; j < uN.size(); j++) {
+        uint var_idx = total_rounds - 1 - j;  // variable being bound
+
+        Fr_t c_a_j = FR_ZERO;
+        Fr_t c_b_j = FR_ZERO;
+        if (mask_a.enabled && var_idx < mask_a.vanishing_coeffs.size()) {
+            c_a_j = mask_a.vanishing_coeffs[var_idx];
+        }
+        if (mask_b.enabled && var_idx < mask_b.vanishing_coeffs.size()) {
+            c_b_j = mask_b.vanishing_coeffs[var_idx];
+        }
+
+        Polynomial g = zkip_stacked_zk_step_poly(cur_A, cur_B, cur_uN, c_a_j, c_b_j, cur_N, D);
+
+        // Transcript masking
+        Polynomial p_round = transcript_mask_round_poly(tmask, j, bound_challenges, total_rounds);
+        Polynomial rho_poly(rho);
+        Polynomial s = g + rho_poly * p_round;
+
+        // The stacked check multiplies by eq(uN.back(), X)
+        auto q = Polynomial::eq(cur_uN.back()) * s;
+        Fr_t q0 = q(FR_ZERO);
+        Fr_t q1 = q(FR_ONE);
+        if (q0 + q1 != current_claim) {
+            throw std::runtime_error("zkip_stacked_zk: q(0) + q(1) != claim at N-round " + std::to_string(j));
+        }
+
+        proof.push_back(s);
+
+        Fr_t alpha = cur_vN.back();
+        current_claim = s(alpha);
+        bound_challenges.push_back(alpha);
+
+        // Fold A, B
+        uint N_out = (1 << ceilLog2(cur_N)) >> 1;
+        uint size_out = N_out * D;
+        FrTensor new_A(size_out), new_B(size_out);
+        zkip_stacked_zk_reduce_kernel<<<(size_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(
+            cur_A.gpu_data, cur_B.gpu_data,
+            new_A.gpu_data, new_B.gpu_data,
+            alpha, cur_N, N_out, D);
+
+        cur_A = new_A;
+        cur_B = new_B;
+        cur_N = N_out;
+        cur_uN = std::vector<Fr_t>(cur_uN.begin(), cur_uN.end() - 1);
+        cur_vN = std::vector<Fr_t>(cur_vN.begin(), cur_vN.end() - 1);
+    }
+
+    // Continue with D-dimension rounds using zkip_zk
+    // We need to pass along the remaining masking state.
+    // The transcript mask round index continues from uN.size().
+    // Create a "resumed" transcript mask that accounts for already-bound challenges.
+    // Actually, zkip_zk handles this internally via bound_challenges tracking.
+    // We need to create a wrapper that passes the correct round offset.
+
+    // For the D-dimension rounds, we use a modified transcript mask
+    // that starts from round uN.size() with the already-bound challenges.
+    // The simplest approach: call zkip_zk with a modified transcript mask
+    // that has the N-dimension contributions pre-evaluated.
+
+    // Build a new ZkTranscriptMask for the remaining rounds
+    // The remaining rounds process uD dimensions (var indices 0..uD.size()-1)
+    uint d_rounds = uD.size();
+    ZkTranscriptMask tmask_d;
+    tmask_d.degree = tmask.degree;
+
+    // For the D-dimension rounds, we need to continue the transcript mask
+    // from where we left off. The full mask is:
+    //   p(X) = a_0 + Σ p_i(X_i)
+    // After binding N-dimension variables, the contribution from those is fixed.
+    // We fold this into a new a_0 for the D-dimension mask.
+    Fr_t n_contribution = tmask.a0;
+    for (uint j = 0; j < bound_challenges.size(); j++) {
+        uint tmask_idx = total_rounds - 1 - j;  // corresponds to the variable bound
+        if (tmask_idx < tmask.p_univariates.size()) {
+            // Evaluate p_i(alpha_j)
+            Fr_t pval = FR_ZERO;
+            Fr_t alpha_pow = bound_challenges[j];
+            for (uint k = 0; k < tmask.p_univariates[tmask_idx].size(); k++) {
+                pval = pval + tmask.p_univariates[tmask_idx][k] * alpha_pow;
+                alpha_pow = alpha_pow * bound_challenges[j];
+            }
+            n_contribution = n_contribution + pval;
+        }
+    }
+    tmask_d.a0 = n_contribution;
+
+    // Copy only the D-dimension univariates
+    tmask_d.p_univariates.resize(d_rounds);
+    for (uint i = 0; i < d_rounds; i++) {
+        if (i < tmask.p_univariates.size()) {
+            tmask_d.p_univariates[i] = tmask.p_univariates[i];
+        } else {
+            tmask_d.p_univariates[i].assign(tmask.degree, FR_ZERO);
+        }
+    }
+
+    // Recompute P_sum for the D-dimension mask
+    // P_sum_d = 2^d_rounds * n_contribution + 2^{d_rounds-1} * Σ (p_i(0) + p_i(1))
+    // Since p_i(0) = 0 (no constant term), P_sum_d = 2^d_rounds * a0_d + 2^{d_rounds-1} * Σ p_i(1)
+    Fr_t two = FR_FROM_INT(2);
+    Fr_t pow2d = FR_FROM_INT(1);
+    for (uint i = 0; i < d_rounds; i++) pow2d = pow2d * two;
+    tmask_d.P_sum = pow2d * tmask_d.a0;
+    Fr_t pow2d_half = (d_rounds > 0) ? (pow2d / two) : FR_FROM_INT(1);
+    for (uint i = 0; i < d_rounds; i++) {
+        // p_i(1) = sum of coefficients
+        Fr_t p_at_1 = FR_ZERO;
+        for (uint k = 0; k < tmask_d.p_univariates[i].size(); k++) {
+            p_at_1 = p_at_1 + tmask_d.p_univariates[i][k];
+        }
+        tmask_d.P_sum = tmask_d.P_sum + pow2d_half * p_at_1;
+    }
+
+    // Now call zkip_zk for the remaining D-dimension rounds
+    // The vanishing coefficients for D-dimension are indices 0..d_rounds-1
+    ZkMaskConfig mask_a_d = mask_a;
+    ZkMaskConfig mask_b_d = mask_b;
+    if (mask_a_d.enabled) {
+        mask_a_d.vanishing_coeffs = std::vector<Fr_t>(
+            mask_a.vanishing_coeffs.begin(),
+            mask_a.vanishing_coeffs.begin() + std::min((size_t)d_rounds, mask_a.vanishing_coeffs.size()));
+    }
+    if (mask_b_d.enabled) {
+        mask_b_d.vanishing_coeffs = std::vector<Fr_t>(
+            mask_b.vanishing_coeffs.begin(),
+            mask_b.vanishing_coeffs.begin() + std::min((size_t)d_rounds, mask_b.vanishing_coeffs.size()));
+    }
+
+    return zkip_zk(current_claim, cur_A, cur_B, uD, mask_a_d, mask_b_d, tmask_d, rho, proof, result);
+}
+
 // ── ZK inner product sumcheck (flat Fr_t format) ────────────────────────────
 std::vector<Fr_t> inner_product_sumcheck_zk(
     const FrTensor& a, const FrTensor& b,
