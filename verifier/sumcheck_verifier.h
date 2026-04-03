@@ -256,4 +256,148 @@ static inline SumcheckResult verify_multi_had_sumcheck(
     return {true, current_claim, ""};
 }
 
+// ── Lagrange interpolation from evaluations at {0,1,...,d} ──────────────────
+// CPU-only version for the verifier (mirrors Polynomial::from_evaluations).
+
+static inline Polynomial lagrange_from_evals(const std::vector<Fr_t>& evals) {
+    if (evals.empty()) return Polynomial{{}};
+    uint32_t d = evals.size() - 1;
+
+    std::vector<Fr_t> result(d + 1, FR_ZERO);
+
+    for (uint32_t j = 0; j <= d; j++) {
+        // Denominator: prod_{k!=j} (j - k)
+        Fr_t denom = FR_ONE;
+        for (uint32_t k = 0; k <= d; k++) {
+            if (k == j) continue;
+            Fr_t diff;
+            if (j > k) {
+                diff = fr_from_u64(j - k);
+            } else {
+                diff = fr_neg(fr_from_u64(k - j));
+            }
+            denom = fr_mul(denom, diff);
+        }
+        Fr_t inv_denom = fr_inverse(denom);
+        Fr_t scale = fr_mul(evals[j], inv_denom);
+
+        // Expand prod_{k!=j} (X - k) into coefficients
+        std::vector<Fr_t> basis(1, FR_ONE);
+        for (uint32_t k = 0; k <= d; k++) {
+            if (k == j) continue;
+            Fr_t neg_k = (k == 0) ? FR_ZERO : fr_neg(fr_from_u64(k));
+            std::vector<Fr_t> new_basis(basis.size() + 1, FR_ZERO);
+            for (size_t m = 0; m < basis.size(); m++) {
+                new_basis[m + 1] = fr_add(new_basis[m + 1], basis[m]);
+                new_basis[m] = fr_add(new_basis[m], fr_mul(basis[m], neg_k));
+            }
+            basis = new_basis;
+        }
+
+        // Accumulate
+        for (size_t m = 0; m < basis.size() && m <= d; m++) {
+            result[m] = fr_add(result[m], fr_mul(scale, basis[m]));
+        }
+    }
+
+    return Polynomial{result};
+}
+
+// ── ZK inner product sumcheck verifier ──────────────────────────────────────
+// Verifies: <a, b> = T with vanishing polynomial masking + XZZ+19 transcript
+// masking. The prover sends:
+//   - T (honest claim)
+//   - P_sum (transcript mask sum over {0,1}^b)
+//   - rho (verifier challenge for transcript masking)
+//   - b round polynomials, each degree 4 (5 evaluations)
+//   - final_za, final_zb (masked evaluations at terminal point)
+//   - final_p (transcript mask at terminal point)
+//
+// Verification:
+//   1. combined_claim = T + rho * P_sum
+//   2. Each round: p(0) + p(1) == current_claim, then claim = p(alpha_j)
+//   3. Final: final_za * final_zb + rho * final_p == last reduced claim
+
+struct ZkIpSumcheckProof {
+    Fr_t T;             // honest claim (inner product)
+    Fr_t P_sum;         // transcript mask polynomial sum
+    Fr_t rho;           // verifier challenge
+    std::vector<Polynomial> round_polys;  // degree-4 (5 coefficients each)
+    std::vector<Fr_t> challenges;         // alpha_j for each round
+    Fr_t final_za;      // Z_a(s*) — masked a evaluation
+    Fr_t final_zb;      // Z_b(s*) — masked b evaluation
+    Fr_t final_p;       // p(s*) — transcript mask at terminal point
+};
+
+// Parse a ZK IP sumcheck proof from a flat evaluation vector.
+// Format: [5 evals per round] x num_rounds + [final_za, final_zb, final_p]
+// The evals are at points {0, 1, 2, 3, 4}.
+static inline ZkIpSumcheckProof parse_zk_ip_sumcheck(
+    const std::vector<Fr_t>& proof_data,
+    size_t offset,
+    uint32_t num_rounds,
+    Fr_t T,
+    Fr_t P_sum,
+    Fr_t rho,
+    const std::vector<Fr_t>& challenges
+) {
+    ZkIpSumcheckProof p;
+    p.T = T;
+    p.P_sum = P_sum;
+    p.rho = rho;
+    p.challenges = challenges;
+
+    size_t idx = offset;
+    p.round_polys.resize(num_rounds);
+    for (uint32_t i = 0; i < num_rounds; i++) {
+        // Read 5 evaluations at t = 0, 1, 2, 3, 4
+        std::vector<Fr_t> evals(5);
+        for (uint32_t t = 0; t < 5; t++) {
+            evals[t] = proof_data.at(idx++);
+        }
+        // Convert evaluations to coefficient form via Lagrange interpolation
+        // For degree 4: p(X) interpolated from {(0,e0),(1,e1),(2,e2),(3,e3),(4,e4)}
+        p.round_polys[i] = lagrange_from_evals(evals);
+    }
+    p.final_za = proof_data.at(idx++);
+    p.final_zb = proof_data.at(idx++);
+    p.final_p  = proof_data.at(idx++);
+    return p;
+}
+
+static inline SumcheckResult verify_zk_ip_sumcheck(
+    const ZkIpSumcheckProof& proof
+) {
+    // Step 1: Combined claim
+    Fr_t current_claim = fr_add(proof.T, fr_mul(proof.rho, proof.P_sum));
+
+    // Step 2: Verify each round
+    for (size_t i = 0; i < proof.round_polys.size(); i++) {
+        const auto& p = proof.round_polys[i];
+        Fr_t p0 = p.eval(FR_ZERO);
+        Fr_t p1 = p.eval(FR_ONE);
+        Fr_t sum = fr_add(p0, p1);
+        if (sum != current_claim) {
+            return {false, FR_ZERO,
+                    "ZK-IP round " + std::to_string(i) + ": p(0)+p(1)=" +
+                    std::to_string(sum.val) + " != claim=" +
+                    std::to_string(current_claim.val)};
+        }
+        if (i < proof.challenges.size()) {
+            current_claim = p.eval(proof.challenges[i]);
+        }
+    }
+
+    // Step 3: Final check — za * zb + rho * p(s*) == last reduced claim
+    Fr_t expected = fr_add(fr_mul(proof.final_za, proof.final_zb),
+                           fr_mul(proof.rho, proof.final_p));
+    if (expected != current_claim) {
+        return {false, current_claim,
+                "ZK-IP final: za*zb+rho*p=" + std::to_string(expected.val) +
+                " != claim=" + std::to_string(current_claim.val)};
+    }
+
+    return {true, current_claim, ""};
+}
+
 #endif // SUMCHECK_VERIFIER_H
