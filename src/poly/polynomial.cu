@@ -401,4 +401,75 @@ Fr_t Polynomial::eq(const Fr_t& u, const Fr_t& v)
     return result;
 }
 
+// ── Lagrange interpolation from evaluation form ─────────────────────────────
+// Given evals[k] = p(k) for k = 0,1,...,d, recover the degree-d polynomial
+// in coefficient form.
+//
+// Uses the Lagrange basis: p(X) = sum_j evals[j] * L_j(X)
+// where L_j(X) = prod_{k!=j} (X - k) / (j - k)
+//
+// We expand each L_j into coefficients and accumulate. This runs on the CPU
+// since d is tiny (4-5 for our use case).
+
+Polynomial Polynomial::from_evaluations(const std::vector<Fr_t>& evals) {
+    if (evals.empty()) return Polynomial();
+    uint d = evals.size() - 1;  // degree
+
+    // We'll build the result in coefficient form on the CPU, then construct
+    // the Polynomial (which copies to GPU).
+    //
+    // For each basis polynomial L_j(X) = prod_{k!=j} (X-k)/(j-k):
+    // 1. Compute the scalar denominator 1/prod_{k!=j}(j-k)
+    // 2. Expand prod_{k!=j}(X-k) as a polynomial in coefficient form
+    // 3. Scale by evals[j] * (1/denominator) and accumulate
+
+    std::vector<Fr_t> result_coeffs(d + 1, FR_ZERO);
+
+    for (uint j = 0; j <= d; j++) {
+        // Compute denominator: prod_{k!=j} (j - k)
+        Fr_t denom = FR_ONE;
+        for (uint k = 0; k <= d; k++) {
+            if (k == j) continue;
+            Fr_t diff;
+            if (j > k) {
+                diff = FR_FROM_INT(j - k);
+            } else {
+                diff = FR_ZERO - FR_FROM_INT(k - j);
+            }
+            denom = denom * diff;
+        }
+        Fr_t inv_denom = inv(denom);
+        Fr_t scale = evals[j] * inv_denom;
+
+        // Expand prod_{k!=j} (X - k) into coefficients
+        // Start with polynomial = 1 (degree 0)
+        std::vector<Fr_t> basis(1, FR_ONE);
+        for (uint k = 0; k <= d; k++) {
+            if (k == j) continue;
+            // Multiply basis by (X - k)
+            Fr_t neg_k;
+            if (k == 0) {
+                neg_k = FR_ZERO;
+            } else {
+                neg_k = FR_ZERO - FR_FROM_INT(k);
+            }
+            std::vector<Fr_t> new_basis(basis.size() + 1, FR_ZERO);
+            for (uint m = 0; m < basis.size(); m++) {
+                // basis[m] * X -> new_basis[m+1]
+                new_basis[m + 1] = new_basis[m + 1] + basis[m];
+                // basis[m] * (-k) -> new_basis[m]
+                new_basis[m] = new_basis[m] + basis[m] * neg_k;
+            }
+            basis = new_basis;
+        }
+
+        // Accumulate: result += scale * basis
+        for (uint m = 0; m < basis.size() && m <= d; m++) {
+            result_coeffs[m] = result_coeffs[m] + scale * basis[m];
+        }
+    }
+
+    return Polynomial(result_coeffs);
+}
+
 // dummy

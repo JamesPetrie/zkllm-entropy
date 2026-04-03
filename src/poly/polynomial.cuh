@@ -40,6 +40,11 @@ public:
     static Polynomial eq(const Fr_t& u);
     static Fr_t eq(const Fr_t& u, const Fr_t& v);
 
+    // Construct a polynomial from evaluations at integer points {0, 1, 2, ..., d}.
+    // Uses Lagrange interpolation to recover the degree-d polynomial.
+    // evals[k] = p(k) for k = 0, 1, ..., d.
+    static Polynomial from_evaluations(const std::vector<Fr_t>& evals);
+
     friend std::ostream& operator<<(std::ostream& os, const Polynomial& poly);
 private:
     Fr_t* coefficients_;
