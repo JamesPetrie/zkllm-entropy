@@ -108,37 +108,34 @@ Fr_t eval_transcript_mask(const ZkTranscriptMask& mask,
 }
 
 Polynomial transcript_mask_round_poly(const ZkTranscriptMask& mask,
-                                      uint round_idx,
-                                      const std::vector<Fr_t>& bound_challenges,
-                                      uint total_rounds) {
-    // For round j (= round_idx), the sumcheck sums over variables j+1..b-1
-    // in {0,1}^{b-j-1}. The masking polynomial's contribution to the round
-    // polynomial is:
+                                      uint current_var,
+                                      const std::vector<uint>& bound_var_indices,
+                                      const std::vector<Fr_t>& bound_var_values,
+                                      uint total_vars) {
+    // Compute S(X_{current_var}) = sum over free variables of p(...)
     //
-    //   S_j(X_j) = sum_{c_{j+1}..c_{b-1} in {0,1}^{b-j-1}} p(alpha_0,..,alpha_{j-1}, X_j, c_{j+1},..,c_{b-1})
+    // Free variables: those not in bound_var_indices and != current_var.
+    // Bound variables: those in bound_var_indices (with known values).
+    // Current variable: current_var (left as X).
     //
     // Since p(X) = a_0 + sum_i p_i(X_i) is separable:
     //
-    //   S_j(X_j) = 2^{b-j-1} * [ a_0 + sum_{i<j} p_i(alpha_i) + p_j(X_j) ]
-    //            + 2^{b-j-2} * sum_{i>j} (p_i(0) + p_i(1))
+    // S(X_{cv}) = 2^R * [a_0 + Σ_{bound i} p_i(alpha_i) + p_{cv}(X_{cv})]
+    //           + 2^{R-1} * Σ_{free i} (p_i(0) + p_i(1))
     //
-    // But wait: for i>j, sum over c_i of p_i(c_i) = 2^{b-j-2} * (p_i(0)+p_i(1))
-    // ... and for the other b-j-2 "non-i" variables, each contributes factor 2.
-    //
-    // More carefully:
-    // Let R = b - j - 1 = number of remaining (unsummed) variables after j
-    //
-    // sum_{tail in {0,1}^R} p(alpha_0,..,alpha_{j-1}, X_j, tail)
-    //   = sum_{tail} [a_0 + sum_{i<j} p_i(alpha_i) + p_j(X_j) + sum_{i>j} p_i(tail_{i-j-1})]
-    //   = 2^R * [a_0 + sum_{i<j} p_i(alpha_i) + p_j(X_j)]
-    //     + sum_{i>j} [2^{R-1} * (p_i(0) + p_i(1))]
-    //
-    // The last sum: for each i>j, the variable c_i takes values 0,1 while the
-    // other R-1 tail variables each take 2 values → 2^{R-1} * (p_i(0)+p_i(1)).
+    // where R = number of free variables (not bound and not current_var).
 
-    uint b = total_rounds;
-    uint j = round_idx;
-    uint R = b - j - 1;  // remaining variables after j
+    // Build set of bound variables for quick lookup
+    std::vector<bool> is_bound(total_vars, false);
+    for (uint idx : bound_var_indices) {
+        if (idx < total_vars) is_bound[idx] = true;
+    }
+
+    // Count free variables (not bound, not current_var)
+    uint R = 0;
+    for (uint i = 0; i < total_vars; i++) {
+        if (i != current_var && !is_bound[i]) R++;
+    }
 
     Fr_t one = FR_ONE;
     Fr_t two = one + one;
@@ -147,14 +144,16 @@ Polynomial transcript_mask_round_poly(const ZkTranscriptMask& mask,
     Fr_t pow2_R = one;
     for (uint i = 0; i < R; i++) pow2_R = pow2_R * two;
 
-    // Compute 2^{R-1} (for the tail sum)
+    // Compute 2^{R-1}
     Fr_t pow2_Rm1 = (R > 0) ? pow2_R / two : one;
 
-    // Constant part: 2^R * [a_0 + sum_{i<j} p_i(alpha_i)]
+    // Constant part: 2^R * [a_0 + Σ_{bound i} p_i(alpha_i)]
     Fr_t constant = mask.a0;
-    for (uint i = 0; i < j && i < bound_challenges.size(); i++) {
-        const auto& coeffs = mask.p_univariates[i];
-        Fr_t alpha_i = bound_challenges[i];
+    for (uint idx = 0; idx < bound_var_indices.size(); idx++) {
+        uint var_i = bound_var_indices[idx];
+        if (var_i >= mask.p_univariates.size()) continue;
+        const auto& coeffs = mask.p_univariates[var_i];
+        Fr_t alpha_i = bound_var_values[idx];
         Fr_t alpha_pow = alpha_i;
         Fr_t pi_alpha = FR_ZERO;
         for (uint k = 0; k < coeffs.size(); k++) {
@@ -165,10 +164,12 @@ Polynomial transcript_mask_round_poly(const ZkTranscriptMask& mask,
     }
     constant = pow2_R * constant;
 
-    // Tail sum: 2^{R-1} * sum_{i>j} (p_i(0) + p_i(1))
+    // Tail sum: 2^{R-1} * Σ_{free i} (p_i(0) + p_i(1))
     // p_i(0) = 0, p_i(1) = sum of coefficients
     Fr_t tail_sum = FR_ZERO;
-    for (uint i = j + 1; i < b; i++) {
+    for (uint i = 0; i < total_vars; i++) {
+        if (i == current_var || is_bound[i]) continue;  // skip bound and current
+        if (i >= mask.p_univariates.size()) continue;
         const auto& coeffs = mask.p_univariates[i];
         Fr_t pi_1 = FR_ZERO;
         for (uint k = 0; k < coeffs.size(); k++) {
@@ -178,18 +179,16 @@ Polynomial transcript_mask_round_poly(const ZkTranscriptMask& mask,
     }
     tail_sum = pow2_Rm1 * tail_sum;
 
-    // Build univariate polynomial in X_j:
-    //   S_j(X_j) = (constant + tail_sum) + 2^R * p_j(X_j)
-    //
-    // p_j(X) = c_{j,1}*X + c_{j,2}*X^2 + ... + c_{j,d}*X^d
-    // So S_j(X) = (constant + tail_sum) + 2^R * (c_{j,1}*X + c_{j,2}*X^2 + ... + c_{j,d}*X^d)
-
+    // Build univariate polynomial in X_{current_var}:
+    //   S(X) = (constant + tail_sum) + 2^R * p_{cv}(X)
     uint d = mask.degree;
     std::vector<Fr_t> poly_coeffs(d + 1);
-    poly_coeffs[0] = constant + tail_sum;  // constant term
-    const auto& pj_coeffs = mask.p_univariates[j];
-    for (uint k = 0; k < d && k < pj_coeffs.size(); k++) {
-        poly_coeffs[k + 1] = pow2_R * pj_coeffs[k];  // X^{k+1} term
+    poly_coeffs[0] = constant + tail_sum;
+    if (current_var < mask.p_univariates.size()) {
+        const auto& pj_coeffs = mask.p_univariates[current_var];
+        for (uint k = 0; k < d && k < pj_coeffs.size(); k++) {
+            poly_coeffs[k + 1] = pow2_R * pj_coeffs[k];
+        }
     }
 
     return Polynomial(poly_coeffs);

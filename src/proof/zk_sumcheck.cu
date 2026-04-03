@@ -162,7 +162,8 @@ Fr_t zkip_zk(
     // Start by copying a and b to owned tensors.
     FrTensor* cur_a = new FrTensor(a);  // deep copy
     FrTensor* cur_b = new FrTensor(b);
-    std::vector<Fr_t> bound_challenges;
+    std::vector<uint> bound_var_indices;
+    std::vector<Fr_t> bound_var_values;
 
     // Note: zkip processes u.back() first (last variable), but the masking
     // coefficients are indexed by variable order. The sumcheck variables in
@@ -195,7 +196,7 @@ Fr_t zkip_zk(
         Polynomial g = zkip_zk_step_poly(*cur_a, *cur_b, c_a_j, c_b_j);
 
         // Compute transcript masking round polynomial p_round(X)
-        Polynomial p_round = transcript_mask_round_poly(tmask, j, bound_challenges, num_vars);
+        Polynomial p_round = transcript_mask_round_poly(tmask, var_idx, bound_var_indices, bound_var_values, num_vars);
 
         // Combined: s(X) = g(X) + rho * p_round(X)
         Polynomial rho_poly(rho);
@@ -213,7 +214,8 @@ Fr_t zkip_zk(
         // Bind this variable to challenge u[var_idx]
         Fr_t alpha = u[var_idx];
         current_claim = s(alpha);
-        bound_challenges.push_back(alpha);
+        bound_var_indices.push_back(var_idx);
+        bound_var_values.push_back(alpha);
 
         // Fold a, b
         uint N_in = cur_a->size;
@@ -266,8 +268,8 @@ Fr_t zkip_zk(
     result.final_zb = raw_b + corr_b;
 
     // Transcript mask at terminal point
-    // The terminal point for the transcript mask is bound_challenges in forward order.
-    result.p_final = eval_transcript_mask(tmask, bound_challenges);
+    // The terminal point s* in original variable ordering = u.
+    result.p_final = eval_transcript_mask(tmask, u);
 
     // Append final values to proof
     proof.push_back(Polynomial(result.final_za));
@@ -399,7 +401,8 @@ Fr_t zkip_stacked_zk(
     uint cur_N = N;
     std::vector<Fr_t> cur_uN = uN;
     std::vector<Fr_t> cur_vN = vN;
-    std::vector<Fr_t> bound_challenges;
+    std::vector<uint> bound_var_indices;
+    std::vector<Fr_t> bound_var_values;
 
     // Process N-dimension rounds
     // The stacked sumcheck binds variables from the N dimension first,
@@ -422,7 +425,7 @@ Fr_t zkip_stacked_zk(
         Polynomial g = zkip_stacked_zk_step_poly(*cur_A, *cur_B, cur_uN, c_a_j, c_b_j, cur_N, D);
 
         // Transcript masking
-        Polynomial p_round = transcript_mask_round_poly(tmask, j, bound_challenges, total_rounds);
+        Polynomial p_round = transcript_mask_round_poly(tmask, var_idx, bound_var_indices, bound_var_values, total_rounds);
         Polynomial rho_poly(rho);
         Polynomial s = g + rho_poly * p_round;
 
@@ -438,7 +441,8 @@ Fr_t zkip_stacked_zk(
 
         Fr_t alpha = cur_vN.back();
         current_claim = s(alpha);
-        bound_challenges.push_back(alpha);
+        bound_var_indices.push_back(var_idx);
+        bound_var_values.push_back(alpha);
 
         // Fold A, B
         uint N_out = (1 << ceilLog2(cur_N)) >> 1;
@@ -483,15 +487,15 @@ Fr_t zkip_stacked_zk(
     // After binding N-dimension variables, the contribution from those is fixed.
     // We fold this into a new a_0 for the D-dimension mask.
     Fr_t n_contribution = tmask.a0;
-    for (uint j = 0; j < bound_challenges.size(); j++) {
-        uint tmask_idx = total_rounds - 1 - j;  // corresponds to the variable bound
-        if (tmask_idx < tmask.p_univariates.size()) {
+    for (uint j = 0; j < bound_var_indices.size(); j++) {
+        uint var_i = bound_var_indices[j];
+        if (var_i < tmask.p_univariates.size()) {
             // Evaluate p_i(alpha_j)
             Fr_t pval = FR_ZERO;
-            Fr_t alpha_pow = bound_challenges[j];
-            for (uint k = 0; k < tmask.p_univariates[tmask_idx].size(); k++) {
-                pval = pval + tmask.p_univariates[tmask_idx][k] * alpha_pow;
-                alpha_pow = alpha_pow * bound_challenges[j];
+            Fr_t alpha_pow = bound_var_values[j];
+            for (uint k = 0; k < tmask.p_univariates[var_i].size(); k++) {
+                pval = pval + tmask.p_univariates[var_i][k] * alpha_pow;
+                alpha_pow = alpha_pow * bound_var_values[j];
             }
             n_contribution = n_contribution + pval;
         }

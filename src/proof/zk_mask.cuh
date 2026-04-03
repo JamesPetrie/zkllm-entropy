@@ -56,19 +56,21 @@ ZkTranscriptMask generate_transcript_mask(uint num_vars, uint degree);
 Fr_t eval_transcript_mask(const ZkTranscriptMask& mask,
                           const std::vector<Fr_t>& point);
 
-// Get the univariate masking polynomial contribution for round j,
-// given already-bound challenges alpha_0..alpha_{j-1}.
-// Returns a Polynomial in X_j that equals:
-//   (contribution from a_0 at this round) + p_j(X_j) + (sum of already-evaluated p_i(alpha_i))
-// This is the term to scale by rho and add to the honest round polynomial.
+// Get the univariate masking polynomial contribution for a sumcheck round.
 //
-// For round j, the masking polynomial p evaluated over the remaining variables is:
-//   p(alpha_0,..,alpha_{j-1}, X_j, X_{j+1},..,X_{b-1})
-// Summing over X_{j+1}..X_{b-1} in {0,1}^{b-j-1} gives:
-//   2^{b-j-1} * [a_0 + sum_{i<j} p_i(alpha_i) + p_j(X_j)] + 2^{b-j-2} * sum_{i>j} (p_i(0) + p_i(1))
+// current_var: the variable index being bound this round
+// bound_var_indices: which variables have been bound in previous rounds
+// bound_var_values: the challenge values they were bound to (same length)
+// total_vars: total number of variables (b)
+//
+// Returns S(X_{current_var}) = sum over free variables of p(...)
+// where free variables are those not in bound_var_indices and != current_var.
+//
+// The result satisfies: S(0) + S(1) = (previous round's contribution to claim)
 Polynomial transcript_mask_round_poly(const ZkTranscriptMask& mask,
-                                      uint round_idx,
-                                      const std::vector<Fr_t>& bound_challenges,
-                                      uint total_rounds);
+                                      uint current_var,
+                                      const std::vector<uint>& bound_var_indices,
+                                      const std::vector<Fr_t>& bound_var_values,
+                                      uint total_vars);
 
 #endif // ZK_MASK_CUH

@@ -117,8 +117,9 @@ int main() {
         uint degree = 4;
         auto tmask = generate_transcript_mask(b, degree);
 
-        vector<Fr_t> bound_challenges;  // none bound yet at round 0
-        Polynomial round_poly = transcript_mask_round_poly(tmask, 0, bound_challenges, b);
+        vector<uint> bound_indices;  // none bound yet at round 0
+        vector<Fr_t> bound_values;
+        Polynomial round_poly = transcript_mask_round_poly(tmask, 0, bound_indices, bound_values, b);
 
         Fr_t s0 = round_poly(FR_ZERO);
         Fr_t s1 = round_poly(FR_ONE);
@@ -136,15 +137,17 @@ int main() {
         uint degree = 4;
         auto tmask = generate_transcript_mask(b, degree);
 
-        // Round 0
-        vector<Fr_t> bound_0;
-        Polynomial rp0 = transcript_mask_round_poly(tmask, 0, bound_0, b);
+        // Round 0: variable 0, nothing bound
+        vector<uint> bound_idx_0;
+        vector<Fr_t> bound_val_0;
+        Polynomial rp0 = transcript_mask_round_poly(tmask, 0, bound_idx_0, bound_val_0, b);
         auto alpha_0 = random_vec(1)[0];
         Fr_t claim_after_0 = rp0(alpha_0);
 
-        // Round 1
-        vector<Fr_t> bound_1 = {alpha_0};
-        Polynomial rp1 = transcript_mask_round_poly(tmask, 1, bound_1, b);
+        // Round 1: variable 1, variable 0 bound to alpha_0
+        vector<uint> bound_idx_1 = {0};
+        vector<Fr_t> bound_val_1 = {alpha_0};
+        Polynomial rp1 = transcript_mask_round_poly(tmask, 1, bound_idx_1, bound_val_1, b);
         Fr_t sum_1 = rp1(FR_ZERO) + rp1(FR_ONE);
 
         check(sum_1 == claim_after_0,
@@ -158,11 +161,12 @@ int main() {
         auto tmask = generate_transcript_mask(b, degree);
 
         Fr_t current_claim = tmask.P_sum;
-        vector<Fr_t> bound;
+        vector<uint> bound_indices;
+        vector<Fr_t> bound_values;
         bool chain_ok = true;
 
         for (uint j = 0; j < b; j++) {
-            Polynomial rp = transcript_mask_round_poly(tmask, j, bound, b);
+            Polynomial rp = transcript_mask_round_poly(tmask, j, bound_indices, bound_values, b);
             Fr_t s0 = rp(FR_ZERO);
             Fr_t s1 = rp(FR_ONE);
             if (s0 + s1 != current_claim) {
@@ -172,11 +176,12 @@ int main() {
             }
             auto alpha = random_vec(1)[0];
             current_claim = rp(alpha);
-            bound.push_back(alpha);
+            bound_indices.push_back(j);
+            bound_values.push_back(alpha);
         }
 
         // After all rounds, current_claim should equal p(alpha_0,...,alpha_{b-1})
-        Fr_t p_final = eval_transcript_mask(tmask, bound);
+        Fr_t p_final = eval_transcript_mask(tmask, bound_values);
         if (current_claim != p_final) {
             cout << "    Final eval mismatch" << endl;
             chain_ok = false;
