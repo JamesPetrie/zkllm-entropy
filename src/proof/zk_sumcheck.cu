@@ -173,10 +173,10 @@ Fr_t zkip_zk(
     // For vanishing masking: coefficient index = variable index = b-1-j for round j.
     // For transcript masking: the round polynomial functions use forward indexing.
 
-    uint b = total_rounds;
+    uint num_vars = total_rounds;
 
-    for (uint j = 0; j < b; j++) {
-        uint var_idx = b - 1 - j;  // variable being bound this round
+    for (uint j = 0; j < num_vars; j++) {
+        uint var_idx = num_vars - 1 - j;  // variable being bound this round
 
         // Get vanishing coefficients for this round's variable
         Fr_t c_a_j = FR_ZERO;
@@ -192,7 +192,7 @@ Fr_t zkip_zk(
         Polynomial g = zkip_zk_step_poly(cur_a, cur_b, c_a_j, c_b_j);
 
         // Compute transcript masking round polynomial p_round(X)
-        Polynomial p_round = transcript_mask_round_poly(tmask, j, bound_challenges, b);
+        Polynomial p_round = transcript_mask_round_poly(tmask, j, bound_challenges, num_vars);
 
         // Combined: s(X) = g(X) + rho * p_round(X)
         Polynomial rho_poly(rho);
@@ -557,7 +557,7 @@ std::vector<Fr_t> inner_product_sumcheck_zk(
     std::vector<Fr_t> flat_proof;
     uint num_rounds = u.size();
     for (uint j = 0; j < num_rounds; j++) {
-        const Polynomial& rp = poly_proof[j];
+        Polynomial& rp = poly_proof[j];
         for (uint t = 0; t < 5; t++) {
             flat_proof.push_back(rp(FR_FROM_INT(t)));
         }
