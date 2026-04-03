@@ -401,6 +401,7 @@ Fr_t Polynomial::eq(const Fr_t& u, const Fr_t& v)
     return result;
 }
 
+#ifdef USE_GOLDILOCKS
 // ── Lagrange interpolation from evaluation form ─────────────────────────────
 // Given evals[k] = p(k) for k = 0,1,...,d, recover the degree-d polynomial
 // in coefficient form.
@@ -471,5 +472,6 @@ Polynomial Polynomial::from_evaluations(const std::vector<Fr_t>& evals) {
 
     return Polynomial(result_coeffs);
 }
+#endif // USE_GOLDILOCKS
 
 // dummy

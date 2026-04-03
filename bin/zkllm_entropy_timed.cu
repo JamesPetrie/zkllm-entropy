@@ -176,7 +176,9 @@ int main(int argc, char* argv[]) {
     cout << "Generating entropy proof..." << endl;
     vector<Polynomial> proof;
     vector<Claim> entropy_claims;
-    entropy_prover.prove(logits_seq, tokens, total_entropy, proof, entropy_claims);
+    vector<Fr_t> entropy_challenges;
+    vector<FriPcsCommitment> entropy_commitments;
+    entropy_prover.prove(logits_seq, tokens, total_entropy, proof, entropy_claims, entropy_challenges, entropy_commitments);
     cudaDeviceSynchronize();
     t_entropy_prove.stop();
 
