@@ -147,7 +147,6 @@ Fr_t zkip_zk(
     }
 
     // Current round index (we process from the last variable backward)
-    uint round_from_end = total_rounds;  // counts down
     // The plan processes u.back() first (same as zkip), so round_idx in the
     // forward direction is: total_original_rounds - rounds_remaining
     // We need to track this externally. For now, we use a helper approach:
@@ -157,8 +156,12 @@ Fr_t zkip_zk(
     // (The recursive approach in zkip makes round tracking awkward.)
 
     Fr_t current_claim = claim;
-    FrTensor cur_a = a;  // shallow copy (shares gpu_data)
-    FrTensor cur_b = b;
+    // We need mutable tensors that change size each round. FrTensor::operator=
+    // requires matching sizes, so we use a pair of pointers and allocate new
+    // tensors each round (the old ones are freed when they go out of scope).
+    // Start by copying a and b to owned tensors.
+    FrTensor* cur_a = new FrTensor(a);  // deep copy
+    FrTensor* cur_b = new FrTensor(b);
     std::vector<Fr_t> bound_challenges;
 
     // Note: zkip processes u.back() first (last variable), but the masking
@@ -189,7 +192,7 @@ Fr_t zkip_zk(
         }
 
         // Compute honest round polynomial g(X) (degree 4)
-        Polynomial g = zkip_zk_step_poly(cur_a, cur_b, c_a_j, c_b_j);
+        Polynomial g = zkip_zk_step_poly(*cur_a, *cur_b, c_a_j, c_b_j);
 
         // Compute transcript masking round polynomial p_round(X)
         Polynomial p_round = transcript_mask_round_poly(tmask, j, bound_challenges, num_vars);
@@ -213,14 +216,17 @@ Fr_t zkip_zk(
         bound_challenges.push_back(alpha);
 
         // Fold a, b
-        uint N_in = cur_a.size;
+        uint N_in = cur_a->size;
         uint N_out = (1 << ceilLog2(N_in)) >> 1;
-        FrTensor new_a(N_out), new_b(N_out);
+        FrTensor* new_a = new FrTensor(N_out);
+        FrTensor* new_b = new FrTensor(N_out);
         zkip_zk_reduce_kernel<<<(N_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(
-            cur_a.gpu_data, cur_b.gpu_data,
-            new_a.gpu_data, new_b.gpu_data,
+            cur_a->gpu_data, cur_b->gpu_data,
+            new_a->gpu_data, new_b->gpu_data,
             alpha, N_in, N_out);
 
+        delete cur_a;
+        delete cur_b;
         cur_a = new_a;
         cur_b = new_b;
     }
@@ -241,8 +247,10 @@ Fr_t zkip_zk(
     // Simply: s* in original order = u (which is what we want).
 
     Fr_t raw_a, raw_b;
-    cudaMemcpy(&raw_a, cur_a.gpu_data, sizeof(Fr_t), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&raw_b, cur_b.gpu_data, sizeof(Fr_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&raw_a, cur_a->gpu_data, sizeof(Fr_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&raw_b, cur_b->gpu_data, sizeof(Fr_t), cudaMemcpyDeviceToHost);
+    delete cur_a;
+    delete cur_b;
 
     // Vanishing corrections using u as the point (original variable order)
     Fr_t corr_a = FR_ZERO;
@@ -386,8 +394,8 @@ Fr_t zkip_stacked_zk(
 
     uint total_rounds = uN.size() + uD.size();
     Fr_t current_claim = claim;
-    FrTensor cur_A = A;
-    FrTensor cur_B = B;
+    FrTensor* cur_A = new FrTensor(A);
+    FrTensor* cur_B = new FrTensor(B);
     uint cur_N = N;
     std::vector<Fr_t> cur_uN = uN;
     std::vector<Fr_t> cur_vN = vN;
@@ -411,7 +419,7 @@ Fr_t zkip_stacked_zk(
             c_b_j = mask_b.vanishing_coeffs[var_idx];
         }
 
-        Polynomial g = zkip_stacked_zk_step_poly(cur_A, cur_B, cur_uN, c_a_j, c_b_j, cur_N, D);
+        Polynomial g = zkip_stacked_zk_step_poly(*cur_A, *cur_B, cur_uN, c_a_j, c_b_j, cur_N, D);
 
         // Transcript masking
         Polynomial p_round = transcript_mask_round_poly(tmask, j, bound_challenges, total_rounds);
@@ -435,12 +443,15 @@ Fr_t zkip_stacked_zk(
         // Fold A, B
         uint N_out = (1 << ceilLog2(cur_N)) >> 1;
         uint size_out = N_out * D;
-        FrTensor new_A(size_out), new_B(size_out);
+        FrTensor* new_A = new FrTensor(size_out);
+        FrTensor* new_B = new FrTensor(size_out);
         zkip_stacked_zk_reduce_kernel<<<(size_out+FrNumThread-1)/FrNumThread,FrNumThread>>>(
-            cur_A.gpu_data, cur_B.gpu_data,
-            new_A.gpu_data, new_B.gpu_data,
+            cur_A->gpu_data, cur_B->gpu_data,
+            new_A->gpu_data, new_B->gpu_data,
             alpha, cur_N, N_out, D);
 
+        delete cur_A;
+        delete cur_B;
         cur_A = new_A;
         cur_B = new_B;
         cur_N = N_out;
@@ -529,7 +540,10 @@ Fr_t zkip_stacked_zk(
             mask_b.vanishing_coeffs.begin() + std::min((size_t)d_rounds, mask_b.vanishing_coeffs.size()));
     }
 
-    return zkip_zk(current_claim, cur_A, cur_B, uD, mask_a_d, mask_b_d, tmask_d, rho, proof, result);
+    Fr_t final_claim = zkip_zk(current_claim, *cur_A, *cur_B, uD, mask_a_d, mask_b_d, tmask_d, rho, proof, result);
+    delete cur_A;
+    delete cur_B;
+    return final_claim;
 }
 
 // ── ZK inner product sumcheck (flat Fr_t format) ────────────────────────────
