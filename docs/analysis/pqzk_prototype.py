@@ -220,7 +220,9 @@ class BaseFoldCommitment:
 def sumcheck_matmul_masked(W_data, x_data, y_data, W_coeffs, x_coeffs,
                            W_commit, x_commit, a, b, label=""):
     """
-    Run a masked sumcheck proving y = Wx.
+    Run a masked sumcheck proving y = Wx with full ZK:
+      - Vanishing polynomial masking hides final opened values
+      - g + rho*p masking (XZZ+19) hides round polynomials
 
     The verifier picks r (row challenge), computes T = y_mle(r),
     then the prover proves: sum_{c in {0,1}^b} Z_W(r, c) * Z_x(c) = T
@@ -237,21 +239,52 @@ def sumcheck_matmul_masked(W_data, x_data, y_data, W_coeffs, x_coeffs,
     T = mle_eval(y_data, r)
     transcript['learned']['T (public claim)'] = T
 
-    # Verify the sum is correct (prover sanity check)
+    # Verify the sum is correct (prover sanity check — soft, for soundness tests)
     check_sum = 0
     for c_idx in range(pN):
         c = bits(c_idx, b)
         w_pt = list(c) + list(r)
         check_sum = fadd(check_sum, fmul(masked_eval(W_data, w_pt, W_coeffs),
                                           masked_eval(x_data, c, x_coeffs)))
-    assert check_sum == T, f"[{label}] Masked sum {check_sum} != T {T}"
+    if check_sum != T:
+        transcript['checks'].append(f"Prover sanity: sum={check_sum} != T={T}, proof will fail")
+        # Continue anyway — the sumcheck will catch this at some round
 
     # Degree 4 sumcheck (product of two degree-2 polynomials)
     deg_per_round = 4
     n_eval = deg_per_round + 1  # 5 evaluations per round
 
+    # ---- g + rho*p sumcheck masking (XZZ+19) ----
+    # Prover generates masking polynomial p(X_1,...,X_b) = a_0 + sum_i p_i(X_i)
+    # where each p_i is a univariate of degree deg_per_round.
+    # p is independent of the witness — it's purely random.
+    p_a0 = frand()
+    p_univariates = [[frand() for _ in range(deg_per_round)] for _ in range(b)]
+
+    def eval_mask_poly_p(point):
+        """Evaluate p(X_1,...,X_b) = a_0 + sum_i p_i(X_i)."""
+        result = p_a0
+        for i in range(len(point)):
+            xi = point[i]
+            xi_pow = xi
+            for coeff in p_univariates[i]:
+                result = fadd(result, fmul(coeff, xi_pow))
+                xi_pow = fmul(xi_pow, xi)
+        return result
+
+    # Compute P = sum_{c in {0,1}^b} p(c)
+    P_sum = 0
+    for c_idx in range(pN):
+        c = bits(c_idx, b)
+        P_sum = fadd(P_sum, eval_mask_poly_p(c))
+
+    # Verifier picks rho
+    rho = frand()
+
+    # Combined claim: T + rho * P
+    current_claim = fadd(T, fmul(rho, P_sum))
+
     challenges = []
-    current_claim = T
 
     for j in range(b):
         remaining = b - j - 1
@@ -275,7 +308,10 @@ def sumcheck_matmul_masked(W_data, x_data, y_data, W_coeffs, x_coeffs,
                 z_w_val = fadd(w_mle_val, w_correction)
                 z_x_val = fadd(x_mle_val, x_correction)
 
-                total = fadd(total, fmul(z_w_val, z_x_val))
+                # g(c) + rho * p(c)
+                g_val = fmul(z_w_val, z_x_val)
+                p_val = eval_mask_poly_p(full_c)
+                total = fadd(total, fadd(g_val, fmul(rho, p_val)))
             s_vals[X] = total
 
         # Verifier check: s(0) + s(1) = current_claim
@@ -298,19 +334,25 @@ def sumcheck_matmul_masked(W_data, x_data, y_data, W_coeffs, x_coeffs,
     z_w_val = W_commit.open_at(w_open_pt)
     z_x_val = x_commit.open_at(s_star)
 
+    # Prover reveals p(s*) — safe because p is random, independent of witness
+    p_at_s_star = eval_mask_poly_p(s_star)
+
     # Verifier checks the opening against the commitment
     assert W_commit.verify_opening(w_open_pt, z_w_val), f"[{label}] W commitment opening failed"
     assert x_commit.verify_opening(s_star, z_x_val), f"[{label}] x commitment opening failed"
 
-    # Verifier checks: Z_W * Z_x == current_claim
-    final_check = fmul(z_w_val, z_x_val)
+    # Verifier checks: Z_W * Z_x + rho * p(s*) == current_claim
+    final_check = fadd(fmul(z_w_val, z_x_val), fmul(rho, p_at_s_star))
     success = (final_check == current_claim)
 
     transcript['learned']['Z_W(r, s*)'] = z_w_val
     transcript['learned']['Z_x(s*)'] = z_x_val
+    transcript['learned']['p(s*)'] = p_at_s_star
     transcript['learned']['rounds'] = b
     transcript['learned']['degree'] = deg_per_round
-    transcript['checks'].append(f"Final: Z_W*Z_x = {final_check}, claim = {current_claim}, {'PASS' if success else 'FAIL'}")
+    transcript['checks'].append(
+        f"Final: Z_W*Z_x + rho*p(s*) = {final_check}, claim = {current_claim}, "
+        f"{'PASS' if success else 'FAIL'}")
 
     # Record what the verifier does NOT learn
     raw_w = mle_eval(W_data, w_open_pt)
@@ -456,6 +498,8 @@ def main():
     for layer, t in [("Layer 1", t1), ("Layer 2", t2)]:
         print(f"      - {layer}: Z_W(r,s*) = {t['learned']['Z_W(r, s*)']} (masked)")
         print(f"      - {layer}: Z_x(s*)   = {t['learned']['Z_x(s*)']} (masked)")
+        print(f"      - {layer}: p(s*)     = {t['learned']['p(s*)']} (random, independent of witness)")
+    print(f"      - Round polynomials: masked by g + rho*p (statistically random)")
 
     print("\n    What the verifier does NOT learn:")
     for layer, t in [("Layer 1", t1), ("Layer 2", t2)]:
@@ -463,6 +507,7 @@ def main():
               f"(hidden, masked differs: {t['hidden']['W_masked_differs']})")
         print(f"      - {layer}: x_mle(s*)   = {t['hidden']['x_mle(s*)']} "
               f"(hidden, masked differs: {t['hidden']['x_masked_differs']})")
+    print(f"      - Raw round polynomials (hidden behind rho*p masking)")
 
     print(f"\n    Cross-layer intermediate y1 = {y1}")
     print(f"    Verifier NEVER sees y1 values — only the Merkle root of the masked y1 polynomial.")
@@ -482,35 +527,50 @@ def main():
     print(f"      x, y2:  {len(c_x)} coeffs (k_vec={b} vars, 1 opening)")
     print(f"      y1:     {len(c_y1)} coeffs (k_vec={b} vars, 2 openings, need >2)")
 
-    # ---- Step 7: Soundness check — try cheating ----
-    print("\n  Step 7: Soundness test — prover tries to cheat")
+    # ---- Step 7: Soundness checks — actually run fake sumchecks ----
+    print("\n  Step 7: Soundness tests — cheating provers caught")
 
-    # Cheating prover: claims y1_fake instead of real y1
-    y1_fake = [(y + 1) % P for y in y1]  # slightly wrong
+    # Scenario A: Wrong intermediate y1 (layer 2 fails)
+    # Prover commits to y1_fake, uses it as input to layer 2.
+    # Layer 2 sumcheck should fail because W2 * y1_fake != y2.
+    print("\n    --- Scenario A: wrong y1 as layer 2 input ---")
+    y1_fake = [(y + 1) % P for y in y1]
     y1_fake_pad = pad_pow2(y1_fake, pM)
-    c_y1_fake = make_masking_coeffs(k_vec, num_openings=1)
-
-    # Layer 1 with fake output: should fail
-    print("\n    --- Fake Layer 1: claims y1_fake = W1*x ---")
-    # Prover assembles the claim: sum Z_W(r,c)*Z_x(c) should equal y1_fake_mle(r)
-    # But the actual sum equals y1_mle(r), not y1_fake_mle(r).
-    r_test = [frand() for _ in range(a)]
-    real_T = mle_eval(y1_pad, r_test)
-    fake_T = mle_eval(y1_fake_pad, r_test)
-    print(f"    Real T = y1_mle(r) = {real_T}")
-    print(f"    Fake T = y1_fake_mle(r) = {fake_T}")
-    print(f"    Differ: {real_T != fake_T} — prover cannot make sumcheck succeed with wrong claim")
-
-    # Cross-layer binding: if prover uses different y1 for layers 1 and 2
+    c_y1_fake = make_masking_coeffs(k_vec, num_openings=2)
     com_y1_fake = BaseFoldCommitment(y1_fake_pad, c_y1_fake)
-    roots_match_fake = com_y1.get_root() == com_y1_fake.get_root()
-    print(f"    com_y1 root == com_y1_fake root: {roots_match_fake}")
-    print(f"    Verifier detects inconsistency: commitment roots differ.")
+
+    ok_fake_A, t_fake_A = sumcheck_matmul_masked(
+        W2_flat, y1_fake_pad, y2_pad, c_W2, c_y1_fake, com_W2, com_y1_fake,
+        a, b, label="Fake Layer 2 (wrong y1)"
+    )
+    for check in t_fake_A['checks']:
+        print(f"      {check}")
+    print(f"    Scenario A result: {'PASS (bug!)' if ok_fake_A else 'FAIL (cheating caught)'}")
+
+    # Scenario B: Wrong weights W1 (layer 1 fails)
+    # Prover uses W1_fake but claims output is real y1.
+    # Layer 1 sumcheck should fail because W1_fake * x != y1.
+    print("\n    --- Scenario B: wrong W1 in layer 1 ---")
+    W1_fake = [[(w + 1) % P for w in row] for row in W1]
+    W1_fake_flat = mat_flat(W1_fake, M, N, pM, pN)
+    c_W1_fake = make_masking_coeffs(k_W_mask, num_openings=1)
+    com_W1_fake = BaseFoldCommitment(W1_fake_flat, c_W1_fake)
+
+    ok_fake_B, t_fake_B = sumcheck_matmul_masked(
+        W1_fake_flat, x_pad, y1_pad, c_W1_fake, c_x, com_W1_fake, com_x,
+        a, b, label="Fake Layer 1 (wrong W1)"
+    )
+    for check in t_fake_B['checks']:
+        print(f"      {check}")
+    print(f"    Scenario B result: {'PASS (bug!)' if ok_fake_B else 'FAIL (cheating caught)'}")
 
     # ---- Final result ----
     print("\n" + "=" * 70)
-    overall = ok1 and ok2
+    overall = ok1 and ok2 and (not ok_fake_A) and (not ok_fake_B)
     print(f"OVERALL: {'PASS' if overall else 'FAIL'}")
+    print(f"  Honest proofs:    Layer 1 {'PASS' if ok1 else 'FAIL'}, Layer 2 {'PASS' if ok2 else 'FAIL'}")
+    print(f"  Soundness tests:  Scenario A {'caught' if not ok_fake_A else 'MISSED'}, "
+          f"Scenario B {'caught' if not ok_fake_B else 'MISSED'}")
     print("=" * 70)
 
     if overall:
