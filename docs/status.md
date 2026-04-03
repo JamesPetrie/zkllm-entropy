@@ -9,6 +9,9 @@
 | `test_zknormalcdf` | **All 5 tests PASS** (job 1898) |
 | `test_zkentropy` | **All 6 tests PASS** (job 1898) |
 | `zkllm_entropy` | Built (needs rebuild after architecture change) |
+| `gold_test_zk_mask` | 5/10 PASS, remaining 5 pending GPU reset (branch: zk-masking-implementation) |
+| `gold_test_zk_sumcheck` | Pending GPU reset (branch: zk-masking-implementation) |
+| `test_zk_verifier` | **All 12 tests PASS** — CPU-only, no GPU needed (branch: zk-masking-implementation) |
 
 ## Files
 
@@ -21,6 +24,11 @@
 | `zkllm_entropy.cu` | Main prover: proves final RMSNorm + lm_head via committed weights, then entropy |
 | `commit_final_layers.py` | Quantise and commit lm_head + final norm weights (run once) |
 | `gen_entropy_inputs.py` | Generate final_norm-rms_inv.bin + tokens.txt from layer-31-output.bin |
+| `zk_mask.cuh/cu` | ZK masking: vanishing polynomial + XZZ+19 transcript masking (CPU-side) |
+| `zk_sumcheck.cuh/cu` | Degree-4 ZK sumcheck kernels: `zkip_zk`, `zkip_stacked_zk`, `inner_product_sumcheck_zk` |
+| `sumcheck_verifier.h` | CPU verifier for standard and ZK sumcheck proofs |
+| `verifier_utils.h` | Host-side Goldilocks arithmetic and proof parsing utilities |
+| `test_zk_verifier.cpp` | CPU-only tests for ZK sumcheck verifier |
 | `verify_entropy.py` | CPU-only verifier: checks all arithmetic claims in a proof file |
 | `calibrate_sigma.py` | Find sigma_eff from empirical token match rate or a target rate |
 | `test_zkargmax.cu` | Unit tests for zkArgmax |

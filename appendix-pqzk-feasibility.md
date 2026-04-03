@@ -1,5 +1,7 @@
 # Appendix: Feasibility of Post-Quantum Zero-Knowledge Inference Verification
 
+> **Implementation note (2026-04-03):** Steps 2 and 5 of the design below (vanishing polynomial masking and sumcheck transcript masking) have been implemented in the CUDA codebase on branch `zk-masking-implementation`. See `src/proof/zk_mask.cuh`, `src/proof/zk_sumcheck.cu`, and `docs/plans/plan-zk-blinding.md` for implementation status. Steps 3-4 (BaseFold commitment scheme) and Step 6 (cross-layer consistency via batched openings) remain future work.
+
 ## Motivation
 
 The current proof system (per-operation sumchecks + Pedersen commitments on BLS12-381) achieves soundness and weight confidentiality but not full zero knowledge. Intermediate polynomial evaluations are revealed at each sumcheck step — for example, when proving $y = Wx$, the verifier learns $\tilde{W}(r,s)$ and $\tilde{x}(s)$ at the sumcheck's random evaluation point. These evaluations leak information about model weights and activations. Additionally, Pedersen commitments rely on the discrete logarithm assumption, which is vulnerable to quantum attack.

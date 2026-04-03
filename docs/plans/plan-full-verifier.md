@@ -690,10 +690,11 @@ This is the recommended first milestone — it closes the two highest-severity g
 
 ### New files
 - `verifier.cpp` — main verifier entry point (~500 lines)
-- `verifier_utils.h` — proof parsing, host field arithmetic (~300 lines)
-- `sumcheck_verifier.h` — sumcheck verification (~100 lines)
+- `verifier_utils.h` — proof parsing, host field arithmetic — **CREATED** (`verifier/verifier_utils.h`)
+- `sumcheck_verifier.h` — sumcheck verification — **CREATED** (`verifier/sumcheck_verifier.h`, includes both standard and ZK variants)
 - `tlookup_verifier.h` — LogUp verification (~150 lines)
 - `test_verifier.cu` — verifier unit tests (~300 lines)
+- `test_zk_verifier.cpp` — ZK verifier tests — **CREATED** (`verifier/test_zk_verifier.cpp`, 12 tests passing)
 
 ### Modified files
 - `zkllm_entropy.cu` — split into round 1 (commit) + round 3 (prove) (~100 lines changed)
