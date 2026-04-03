@@ -10,6 +10,8 @@ Fr_t operator-(const Fr_t& a, const Fr_t& b);
 Fr_t operator-(const Fr_t& a);
 Fr_t operator*(const Fr_t& a, const Fr_t& b);
 Fr_t operator/(const Fr_t& a, const Fr_t& b);
+bool operator==(const Fr_t& a, const Fr_t& b);
+bool operator!=(const Fr_t& a, const Fr_t& b);
 Fr_t inv(const Fr_t& a);
 
 class Polynomial{
