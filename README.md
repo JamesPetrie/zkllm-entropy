@@ -2,13 +2,13 @@
 
 ## With Probabilistic Tolerance for Hardware Non-Determinism
 
-This repository forks [zkLLM](https://github.com/jvhs0706/zkllm-ccs2024) and adds a zero-knowledge proof of conditional entropy for LLM inference outputs. The `goldilocks-fri` branch replaces BLS12-381 / Pedersen commitments with Goldilocks field arithmetic and FRI-based hash commitments (SHA-256 Merkle trees), achieving ~10× faster field operations, 3× smaller proofs, and post-quantum security.
+This repository forks [zkLLM](https://github.com/jvhs0706/zkllm-ccs2024) and adds a zero-knowledge proof of conditional entropy for LLM inference outputs. `main` uses the original BLS12-381 field and Pedersen (Hyrax-style) commitments — the same cryptographic stack as the upstream zkLLM paper. The `pq-goldilocks` branch ports the pipeline to the Goldilocks field with FRI / Merkle commitments for post-quantum security and faster GPU field arithmetic.
 
 ---
 
 ## Summary
 
-We developed a zero-knowledge proof system that verifies LLM inference without requiring exact floating-point reproducibility. Instead of proving "the model produced exactly these tokens," we prove "at most H bits of hidden information could be encoded in this output." This handles real-world GPU non-determinism while still bounding covert channels like model weight exfiltration. Proof generation is ~1,300× slower than FP16 inference, but random sampling makes it practical.
+We developed a zero-knowledge proof system that verifies LLM inference without requiring exact floating-point reproducibility. Instead of proving "the model produced exactly these tokens," we prove "at most H bits of hidden information could be encoded in this output." This handles real-world GPU non-determinism while still bounding covert channels like model weight exfiltration.
 
 ### Applications
 
@@ -29,7 +29,7 @@ We developed a zero-knowledge proof system that verifies LLM inference without r
 ## What Is Proven
 
 **Inputs (public or committed):**
-- Model weights W (committed via Merkle tree — hidden from verifier)
+- Model weights W (committed via Pedersen commitment — hidden from verifier)
 - Input token sequence x (public)
 - Output token sequence o (public)
 - Hardware noise parameter σ (public, calibrated empirically)
@@ -76,10 +76,10 @@ $$\hat{C}(O) = -\sum_{i=1}^{m} \log_2 \hat{q}(o_i; W, I, o_{\lt i})$$
 
 Real GPU inference is non-deterministic: the same model on the same input can produce slightly different logits due to floating-point accumulation order. We model this as Gaussian noise on logits:
 
-$$q(o_i) = \frac{\Phi\left(\frac{v^* - \ell_i}{\sigma\sqrt{2}}\right)}{\sum_j \Phi\left(\frac{v^* - \ell_j}{\sigma\sqrt{2}}\right)}$$
+$$q(o_i) = \frac{\Phi\left(\frac{v^{*} - \ell_i}{\sigma\sqrt{2}}\right)}{\sum_j \Phi\left(\frac{v^{*} - \ell_j}{\sigma\sqrt{2}}\right)}$$
 
 Where:
-- v* is the maximum logit (greedy decoding)
+- v\* is the maximum logit (greedy decoding)
 - ℓ_i is the logit for token i
 - σ is calibrated so the noise model predicts ~97% exact token matches
 - Φ is the standard normal CDF
@@ -98,19 +98,14 @@ Existing work (e.g. [zkLLM](https://github.com/jvhs0706/zkllm-ccs2024), [zkML](h
 
 ### Cryptographic stack
 
-The `goldilocks-fri` branch supports two field/commitment backends, selected at compile time:
+`main` uses the upstream zkLLM cryptographic stack:
 
-| | BLS12-381 (legacy) | Goldilocks (current) |
-|---|---|---|
-| **Field** | 255-bit, Montgomery form | 64-bit (p = 2⁶⁴ − 2³² + 1) |
-| **Commitment** | Pedersen (EC multi-scalar mul) | SHA-256 Merkle tree |
-| **Opening** | EC recursive halving | FRI polynomial commitment |
-| **Post-quantum** | No | Yes |
-| **Field multiply** | 25.4 ms / 33M ops | 2.6 ms / 33M ops (9.8× faster) |
-| **Commitment speed** | 1.4 M elements/s | 450 M elements/s (318× faster) |
-| **Proof size (1024 tok)** | 216 KB | 72 KB (3× smaller) |
+- **Field:** BLS12-381 scalar field (255-bit, Montgomery form)
+- **Commitment:** Pedersen (EC multi-scalar multiplication), Hyrax-style with trusted-setup generators
+- **Opening:** EC recursive halving
+- **Sumchecks:** Inner-product, Hadamard-product, and Boolean sumchecks built on top of the Pedersen commitment layer
 
-All development is on the Goldilocks backend. BLS12-381 is retained for comparison.
+The `pq-goldilocks` branch swaps BLS12-381 for the 64-bit Goldilocks field and replaces Pedersen with FRI / SHA-256 Merkle commitments, eliminating the trusted setup and providing post-quantum security. See that branch's README for performance comparisons.
 
 ### Architecture
 
@@ -139,23 +134,20 @@ All T positions are processed as a single T×V tensor. Only the aggregate entrop
 7. **Surprise lookup** — `surprise[t] = −log₂(q[t] / 2^p) × log_scale` via tLookup
 8. **Accumulate** — `H = Σ_t surprise[t]`
 
+A slack-free redesign of this pipeline (sandwich-based argmax and surprise, no quotient-remainder) is described in `docs/analysis/entropy-redesign-plan.md`.
+
 ### Proof protocol
 
-The system uses **interactive proofs** (verifier provides fresh random challenges). Because the output is committed before proof generation begins, a failed proof is a detection event. At the 64-bit Goldilocks field size, a cheating prover is caught with probability 1 − 2⁻⁶⁴ (~1 − 10⁻¹⁹) per challenge, eliminating the need for proof repetitions.
-
-Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-interactive at 100-bit security), cutting prover work substantially.
+The system uses **interactive proofs** (verifier provides fresh random challenges). Because the output is committed before proof generation begins, a failed proof is a detection event. Soundness error per challenge is negligible in the BLS12-381 scalar field.
 
 ### Proof modules
 
 | Module | File | Role |
 |---|---|---|
-| Goldilocks field | `src/field/goldilocks.cu/cuh` | 64-bit prime field arithmetic |
-| NTT | `src/poly/ntt.cu/cuh` | Number-theoretic transform (domains up to 2³²) |
-| Commitment | `src/commit/commitment.cu/cuh` | Commitment interface (Pedersen / Merkle) |
-| Merkle tree | `src/commit/merkle.cu/cuh` | GPU SHA-256 Merkle commitment |
-| FRI | `src/commit/fri.cu/cuh` | FRI polynomial commitment protocol |
-| FRI PCS | `src/commit/fri_pcs.cu/cuh` | Integration layer: commit, open, MLE |
+| BLS12-381 field | `src/field/bls12-381.cu/cuh` | 255-bit prime field arithmetic (Montgomery form) |
+| Commitment | `src/commit/commitment.cu/cuh` | Pedersen commitment (MSM) |
 | Sumchecks | `src/proof/proof.cu/cuh` | Inner product, Hadamard, binary sumchecks |
+| Polynomial | `src/poly/polynomial.cu/cuh` | Low-degree polynomial manipulation for sumcheck rounds |
 | tLookup | `src/zknn/tlookup.cu/cuh` | LogUp lookup argument (range + mapping) |
 | zkArgmax | `src/zknn/zkargmax.cu/cuh` | Argmax via bit-decomposition range proof |
 | zkNormalCDF | `src/zknn/zknormalcdf.cu/cuh` | Normal CDF via lookup table |
@@ -168,43 +160,12 @@ Interactive proofs also reduce FRI to 1 query per opening (vs ~50 for non-intera
 
 ### Test suite
 
-101+ tests pass across 8 Goldilocks test binaries:
-
-| Binary | Tests | Coverage |
-|---|---|---|
-| `test_goldilocks` | 36 | Field arithmetic, edge cases, algebraic properties |
-| `test_gold_tensor` | 18 | Tensor ops, MLE, inner product sumcheck, matmul |
-| `test_ntt` | 6 | Forward/inverse/coset NTT, root of unity, round-trip |
-| `test_merkle` | 9 | Deterministic root, proof verification, tamper detection |
-| `test_fri` | 6 | Small/medium/large polynomial commit-prove-verify |
-| `test_fri_pcs` | 17 | MLE evaluation, binding check, sumcheck integration, Weight |
-| `gold_test_zkargmax` | 6 | Argmax via bit-decomposition range proof |
-| `gold_test_zkentropy` | 9 | Batched entropy: argmax, surprise, proof generation, consistency |
-
-Additional BLS12-381 test binaries: `test_zkargmax` (6), `test_zklog` (5), `test_zknormalcdf` (5), `test_zkentropy` (9).
-
-### Performance (H100 PCIe, Llama-2-7B, 1024 tokens)
-
-**Entropy layer only** (final RMSNorm + lm_head + entropy prove, via `gold_zkllm_entropy_timed`):
-
-| Phase | BLS12-381 | Goldilocks |
-|---|---|---|
-| Load data + weights | 2.9 s | 2.8 s |
-| lm_head compute | 4.7 s | 0.4 s |
-| Entropy compute | 0.2 s | 0.1 s |
-| **Entropy prove** | **2.0 s** | **1.6 s** |
-| lm_head prove | 1.4 s | 0.05 s |
-| RMSNorm prove | 0.8 s | 0.03 s |
-| **Total (entropy layer)** | **12.2 s** | **5.1 s** |
-
-**Full 32-layer pipeline** (via `run_proofs.py`):
-
-| Configuration | 32 layers | Per layer | Entropy layer | Total |
-|---|---|---|---|---|
-| BLS12-381 (separate processes) | 11 min 3 sec | ~20.7 s | 12.2 s | ~11 min 15 sec |
-| Goldilocks (persistent CUDA server) | 56 sec | ~1.75 s | 5.1 s | **~61 sec** |
-
-The Goldilocks + persistent server configuration is ~11× faster end-to-end, due to ~10× faster 64-bit field arithmetic and elimination of per-process CUDA context initialization (~2s per launch).
+| Binary | Coverage |
+|---|---|
+| `test_zkargmax` | Argmax via bit-decomposition range proof |
+| `test_zklog` | `−log₂` lookup table proof |
+| `test_zknormalcdf` | Normal CDF lookup table proof |
+| `test_zkentropy` | Batched entropy: argmax, surprise, proof generation, consistency |
 
 ---
 
@@ -212,42 +173,32 @@ The Goldilocks + persistent server configuration is ~11× faster end-to-end, due
 
 Requires an NVIDIA GPU (sm_90 / H100 recommended) and CUDA 13+.
 
-### Build (Goldilocks mode)
+### Build
 
 ```bash
 cd zkllm-entropy
-make clean && make -j64 gold_zkllm_entropy test_goldilocks test_gold_tensor test_ntt test_merkle test_fri test_fri_pcs gold_test_zkargmax gold_test_zkentropy
+make clean && make -j64 all
 ```
 
 ### Run tests
 
 ```bash
-./test_goldilocks && ./test_gold_tensor && ./test_ntt && ./test_merkle && ./test_fri && ./test_fri_pcs && ./gold_test_zkargmax && ./gold_test_zkentropy
+./test_zkargmax && ./test_zklog && ./test_zknormalcdf && ./test_zkentropy
 ```
 
-### Run the entropy prover (Goldilocks)
+### Run the entropy prover
 
 ```bash
-./gold_zkllm_entropy \
+./zkllm_entropy \
     <logits_dir> \
     <tokens.txt> \
     <proof_output.bin> \
     <sigma_eff>
 ```
 
-### Build (BLS12-381 legacy mode)
-
-```bash
-make clean && make -j64 all
-```
-
 ### Verify a proof (Python)
 
 ```bash
-# Goldilocks
-USE_GOLDILOCKS=1 python python/verify_entropy.py proof.bin
-
-# BLS12-381
 python python/verify_entropy.py proof.bin
 ```
 
@@ -271,7 +222,7 @@ python python/calibrate_sigma.py --target-match-rate 0.97
 
 ## Known Soundness Gaps
 
-The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The implementation has engineering gaps that are fixable without changing the cryptographic design.
+The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The implementation has engineering gaps that are fixable without changing the cryptographic design. See `docs/analysis/prover-determinism.md` for a detailed analysis of residual prover freedom in zkLLM-style protocols and the sandwich construction that eliminates it.
 
 ### Proof completeness gaps
 
@@ -291,40 +242,25 @@ The mathematical framework (sumcheck + LogUp + Gibbs' inequality) is sound. The 
 
 Planned improvements, roughly in priority order.
 
-### 1. Fix binary sumcheck serialization
+### 1. Execute the slack-free entropy redesign
+
+Replace the bit-decomposition zkArgmax and the quotient-remainder surprise with the sandwich construction described in `docs/analysis/entropy-redesign-plan.md`. This removes prover freedom around rounding and eliminates ~32 binary sumchecks per position.
+
+### 2. Fix binary sumcheck serialization
 
 One-line change: pass `proof` instead of `bin_proof` to `Fr_bin_sc()` in zkargmax.cu. Immediate soundness improvement.
 
-### 2. Store all proof parameters in header
+### 3. Store all proof parameters in header
 
 Add `cdf_precision`, `cdf_scale`, `bit_width` to the proof file header so the verifier reads them rather than using potentially-mismatched defaults.
 
-### 3. Merge argmax into CDF lookup
-
-The CDF tLookup proof already implicitly proves non-negativity of all diffs (and therefore argmax correctness), because the LogUp identity operates on the original field elements — a negative diff (near p) cannot match any table entry. Making the CDF table large enough to cover the full diff range (e.g., `cdf_precision = 20`, table = 8 MB) eliminates the need for the separate zkArgmax bit-decomposition proof entirely, replacing 32 binary sumchecks with zero additional work.
-
 ### 4. Build a cryptographic verifier
 
-Replace `verify_entropy.py` with a verifier that checks sumcheck polynomials, tLookup proofs, FRI openings, and commitment bindings. This is the largest remaining engineering effort.
+Replace `verify_entropy.py` with a verifier that checks sumcheck polynomials, tLookup proofs, Pedersen openings, and commitment bindings. This is the largest remaining engineering effort.
 
 ### 5. Serialize weight-binding proofs
 
 Write `verifyWeightClaim`, `zkFC`, and `Rescaling` proof elements into the proof file. Required for a third-party verifier to confirm that logits derive from committed weights.
-
-### 6. Goldilocks field range validation
-
-Verify that no intermediate value in the proof pipeline overflows the 64-bit Goldilocks modulus (p ≈ 1.8 × 10¹⁹). The entropy layer values (logits, diffs, CDF, win_probs) are comfortably within range (~30–33 bits). The concern is `zkFC` matmul accumulation: summing `in_dim` (4096) products of two ~2³² quantized values gives ~2⁷⁶, which exceeds p. The sumcheck *proof* is valid regardless (it never forms the full accumulation), but the *compute* path that produces logits may wrap. Empirical validation on Llama-2-7B (see `python/overflow_check.py`) shows no overflows in quantized inference — the tightest headroom is 21.2 bits at layer 30 `down_proj`, well within the Goldilocks modulus.
-
-### 7. Port setup tooling to Goldilocks
-
-The weight commitment scripts (`llama-commit.py`, `commit_final_layers.py`, `ppgen`) and per-layer proof orchestration (`run_proofs.py`, `llama-*.py`) currently only support BLS12-381 / Pedersen. These need Goldilocks + FRI PCS equivalents for full end-to-end proving.
-
-### 8. Performance optimization (Phase 7)
-
-- Poseidon2 hash to replace SHA-256 for faster GPU Merkle trees
-- NTT optimization (single-kernel launch, precomputed twiddles)
-- Batch Merkle tree construction across multiple weight matrices
-- Compressed weight storage (int8/int16 with on-the-fly expansion)
 
 ---
 
@@ -332,10 +268,10 @@ The weight commitment scripts (`llama-commit.py`, `commit_final_layers.py`, `ppg
 
 ```
 src/
-  field/          goldilocks.cu/cuh, bls12-381.cu/cuh — field arithmetic
+  field/          bls12-381.cu/cuh — field arithmetic
   tensor/         fr-tensor.cu/cuh, g1-tensor.cu/cuh — GPU tensor operations
-  poly/           polynomial.cu/cuh, ntt.cu/cuh — polynomials and NTT
-  commit/         merkle.cu/cuh, fri.cu/cuh, fri_pcs.cu/cuh — commitments
+  poly/           polynomial.cu/cuh — polynomials
+  commit/         commitment.cu/cuh — Pedersen commitment
   proof/          proof.cu/cuh — sumcheck protocols, Weight struct
   zknn/           tlookup, zkargmax, zknormalcdf, zklog, zkfc,
                   zksoftmax, rescaling, zkrelu — proof modules
@@ -343,17 +279,20 @@ src/
   llm/            rmsnorm, ffn, self-attn, etc. — LLM layer proofs
   util/           ioutils, timer — I/O and timing helpers
 test/
-  test_*.cu       Test binaries (Goldilocks and BLS12-381)
+  test_*.cu       Test binaries
+docs/analysis/
+  prover-determinism.md           Sources of prover freedom and the sandwich fix
+  entropy-redesign-plan.md        Slack-free redesign of the entropy stage
 python/
   verify_entropy.py       Python verifier (arithmetic-only)
   calibrate_sigma.py      Sigma calibration tool
-  overflow_check.py       Goldilocks field overflow analysis (Llama-2-7B)
   commit_final_layers.py  Weight commitment scripts
   run_proofs.py           Per-layer proof orchestration
   llama-*.py              Llama-2 layer proof runners
-Makefile                        Build system (BLS12-381 and Goldilocks targets)
-plan-remaining-proofs.md        Security review and implementation plan
+Makefile                  Build system (BLS12-381 / Pedersen)
 ```
+
+The Goldilocks/FRI port, post-quantum commitment scheme, NTT, SHA-256 Merkle trees, and CPU verifier all live on the `pq-goldilocks` branch.
 
 ---
 
