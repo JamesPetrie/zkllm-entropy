@@ -2,8 +2,11 @@
 #define ZKENTROPY_CUH
 
 #include "zknn/zknormalcdf.cuh"
-// Vestigial from the Goldilocks/FRI branch; unused on the Pedersen path.
-struct FriPcsCommitment { uint32_t stub[10]; };
+// Vestigial from the Goldilocks/FRI branch; unused on the Pedersen path
+// but retained so the proof file format (which writes n_com=0 on BLS) and
+// the existing prove() signature stay unchanged.
+struct Hash256 { uint8_t bytes[32]; };
+struct FriPcsCommitment { Hash256 root; uint32_t size; };
 #include "zknn/zklog.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
