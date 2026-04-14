@@ -2,9 +2,7 @@
 #include "zknn/zkfc.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
-#ifndef USE_GOLDILOCKS
 #include "commit/commitment.cuh"
-#endif
 #include "zknn/rescaling.cuh"
 #include <string>
 
@@ -20,20 +18,6 @@ int main(int argc, char *argv[])
 
     if (mode == "linear")
     {
-#ifdef USE_GOLDILOCKS
-        auto q_proj = create_weight(
-            workdir + "/" + layer_prefix + "-self_attn.q_proj.weight-int.bin",
-            workdir + "/" + layer_prefix + "-self_attn.q_proj.weight-gold-commitment.bin",
-            embed_dim, embed_dim);
-        auto k_proj = create_weight(
-            workdir + "/" + layer_prefix + "-self_attn.k_proj.weight-int.bin",
-            workdir + "/" + layer_prefix + "-self_attn.k_proj.weight-gold-commitment.bin",
-            embed_dim, embed_dim);
-        auto v_proj = create_weight(
-            workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-int.bin",
-            workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-gold-commitment.bin",
-            embed_dim, embed_dim);
-#else
         auto q_proj = create_weight(
             workdir + "/self_attn.q_proj.weight-pp.bin",
             workdir + "/" + layer_prefix + "-self_attn.q_proj.weight-int.bin",
@@ -49,7 +33,6 @@ int main(int argc, char *argv[])
             workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-int.bin",
             workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-commitment.bin",
             embed_dim, embed_dim);
-#endif
         zkFC q_layer(embed_dim, embed_dim, q_proj.weight);
         zkFC k_layer(embed_dim, embed_dim, k_proj.weight);
         zkFC v_layer(embed_dim, embed_dim, v_proj.weight);

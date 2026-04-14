@@ -1,6 +1,6 @@
 // Tests for zkConditionalEntropy (batched entropy proof).
-// Build: make test_zkentropy  (BLS) or gold_test_zkentropy (Goldilocks)
-// Run: ./test_zkentropy  or  ./gold_test_zkentropy
+// Build: make test_zkentropy
+// Run: ./test_zkentropy
 
 #include "entropy/zkentropy.cuh"
 #include <iostream>
@@ -15,11 +15,7 @@ static void check(bool cond, const char* msg) {
 }
 
 static unsigned long fr_to_ul(const Fr_t& a) {
-#ifdef USE_GOLDILOCKS
-    return a.val;
-#else
     return ((unsigned long)a.val[1] << 32) | a.val[0];
-#endif
 }
 
 // Build a vocab_size tensor where logits[winner] is high and all others are low.
@@ -229,12 +225,8 @@ int main() {
         vector<FriPcsCommitment> commitments;
         prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges, commitments);
 
-#ifdef USE_GOLDILOCKS
-        unsigned long entropy_val = claimed.val;
-#else
         unsigned long entropy_val =
             ((unsigned long)claimed.val[1] << 32) | claimed.val[0];
-#endif
 
         string proof_path = "/tmp/test_entropy_v3.proof";
         {

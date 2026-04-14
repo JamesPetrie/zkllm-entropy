@@ -5,17 +5,12 @@ using namespace std;
 
 ostream& operator<<(ostream& os, const Fr_t& x)
 {
-#ifdef USE_GOLDILOCKS
-  os << "0x" << std::hex << std::setfill('0') << std::setw(16) << x.val;
-  return os << std::dec << std::setw(0) << std::setfill(' ');
-#else
   os << "0x" << std::hex;
   for (uint i = 8; i > 0; -- i)
   {
     os << std::setfill('0') << std::setw(8) << x.val[i - 1];
   }
   return os << std::dec << std::setw(0) << std::setfill(' ');
-#endif
 }
 
 vector<Fr_t> random_vec(uint len)
@@ -24,14 +19,7 @@ vector<Fr_t> random_vec(uint len)
     std::mt19937 mt(rd());
     std::uniform_int_distribution<unsigned int> dist(0, UINT_MAX);
     vector<Fr_t> out(len);
-#ifdef USE_GOLDILOCKS
-    for (uint i = 0; i < len; ++ i) {
-        uint64_t lo = dist(mt), hi = dist(mt);
-        out[i] = {(hi << 32 | lo) % GOLDILOCKS_P};
-    }
-#else
     for (uint i = 0; i < len; ++ i) out[i] = {dist(mt), dist(mt), dist(mt), dist(mt), dist(mt), dist(mt), dist(mt), dist(mt) % 1944954707};
-#endif
     return out;
 }
 
@@ -477,14 +465,8 @@ KERNEL void random_int_kernel(Fr_t* gpu_data, uint num_bits, uint n, unsigned lo
     curand_init(seed, tid, 0, &state);
 
     if (tid < n) {
-#ifdef USE_GOLDILOCKS
-        uint64_t raw = curand(&state) & ((1ULL << num_bits) - 1);
-        gpu_data[tid] = {raw};
-        gpu_data[tid] = blstrs__scalar__Scalar_sub(gpu_data[tid], Fr_t{1ULL << (num_bits - 1)});
-#else
         gpu_data[tid] = {curand(&state) & ((1U << num_bits) - 1), 0, 0, 0, 0, 0, 0, 0};
         gpu_data[tid] = blstrs__scalar__Scalar_sub(gpu_data[tid], {1U << (num_bits - 1), 0, 0, 0, 0, 0, 0, 0});
-#endif
     }
 }
 
@@ -517,12 +499,7 @@ KERNEL void random_kernel(Fr_t* gpu_data, uint n, unsigned long seed)
 
     // Initialize the RNG state for this thread.
     curand_init(seed, tid, 0, &state);
-#ifdef USE_GOLDILOCKS
-    uint64_t lo = curand(&state), hi = curand(&state);
-    gpu_data[tid] = {(hi << 32 | lo) % GOLDILOCKS_P};
-#else
     gpu_data[tid] = {curand(&state), curand(&state), curand(&state), curand(&state), curand(&state), curand(&state), curand(&state), curand(&state) % 1944954707};
-#endif
 }
 
 FrTensor FrTensor::random(uint size)
@@ -694,9 +671,6 @@ ostream& operator<<(ostream& os, const FrTensor& A)
 // Input: x is in montgomery form
 // Output: x^{-1} = x^{P-2} in montgomery form
 DEVICE Fr_t modular_inverse(Fr_t x){
-#ifdef USE_GOLDILOCKS
-    return gold_inverse(x);
-#else
     Fr_t P_sub2 = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_P, {2,0,0,0,0,0,0,0});
 
     // for each bit of P_sub2, compute x^i
@@ -721,32 +695,8 @@ DEVICE Fr_t modular_inverse(Fr_t x){
         x = blstrs__scalar__Scalar_sqr(x);
     }
     return res;
-#endif
 }
 
-#ifdef USE_GOLDILOCKS
-DEVICE Fr_t ulong_to_scalar(unsigned long num)
-{
-    return {num % GOLDILOCKS_P};
-}
-
-DEVICE Fr_t long_to_scalar(long num)
-{
-    if (num >= 0) return {static_cast<uint64_t>(num)};
-    else return gold_sub({0ULL}, {static_cast<uint64_t>(-num)});
-}
-
-DEVICE Fr_t uint_to_scalar(uint num)
-{
-    return {static_cast<uint64_t>(num)};
-}
-
-DEVICE Fr_t int_to_scalar(int num)
-{
-    if (num >= 0) return {static_cast<uint64_t>(num)};
-    else return gold_sub({0ULL}, {static_cast<uint64_t>(-num)});
-}
-#else
 DEVICE Fr_t ulong_to_scalar(unsigned long num)
 {
     return {static_cast<uint>(num), static_cast<uint>(num >> 32), 0, 0, 0, 0, 0, 0};
@@ -768,7 +718,6 @@ DEVICE Fr_t int_to_scalar(int num)
     if (num >= 0) return uint_to_scalar(static_cast<uint>(num));
     else return blstrs__scalar__Scalar_sub({0,0,0,0,0,0,0,0}, uint_to_scalar(static_cast<uint>(-num)));
 }
-#endif
 
 KERNEL void int_to_scalar_kernel(int* int_ptr, Fr_t* scalar_ptr, uint n)
 {
@@ -926,306 +875,19 @@ KERNEL void matrixMultiplyOptimized(Fr_t* A, Fr_t* B, Fr_t* C, int rowsA, int co
 }
 
 
-#ifdef USE_GOLDILOCKS
-// ── Optimized Goldilocks matmul with lazy accumulation ──────────────────────
-//
-// Key optimization: replace 15 full gold_add calls (each ~10 SASS instructions
-// with modular reduction) with raw uint64_t wrapping additions + a single
-// final reduction per tile pass.
-//
-// The kernel is throughput-limited (total SASS instruction count), not
-// latency-limited (dependency chains). With 16 warps per scheduler, ILP is
-// fully utilized. So the only way to speed up is fewer instructions.
-//
-// Correctness: each gold_mul result is in [0, p) where p = 2^64 - 2^32 + 1.
-// Summing 16 such values in wrapping uint64_t arithmetic gives us
-// (true_sum mod 2^64). We track the number of 2^64 overflows in a counter.
-// Then: true_sum ≡ acc_lo + overflow_count * 2^64 ≡ acc_lo + overflow_count * eps (mod p)
-// where eps = 2^32 - 1.
-
-KERNEL void matrixMultiplyGoldV2(Fr_t* A, Fr_t* B, Fr_t* C,
-                                  int rowsA, int colsA, int colsB) {
-    __shared__ Fr_t A_tile[TILE_WIDTH][TILE_WIDTH];
-    __shared__ Fr_t B_tile[TILE_WIDTH][TILE_WIDTH];
-
-    int row = blockIdx.y * TILE_WIDTH + threadIdx.y;
-    int col = blockIdx.x * TILE_WIDTH + threadIdx.x;
-    int ty = threadIdx.y;
-    int tx = threadIdx.x;
-
-    int numTiles = (colsA - 1) / TILE_WIDTH + 1;
-
-    // Running sum in fully-reduced form [0, p)
-    uint64_t sum = 0;
-
-    for (int t = 0; t < numTiles; ++t) {
-        // Load tile
-        if (row < rowsA && t * TILE_WIDTH + tx < colsA) {
-            A_tile[ty][tx] = A[row * colsA + t * TILE_WIDTH + tx];
-        } else {
-            A_tile[ty][tx] = Fr_t{0ULL};
-        }
-        if (t * TILE_WIDTH + ty < colsA && col < colsB) {
-            B_tile[ty][tx] = B[(t * TILE_WIDTH + ty) * colsB + col];
-        } else {
-            B_tile[ty][tx] = Fr_t{0ULL};
-        }
-        __syncthreads();
-
-        // Accumulate 16 products using wrapping uint64_t addition.
-        // Track overflow count for final Goldilocks reduction.
-        uint64_t acc = 0;
-        uint32_t overflows = 0;
-
-        for (int k = 0; k < TILE_WIDTH; ++k) {
-            Fr_t prod = gold_mul(A_tile[ty][k], B_tile[k][tx]);
-            uint64_t new_acc = acc + prod.val;
-            if (new_acc < acc) overflows++;  // wrapped around 2^64
-            acc = new_acc;
-        }
-
-        // Reduce: true_sum = acc + overflows * 2^64
-        // 2^64 ≡ eps (mod p) where eps = GOLDILOCKS_P_NEG = 2^32 - 1
-        // overflows <= 15 (at most 16 additions of values < 2^64)
-        // overflows * eps < 16 * 2^32 = 2^36, fits comfortably in uint64_t
-        uint64_t correction = (uint64_t)overflows * GOLDILOCKS_P_NEG;
-        uint64_t tile_sum = acc + correction;
-        if (tile_sum < acc) {
-            // This addition itself overflowed: add another eps
-            tile_sum += GOLDILOCKS_P_NEG;
-        }
-        // Canonical reduction
-        if (tile_sum >= GOLDILOCKS_P) tile_sum -= GOLDILOCKS_P;
-        // tile_sum might still be >= p if the correction pushed it over
-        if (tile_sum >= GOLDILOCKS_P) tile_sum -= GOLDILOCKS_P;
-
-        // Accumulate tile result into running sum
-        uint64_t new_sum = sum + tile_sum;
-        // Check for overflow and reduce
-        if (new_sum < sum || new_sum >= GOLDILOCKS_P) {
-            new_sum -= GOLDILOCKS_P;
-        }
-        sum = new_sum;
-
-        __syncthreads();
-    }
-
-    if (row < rowsA && col < colsB) {
-        C[row * colsB + col] = Fr_t{sum};
-    }
-}
-// ── V3: Skip per-multiply reduction, accumulate raw 128-bit products ─────────
-//
-// gold_mul spends ~18 SASS instructions on Plonky2 reduction per call.
-// With 16 calls per tile, that's ~288 SASS just for reductions.
-// V3 computes only the 128-bit product (lo, hi) and accumulates them separately:
-//   sum_lo += lo, sum_hi += hi  (with overflow counters)
-// Then does ONE Plonky2 reduction per tile pass.
-//
-// Correctness: each product a*b where a,b < p < 2^64 yields (lo, hi) with
-// true value = hi * 2^64 + lo. Accumulating 16 such products:
-//   total = sum(hi_k) * 2^64 + sum(lo_k)
-// We track sum_lo, sum_hi as wrapping uint64_t with overflow counters.
-// Final: total = (ov_hi * 2^64 + sum_hi) * 2^64 + (ov_lo * 2^64 + sum_lo)
-//              = ov_hi * 2^128 + (sum_hi + ov_lo) * 2^64 + sum_lo
-// Reduce mod p using: 2^64 ≡ eps, 2^128 ≡ -2^32 (mod p).
-
-KERNEL void matrixMultiplyGoldV3(Fr_t* A, Fr_t* B, Fr_t* C,
-                                  int rowsA, int colsA, int colsB) {
-    __shared__ Fr_t A_tile[TILE_WIDTH][TILE_WIDTH];
-    __shared__ Fr_t B_tile[TILE_WIDTH][TILE_WIDTH];
-
-    int row = blockIdx.y * TILE_WIDTH + threadIdx.y;
-    int col = blockIdx.x * TILE_WIDTH + threadIdx.x;
-    int ty = threadIdx.y;
-    int tx = threadIdx.x;
-
-    int numTiles = (colsA - 1) / TILE_WIDTH + 1;
-
-    // Running sum in fully-reduced form [0, p)
-    uint64_t sum = 0;
-
-    for (int t = 0; t < numTiles; ++t) {
-        // Load tile
-        if (row < rowsA && t * TILE_WIDTH + tx < colsA) {
-            A_tile[ty][tx] = A[row * colsA + t * TILE_WIDTH + tx];
-        } else {
-            A_tile[ty][tx] = Fr_t{0ULL};
-        }
-        if (t * TILE_WIDTH + ty < colsA && col < colsB) {
-            B_tile[ty][tx] = B[(t * TILE_WIDTH + ty) * colsB + col];
-        } else {
-            B_tile[ty][tx] = Fr_t{0ULL};
-        }
-        __syncthreads();
-
-        // Accumulate raw 128-bit products without per-multiply reduction
-        uint64_t tile_lo = 0, tile_hi = 0;
-        uint32_t ov_lo = 0, ov_hi = 0;
-
-        for (int k = 0; k < TILE_WIDTH; ++k) {
-            uint64_t a = A_tile[ty][k].val;
-            uint64_t b = B_tile[k][tx].val;
-
-            // 128-bit product only — no Plonky2 reduction
-            uint64_t lo = a * b;
-            uint64_t hi = UMUL64HI(a, b);
-
-            // Accumulate lo
-            uint64_t new_lo = tile_lo + lo;
-            if (new_lo < tile_lo) ov_lo++;
-            tile_lo = new_lo;
-
-            // Accumulate hi
-            uint64_t new_hi = tile_hi + hi;
-            if (new_hi < tile_hi) ov_hi++;
-            tile_hi = new_hi;
-        }
-
-        // ── Single reduction per tile ──────────────────────────────────
-        // total = (ov_hi * 2^64 + tile_hi) * 2^64 + (ov_lo * 2^64 + tile_lo)
-        //       = ov_hi * 2^128 + (tile_hi + ov_lo) * 2^64 + tile_lo
-        //
-        // Modular equivalences (p = 2^64 - 2^32 + 1, eps = 2^32 - 1):
-        //   2^64  ≡ eps (mod p)
-        //   2^128 ≡ eps^2 = 2^64 - 2^33 + 1 ≡ eps - 2^33 + 1 = -(2^32) (mod p)
-        //
-        // result ≡ tile_lo + (tile_hi + ov_lo) * eps - ov_hi * 2^32 (mod p)
-
-        // Step 1: Plonky2-reduce the 128-bit value (tile_lo, tile_hi)
-        // This is the same reduction as gold_mul but applied to accumulated sums
-        uint32_t hi_hi = (uint32_t)(tile_hi >> 32);
-        uint32_t hi_lo = (uint32_t)tile_hi;
-
-        uint64_t t0 = tile_lo - (uint64_t)hi_hi;
-        if (tile_lo < (uint64_t)hi_hi) t0 -= GOLDILOCKS_P_NEG;
-
-        uint64_t t1 = (uint64_t)hi_lo * GOLDILOCKS_P_NEG;
-
-        uint64_t result = t0 + t1;
-        if (result < t0) result += GOLDILOCKS_P_NEG;
-        if (result >= GOLDILOCKS_P) result -= GOLDILOCKS_P;
-
-        // Step 2: Add ov_lo * eps correction
-        // ov_lo <= 15, eps < 2^32, so ov_lo * eps < 2^36 — fits in uint64_t
-        if (ov_lo > 0) {
-            uint64_t lo_corr = (uint64_t)ov_lo * GOLDILOCKS_P_NEG;
-            uint64_t r2 = result + lo_corr;
-            if (r2 < result) r2 += GOLDILOCKS_P_NEG;  // overflow: add eps
-            if (r2 >= GOLDILOCKS_P) r2 -= GOLDILOCKS_P;
-            result = r2;
-        }
-
-        // Step 3: Subtract ov_hi * 2^32 correction
-        // ov_hi <= 15, so ov_hi * 2^32 < 2^36 — fits in uint64_t
-        if (ov_hi > 0) {
-            uint64_t hi_corr = (uint64_t)ov_hi << 32;
-            if (result >= hi_corr) {
-                result -= hi_corr;
-            } else {
-                result = result + GOLDILOCKS_P - hi_corr;
-            }
-            if (result >= GOLDILOCKS_P) result -= GOLDILOCKS_P;
-        }
-
-        // Accumulate tile result into running sum
-        uint64_t new_sum = sum + result;
-        if (new_sum < sum || new_sum >= GOLDILOCKS_P) {
-            new_sum -= GOLDILOCKS_P;
-        }
-        sum = new_sum;
-
-        __syncthreads();
-    }
-
-    if (row < rowsA && col < colsB) {
-        C[row * colsB + col] = Fr_t{sum};
-    }
-}
-#endif // USE_GOLDILOCKS
 
 
 FrTensor FrTensor::matmul(const FrTensor& x, const FrTensor& y, uint M, uint N, uint P)
 {
     if (x.size != M * N || y.size != N * P) throw std::runtime_error("matmul: incompatible dimensions");
     FrTensor out(M * P);
-#ifdef USE_GOLDILOCKS
-    matrixMultiplyGoldV3<<<dim3((P-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1), dim3(TILE_WIDTH, TILE_WIDTH)>>>(x.gpu_data, y.gpu_data, out.gpu_data, M, N, P);
-#else
     matrixMultiplyOptimized<<<dim3((P-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1), dim3(TILE_WIDTH, TILE_WIDTH)>>>(x.gpu_data, y.gpu_data, out.gpu_data, M, N, P);
-#endif
     return out;
 }
 
 
 
 
-#ifdef USE_GOLDILOCKS
-// ── Matmul kernel with fp16 weight storage ──────────────────────────────────
-// Weights are stored as fp16 (2 bytes) and converted to Goldilocks field
-// elements on the fly during the B-tile load.  This reduces weight memory
-// by 4x and improves L2 cache hit rate for 7B-scale weight matrices.
-//
-// The conversion is: fp16 -> float -> * scaling_factor -> round -> long_to_scalar
-// which reproduces the exact same field elements as the offline quantization.
-
-__device__ inline Fr_t fp16_to_field(__half w, unsigned long scaling_factor) {
-    float f = __half2float(w);
-    long q = __float2ll_rn(f * (float)scaling_factor);
-    return long_to_scalar(q);
-}
-
-KERNEL void matmul_fp16w(const Fr_t* A, const __half* B_fp16, Fr_t* C,
-                         int rowsA, int colsA, int colsB,
-                         unsigned long scaling_factor)
-{
-    __shared__ Fr_t A_tile[TILE_WIDTH][TILE_WIDTH];
-    __shared__ Fr_t B_tile[TILE_WIDTH][TILE_WIDTH];
-
-    int row = blockIdx.y * TILE_WIDTH + threadIdx.y;
-    int col = blockIdx.x * TILE_WIDTH + threadIdx.x;
-
-    Fr_t sum = blstrs__scalar__Scalar_ZERO;
-
-    for (int t = 0; t < (colsA - 1)/TILE_WIDTH + 1; ++t) {
-        // Load A tile (already field elements)
-        if (row < rowsA && t*TILE_WIDTH + threadIdx.x < colsA)
-            A_tile[threadIdx.y][threadIdx.x] = A[row*colsA + t*TILE_WIDTH + threadIdx.x];
-        else
-            A_tile[threadIdx.y][threadIdx.x] = blstrs__scalar__Scalar_ZERO;
-
-        // Load B tile: fp16 -> field element conversion in registers
-        if (t*TILE_WIDTH + threadIdx.y < colsA && col < colsB) {
-            __half w = B_fp16[(t*TILE_WIDTH + threadIdx.y)*colsB + col];
-            B_tile[threadIdx.y][threadIdx.x] = fp16_to_field(w, scaling_factor);
-        } else {
-            B_tile[threadIdx.y][threadIdx.x] = blstrs__scalar__Scalar_ZERO;
-        }
-
-        __syncthreads();
-
-        for (int k = 0; k < TILE_WIDTH; ++k) {
-            sum = blstrs__scalar__Scalar_add(sum,
-                  blstrs__scalar__Scalar_mul(A_tile[threadIdx.y][k], B_tile[k][threadIdx.x]));
-        }
-
-        __syncthreads();
-    }
-
-    if (row < rowsA && col < colsB)
-        C[row*colsB + col] = blstrs__scalar__Scalar_mont(sum);
-}
-
-FrTensor FrTensor::matmul_fp16w(const FrTensor& activations, const __half* weights_fp16,
-                                uint M, uint N, uint P, unsigned long scaling_factor)
-{
-    if (activations.size != M * N) throw std::runtime_error("matmul_fp16w: incompatible activation dimensions");
-    FrTensor out(M * P);
-    ::matmul_fp16w<<<dim3((P-1)/TILE_WIDTH + 1, (M-1)/TILE_WIDTH + 1), dim3(TILE_WIDTH, TILE_WIDTH)>>>(
-        activations.gpu_data, weights_fp16, out.gpu_data, M, N, P, scaling_factor);
-    return out;
-}
-#endif
 
 // implement a kernel to transpose a matrix of size M by N
 KERNEL void transpose_kernel(Fr_t* in_ptr, Fr_t* out_ptr, int M, int N) {
@@ -1264,34 +926,6 @@ FrTensor catTensors(const vector<FrTensor>& vec){
     return out;
 }
 
-#ifdef USE_GOLDILOCKS
-DEVICE unsigned int scalar_to_uint(Fr_t x)
-{
-    if (x.val <= 0xFFFFFFFFULL) return static_cast<unsigned int>(x.val);
-    return 0U;
-}
-
-DEVICE int scalar_to_int(Fr_t x)
-{
-    // Positive: val < 2^31
-    if (x.val < 0x80000000ULL) return static_cast<int>(x.val);
-    // Negative: val > p/2 means it represents a negative number
-    return -static_cast<int>(gold_sub({0ULL}, x).val);
-}
-
-DEVICE unsigned long scalar_to_ulong(Fr_t x)
-{
-    return x.val;
-}
-
-DEVICE long scalar_to_long(Fr_t x)
-{
-    // Positive: val < p/2
-    if (x.val <= (GOLDILOCKS_P >> 1)) return static_cast<long>(x.val);
-    // Negative
-    return -static_cast<long>(gold_sub({0ULL}, x).val);
-}
-#else
 DEVICE unsigned int scalar_to_uint(Fr_t x)
 {
     if (!x.val[7] && !x.val[6] && !x.val[5] && !x.val[4] && !x.val[3] && !x.val[2] && !x.val[1]) return static_cast<unsigned int>(x.val[0]);
@@ -1316,7 +950,6 @@ DEVICE long scalar_to_long(Fr_t x)
     if (!x.val[7] && !x.val[6] && !x.val[5] && !x.val[4] && !x.val[3] && !x.val[2] && !(x.val[1] >> 31)) return static_cast<long>(scalar_to_ulong(x));
     else return -static_cast<long>(scalar_to_ulong(blstrs__scalar__Scalar_sub({0,0,0,0,0,0,0,0}, x)));
 }
-#endif
 
 FrTensor FrTensor::trunc(uint begin_idx, uint end_idx) const
 {

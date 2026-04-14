@@ -96,21 +96,15 @@ KERNEL void zksoftmax_decompose_kernel(const Fr_t* X, const uint* bs, Fr_t* X_de
     uint gid = GET_GLOBAL_ID();
     if (gid >= N) return;
     auto minus_X = blstrs__scalar__Scalar_sub(blstrs__scalar__Scalar_ZERO, X[gid]);
-#ifdef USE_GOLDILOCKS
-    unsigned long tmp = minus_X.val;
-#else
     if (!minus_X.val[7] && !minus_X.val[6] && !minus_X.val[5] && !minus_X.val[4] && !minus_X.val[3] && !minus_X.val[2])
     {
         unsigned long tmp = (static_cast<unsigned long> (minus_X.val[1]) << 32) | static_cast<unsigned long> (minus_X.val[0]);
-#endif
         for (uint i = 0; i < K; ++ i)
         {
             X_decomposed[i * N + gid] = FR_FROM_INT(tmp % bs[i]);
             tmp /= bs[i];
         }
-#ifndef USE_GOLDILOCKS
     }
-#endif
 }
 
 // input should be m * n

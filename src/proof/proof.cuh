@@ -3,13 +3,9 @@
 
 #include "tensor/fr-tensor.cuh"
 #include <cuda_fp16.h>
-#ifndef USE_GOLDILOCKS
 #include "tensor/g1-tensor.cuh"
 #include "commit/commitment.cuh"
 #include "field/bls12-381.cuh"
-#else
-#include "commit/fri_pcs.cuh"
-#endif
 #include "poly/polynomial.cuh"
 
 #include <vector>
@@ -21,23 +17,8 @@ struct Claim {
     std::vector<uint> dims;
 };
 
-#ifdef USE_GOLDILOCKS
-struct Weight {
-    FrTensor weight;
-    FriPcsCommitment com;
-    uint in_dim;
-    uint out_dim;
-    __half* weight_fp16;            // compact fp16 storage for matmul (GPU)
-    unsigned long scaling_factor;   // quantization scaling factor
-};
-
-Weight create_weight(std::string weight_filename, std::string com_filename, uint in_dim, uint out_dim,
-                     unsigned long scaling_factor = 0);
-void verifyWeightClaim(const Weight& w, const Claim& c);
-#else
 struct Weight;
 void verifyWeightClaim(const Weight& w, const Claim& c);
-#endif
 
 KERNEL void Fr_ip_sc_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint in_size, uint out_size);
 

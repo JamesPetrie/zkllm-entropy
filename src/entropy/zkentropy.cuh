@@ -2,12 +2,8 @@
 #define ZKENTROPY_CUH
 
 #include "zknn/zknormalcdf.cuh"
-#ifdef USE_GOLDILOCKS
-#include "commit/fri_pcs.cuh"
-#else
-// Stub for BLS build (FRI-PCS is Goldilocks-only)
+// Vestigial from the Goldilocks/FRI branch; unused on the Pedersen path.
 struct FriPcsCommitment { uint32_t stub[10]; };
-#endif
 #include "zknn/zklog.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"

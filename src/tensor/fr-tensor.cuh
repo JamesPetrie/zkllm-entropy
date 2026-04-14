@@ -8,27 +8,17 @@
 #include <curand_kernel.h>
 #include <cuda_fp16.h>
 #include <random>
-#ifdef USE_GOLDILOCKS
-#include "field/goldilocks.cuh"
-#else
 #include "field/bls12-381.cuh"
-#endif
 #define TILE_WIDTH 16
 
 using namespace std;
 
 typedef blstrs__scalar__Scalar Fr_t;
-#ifndef USE_GOLDILOCKS
 typedef blstrs__g1__G1Affine_affine G1Affine_t;
 typedef blstrs__g1__G1Affine_jacobian G1Jacobian_t;
-#endif
 
 // Field-portable literal: converts a small integer to Fr_t
-#ifdef USE_GOLDILOCKS
-#define FR_FROM_INT(x) Fr_t{(uint64_t)(x)}
-#else
 #define FR_FROM_INT(x) Fr_t{static_cast<uint>(x), 0, 0, 0, 0, 0, 0, 0}
-#endif
 
 const uint FrNumThread = 256;
 const uint FrSharedMemorySize = 2 * sizeof(Fr_t) * FrNumThread; 
@@ -161,11 +151,7 @@ class FrTensor
 
     Fr_t multi_dim_me(const vector<vector<Fr_t>>& us, const vector<uint>& shape) const;
 
-#ifdef USE_GOLDILOCKS
-    FrTensor pad(const vector<uint>& shape, const Fr_t& pad_val = {0ULL}) const;
-#else
     FrTensor pad(const vector<uint>& shape, const Fr_t& pad_val = {0, 0, 0, 0, 0, 0, 0, 0}) const;
-#endif
 
     FrTensor transpose(uint M, uint N) const;
     
@@ -174,11 +160,6 @@ class FrTensor
 
     static FrTensor matmul(const FrTensor& x, const FrTensor& y, uint M, uint N, uint P);
 
-#ifdef USE_GOLDILOCKS
-    // Matmul with fp16-stored weights, converted to field elements on the fly
-    static FrTensor matmul_fp16w(const FrTensor& activations, const __half* weights_fp16,
-                                 uint M, uint N, uint P, unsigned long scaling_factor);
-#endif
 
     static FrTensor random_int(uint size, uint num_bits);
     static FrTensor random(uint size);
@@ -250,10 +231,6 @@ KERNEL void double_to_scalar_kernel(double* double_ptr, Fr_t* scalar_ptr, unsign
 
 KERNEL void matrixMultiplyOptimized(Fr_t* A, Fr_t* B, Fr_t* C, int rowsA, int colsA, int colsB);
 
-#ifdef USE_GOLDILOCKS
-KERNEL void matmul_fp16w(const Fr_t* A, const __half* B_fp16, Fr_t* C,
-                         int rowsA, int colsA, int colsB, unsigned long scaling_factor);
-#endif
 
 FrTensor catTensors(const vector<FrTensor>& vec);
 

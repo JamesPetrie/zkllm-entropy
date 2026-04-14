@@ -2,9 +2,7 @@
 #include "zknn/zkfc.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
-#ifndef USE_GOLDILOCKS
 #include "commit/commitment.cuh"
-#endif
 #include "zknn/rescaling.cuh"
 #include <string>
 
@@ -19,20 +17,6 @@ int main(int argc, char *argv[])
     string layer_prefix = argv[6];
     string output_file_name = argv[7];
 
-#ifdef USE_GOLDILOCKS
-    auto up_proj = create_weight(
-        workdir + "/" + layer_prefix + "-mlp.up_proj.weight-int.bin",
-        workdir + "/" + layer_prefix + "-mlp.up_proj.weight-gold-commitment.bin",
-        embed_dim, hidden_dim);
-    auto gate_proj = create_weight(
-        workdir + "/" + layer_prefix + "-mlp.gate_proj.weight-int.bin",
-        workdir + "/" + layer_prefix + "-mlp.gate_proj.weight-gold-commitment.bin",
-        embed_dim, hidden_dim);
-    auto down_proj = create_weight(
-        workdir + "/" + layer_prefix + "-mlp.down_proj.weight-int.bin",
-        workdir + "/" + layer_prefix + "-mlp.down_proj.weight-gold-commitment.bin",
-        hidden_dim, embed_dim);
-#else
     auto up_proj = create_weight(
         workdir + "/mlp.up_proj.weight-pp.bin",
         workdir + "/" + layer_prefix + "-mlp.up_proj.weight-int.bin",
@@ -48,7 +32,6 @@ int main(int argc, char *argv[])
         workdir + "/" + layer_prefix + "-mlp.down_proj.weight-int.bin",
         workdir + "/" + layer_prefix + "-mlp.down_proj.weight-commitment.bin",
         hidden_dim, embed_dim);
-#endif
 
     zkFC up_layer(embed_dim, hidden_dim, up_proj.weight);
     zkFC gate_layer(embed_dim, hidden_dim, gate_proj.weight);

@@ -1,6 +1,6 @@
 // Tests for zkArgmax.
 // Build: add to Makefile as a target (see Makefile).
-// Run: ./test_zkargmax  (BLS) or ./gold_test_zkargmax (Goldilocks)
+// Run: ./test_zkargmax
 
 #include "zknn/zkargmax.cuh"
 #include <iostream>
@@ -15,14 +15,6 @@ static FrTensor from_longs(const vector<long>& vals) {
     Fr_t* cpu = new Fr_t[N];
     for (uint i = 0; i < N; i++) {
         long v = vals[i];
-#ifdef USE_GOLDILOCKS
-        if (v >= 0) {
-            cpu[i] = {(uint64_t)v};
-        } else {
-            // Negative: represent as p - |v|
-            cpu[i] = {GOLDILOCKS_P - (uint64_t)(-v)};
-        }
-#else
         if (v >= 0) {
             cpu[i] = {(uint)(v & 0xFFFFFFFF), (uint)((unsigned long)v >> 32),
                       0, 0, 0, 0, 0, 0};
@@ -30,7 +22,6 @@ static FrTensor from_longs(const vector<long>& vals) {
             unsigned long uv = (unsigned long)v;
             cpu[i] = {(uint)(uv & 0xFFFFFFFF), (uint)(uv >> 32), 0, 0, 0, 0, 0, 0};
         }
-#endif
     }
     FrTensor t(N, cpu);
     delete[] cpu;

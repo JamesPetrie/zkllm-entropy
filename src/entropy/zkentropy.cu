@@ -24,32 +24,19 @@ zkConditionalEntropy::zkConditionalEntropy(
 
 // ── Field element helpers ────────────────────────────────────────────────────
 
-#ifdef USE_GOLDILOCKS
-static inline unsigned long long fr_to_ull(const Fr_t& a) {
-    return a.val;
-}
-#else
 static inline unsigned long long fr_to_ull(const Fr_t& a) {
     return ((unsigned long long)a.val[1] << 32) | a.val[0];
 }
-#endif
 
 // ── Host-side argmax scan ────────────────────────────────────────────────────
 
 static bool fr_gt(const Fr_t& a, const Fr_t& b) {
-#ifdef USE_GOLDILOCKS
-    bool a_neg = a.val > (GOLDILOCKS_P >> 1);
-    bool b_neg = b.val > (GOLDILOCKS_P >> 1);
-    if (a_neg != b_neg) return b_neg;
-    return a.val > b.val;
-#else
     bool a_neg = a.val[2] || a.val[3] || a.val[4] || a.val[5] || a.val[6] || a.val[7];
     bool b_neg = b.val[2] || b.val[3] || b.val[4] || b.val[5] || b.val[6] || b.val[7];
     if (a_neg != b_neg) return b_neg;
     unsigned long long av = ((unsigned long long)a.val[1] << 32) | a.val[0];
     unsigned long long bv = ((unsigned long long)b.val[1] << 32) | b.val[0];
     return av > bv;
-#endif
 }
 
 static uint find_argmax(const FrTensor& logits) {
@@ -99,26 +86,17 @@ KERNEL void extract_by_index_kernel(const Fr_t* data, const uint* indices,
 KERNEL void clamp_min_one_kernel(Fr_t* data, uint N) {
     uint tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid < N) {
-#ifdef USE_GOLDILOCKS
-        if (data[tid].val == 0ULL) data[tid].val = 1ULL;
-#else
         if (data[tid].val[0] == 0 && data[tid].val[1] == 0 &&
             data[tid].val[2] == 0 && data[tid].val[3] == 0 &&
             data[tid].val[4] == 0 && data[tid].val[5] == 0 &&
             data[tid].val[6] == 0 && data[tid].val[7] == 0)
             data[tid].val[0] = 1;
-#endif
     }
 }
 
 KERNEL void clamp_diffs_kernel(Fr_t* diffs, uint N, uint64_t max_val) {
     uint tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid < N) {
-#ifdef USE_GOLDILOCKS
-        uint64_t v = diffs[tid].val;
-        if (v >= (GOLDILOCKS_P >> 1)) diffs[tid] = FR_FROM_INT(0);
-        else if (v > max_val) diffs[tid] = {max_val};
-#else
         bool neg = diffs[tid].val[2] || diffs[tid].val[3] || diffs[tid].val[4] ||
                    diffs[tid].val[5] || diffs[tid].val[6] || diffs[tid].val[7];
         if (neg) diffs[tid] = FR_FROM_INT(0);
@@ -126,7 +104,6 @@ KERNEL void clamp_diffs_kernel(Fr_t* diffs, uint N, uint64_t max_val) {
             uint64_t v = ((uint64_t)diffs[tid].val[1] << 32) | diffs[tid].val[0];
             if (v > max_val) { diffs[tid] = FR_FROM_INT(0); diffs[tid].val[0] = (uint32_t)max_val; diffs[tid].val[1] = (uint32_t)(max_val >> 32); }
         }
-#endif
     }
 }
 
@@ -392,11 +369,6 @@ Fr_t zkConditionalEntropy::prove(
     delete[] cpu_q_pad;
 
     // COMMIT: q_padded before any challenges that query it
-#ifdef USE_GOLDILOCKS
-    auto q_com = FriPcs::commit(q_padded.gpu_data, D_padded);
-    commitments.push_back(q_com);
-    std::cout << "  Committed q_padded (" << D_padded << " elements)" << std::endl;
-#endif
 
     auto [surprise_padded, m_surprise] = log_prover.compute(q_padded);
 
@@ -425,11 +397,6 @@ Fr_t zkConditionalEntropy::prove(
         delete[] d_cpu;
 
         // COMMIT: diffs_padded before any challenges that query it
-#ifdef USE_GOLDILOCKS
-        auto diffs_com = FriPcs::commit(diffs_padded.gpu_data, D_cdf);
-        commitments.push_back(diffs_com);
-        std::cout << "    Committed diffs_padded (" << D_cdf << " elements)" << std::endl;
-#endif
 
         auto [cdf_padded, m_cdf_padded] = cdf_prover.compute(diffs_padded);
 

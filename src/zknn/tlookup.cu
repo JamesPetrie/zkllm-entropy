@@ -175,13 +175,8 @@ KERNEL void tLookup_phase2_reduce_kernel(const Fr_t* A_data, const Fr_t* S_data,
 
 // A.size == S.size == D
 // u.size == ceilLog2(D)
-#ifdef USE_GOLDILOCKS
-// 2^(-1) mod p = (p+1)/2 = 9223372034707292161
-const Fr_t TWO_INV {9223372034707292161ULL};
-#else
 // 0x39f6d3a994cebea4199cec0404d0ec02a9ded2017fff2dff7fffffff80000001
 const Fr_t TWO_INV {2147483649, 2147483647, 2147429887, 2849952257, 80800770, 429714436, 2496577188, 972477353};
-#endif
 // const Fr_t TEMP_ZERO {0, 0, 0, 0, 0, 0, 0, 0};
 // const Fr_t TEMP_ONE {1, 0, 0, 0, 0, 0, 0, 0};
 
@@ -428,11 +423,7 @@ KERNEL void lookuprange_tensor_prep_kernel(const Fr_t* vals, int low, uint* indi
     const uint tid = threadIdx.x + blockIdx.x * blockDim.x;
     if (tid < N)
     {
-#ifdef USE_GOLDILOCKS
-        uint raw = (uint)blstrs__scalar__Scalar_sub(vals[tid], int_to_scalar(low)).val;
-#else
         uint raw = blstrs__scalar__Scalar_sub(vals[tid], int_to_scalar(low)).val[0];
-#endif
         indices[tid] = (raw < table_bound) ? raw : (table_bound - 1u);
     }
 }

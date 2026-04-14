@@ -8,9 +8,7 @@
 #include "zknn/zkfc.cuh"
 #include "zknn/rescaling.cuh"
 #include "proof/proof.cuh"
-#ifndef USE_GOLDILOCKS
 #include "commit/commitment.cuh"
-#endif
 #include "util/ioutils.cuh"
 #include "util/timer.hpp"
 #include <iostream>
@@ -87,31 +85,17 @@ int main(int argc, char* argv[]) {
     if (rms_inv.size != seq_len)
         throw std::runtime_error("rms_inv size mismatch");
 
-#ifdef USE_GOLDILOCKS
-    Weight final_norm_w = create_weight(
-        path("final_norm.weight-int.bin"),
-        path("final_norm.weight-gold-commitment.bin"),
-        1, hidden_size);
-#else
     Weight final_norm_w = create_weight(
         path("input_layernorm.weight-pp.bin"),
         path("final_norm.weight-int.bin"),
         path("final_norm.weight-commitment.bin"),
         1, hidden_size);
-#endif
 
-#ifdef USE_GOLDILOCKS
-    Weight lm_head_w = create_weight(
-        path("lm_head-weight-int.bin"),
-        path("lm_head-weight-gold-commitment.bin"),
-        hidden_size, vocab_size);
-#else
     Weight lm_head_w = create_weight(
         path("lm_head-pp.bin"),
         path("lm_head-weight-int.bin"),
         path("lm_head-weight-commitment.bin"),
         hidden_size, vocab_size);
-#endif
 
     vector<uint> tokens = load_token_sequence(tokens_file);
     if (tokens.size() != seq_len)
@@ -159,12 +143,8 @@ int main(int argc, char* argv[]) {
     cout << "Computing conditional entropy..." << endl;
     Fr_t total_entropy = entropy_prover.compute(logits_seq, tokens);
 
-#ifdef USE_GOLDILOCKS
-    unsigned long entropy_val = total_entropy.val;
-#else
     unsigned long entropy_val =
         ((unsigned long)total_entropy.val[1] << 32) | total_entropy.val[0];
-#endif
     double entropy_bits = (double)entropy_val / (double)log_scale;
     cout << "Conditional entropy bound : " << entropy_bits << " bits total" << endl;
     cout << "Average per token         : " << entropy_bits / seq_len << " bits/token" << endl;

@@ -9,9 +9,7 @@
 #include <curand_kernel.h>
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
-#ifndef USE_GOLDILOCKS
 #include "commit/commitment.cuh"
-#endif
 #include "poly/polynomial.cuh"
 
 

@@ -4,61 +4,7 @@
 #include <fstream>
 
 
-#ifdef USE_GOLDILOCKS
-// Convert int32 weight data (on GPU) to fp16 representation
-KERNEL void int_to_fp16_kernel(const int* int_data, __half* fp16_data,
-                               float inv_scale, uint n)
-{
-    uint gid = GET_GLOBAL_ID();
-    if (gid >= n) return;
-    fp16_data[gid] = __float2half((float)int_data[gid] * inv_scale);
-}
-#endif
 
-#ifdef USE_GOLDILOCKS
-void verifyWeightClaim(const Weight& w, const Claim& c)
-{
-    vector<Fr_t> u_cat = concatenate(vector<vector<Fr_t>>({c.u[1], c.u[0]}));
-    auto w_padded = w.weight.pad({w.in_dim, w.out_dim});
-    Fr_t opening = FriPcs::open(w_padded.gpu_data, w_padded.size, w.com, u_cat, true);
-    if (opening != c.claim) throw std::runtime_error("verifyWeightClaim: opening != c.claim");
-    cout << "Opening complete" << endl;
-}
-
-Weight create_weight(string weight_filename, string com_filename, uint in_dim, uint out_dim,
-                     unsigned long scaling_factor)
-{
-    FrTensor weight = FrTensor::from_int_bin(weight_filename);
-    auto w_padded = weight.pad({in_dim, out_dim});
-    FriPcsCommitment com;
-    // Load saved commitment if available, otherwise compute and save
-    std::ifstream test(com_filename, std::ios::binary);
-    if (test.good()) {
-        test.close();
-        com = FriPcsCommitment::load(com_filename);
-    } else {
-        com = FriPcs::commit(w_padded.gpu_data, w_padded.size);
-        com.save(com_filename);
-    }
-
-    // Build fp16 weight copy for fast matmul (if scaling_factor provided)
-    __half* weight_fp16 = nullptr;
-    if (scaling_factor > 0) {
-        uint n = weight.size;
-        cudaMalloc(&weight_fp16, sizeof(__half) * n);
-        // Load int data to GPU, then convert to fp16
-        auto file_size = findsize(weight_filename);
-        int* int_gpu;
-        cudaMalloc(&int_gpu, file_size);
-        loadbin(weight_filename, int_gpu, file_size);
-        float inv_scale = 1.0f / (float)scaling_factor;
-        int_to_fp16_kernel<<<(n + 255) / 256, 256>>>(int_gpu, weight_fp16, inv_scale, n);
-        cudaFree(int_gpu);
-    }
-
-    return Weight{weight, com, in_dim, out_dim, weight_fp16, scaling_factor};
-}
-#else
 void verifyWeightClaim(const Weight& w, const Claim& c)
 {
     vector<Fr_t> u_cat = concatenate(vector<vector<Fr_t>>({c.u[1], c.u[0]}));
@@ -67,7 +13,6 @@ void verifyWeightClaim(const Weight& w, const Claim& c)
     if (opening != c.claim) throw std::runtime_error("verifyWeightClaim: opening != c.claim");
     cout << "Opening complete" << endl;
 }
-#endif
 
 KERNEL void Fr_ip_sc_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint in_size, uint out_size)
 {
@@ -213,11 +158,7 @@ vector<Fr_t> binary_sumcheck(const FrTensor& a, vector<Fr_t> u, vector<Fr_t> v)
 
 bool operator==(const Fr_t& a, const Fr_t& b)
 {
-#ifdef USE_GOLDILOCKS
-    return a.val == b.val;
-#else
     return (a.val[0] == b.val[0] && a.val[1] == b.val[1] && a.val[2] == b.val[2] && a.val[3] == b.val[3] && a.val[4] == b.val[4] && a.val[5] == b.val[5] && a.val[6] == b.val[6] && a.val[7] == b.val[7]);
-#endif
 }
 
 bool operator!=(const Fr_t& a, const Fr_t& b)
@@ -279,11 +220,7 @@ Fr_t multi_hadamard_sumchecks(const Fr_t& claim, const vector<FrTensor>& Xs, con
     proof.push_back(Polynomial(coefs));
     auto p = proof.back() * Polynomial::eq(u.back());
 
-#ifdef USE_GOLDILOCKS
-    Fr_t fr_zero = {0ULL}, fr_one = {1ULL};
-#else
     Fr_t fr_zero = {0, 0, 0, 0, 0, 0, 0, 0}, fr_one = {1, 0, 0, 0, 0, 0, 0, 0};
-#endif
     if (claim != p(fr_zero) + p(fr_one)) throw std::runtime_error("multi_hadamard_sumchecks: claim != p(0) + p(1)");
 
     auto new_claim = proof.back()(v.back());

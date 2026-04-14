@@ -9,14 +9,6 @@ zkArgmax::zkArgmax(uint bit_width) : bit_width(bit_width) {}
 // Read Fr_t as signed 64-bit integer (assumes value fits in lower 64 bits;
 // negative numbers have val[2..7] non-zero and are treated as less than positives).
 static bool fr_gt(const Fr_t& a, const Fr_t& b) {
-#ifdef USE_GOLDILOCKS
-    // In Goldilocks (p = 2^64 - 2^32 + 1), "negative" values (p-k for small k)
-    // have val > p/2.
-    bool a_neg = a.val > (GOLDILOCKS_P >> 1);
-    bool b_neg = b.val > (GOLDILOCKS_P >> 1);
-    if (a_neg != b_neg) return b_neg;
-    return a.val > b.val;
-#else
     // Check sign: a field element is "negative" (large mod-p value) when its
     // upper 192 bits (val[2..7]) are non-zero.
     bool a_neg = a.val[2] || a.val[3] || a.val[4] || a.val[5] || a.val[6] || a.val[7];
@@ -28,7 +20,6 @@ static bool fr_gt(const Fr_t& a, const Fr_t& b) {
     // Both negative (p-k form): larger raw value means smaller k, i.e. less
     // negative, i.e. a greater signed value.  So av > bv in both cases.
     return av > bv;
-#endif
 }
 
 uint zkArgmax::compute(const FrTensor& logits) {
@@ -87,16 +78,6 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
         uint n_negative = 0, n_large64 = 0, first_neg_idx = N;
         for (uint i = 0; i < N; i++) {
             const Fr_t& d = cpu_diffs[i];
-#ifdef USE_GOLDILOCKS
-            bool is_neg = d.val > (GOLDILOCKS_P >> 1);
-            if (is_neg) {
-                n_negative++;
-                if (first_neg_idx == N) first_neg_idx = i;
-            } else {
-                if (d.val > max_diff_pos) max_diff_pos = d.val;
-                if (d.val >= (1ULL << 63)) n_large64++;
-            }
-#else
             bool has_high = d.val[2]||d.val[3]||d.val[4]||d.val[5]||d.val[6]||d.val[7];
             if (has_high) {
                 n_negative++;
@@ -106,7 +87,6 @@ Fr_t zkArgmax::prove(const FrTensor& logits, uint t_star, Fr_t v_star,
                 if (d.val[1] >> 31) n_large64++;
                 if (dv > max_diff_pos) max_diff_pos = dv;
             }
-#endif
         }
         cerr << "[zkArgmax] n_negative_diffs=" << n_negative << "  n_large64=" << n_large64
              << "  max_positive_diff=" << max_diff_pos << "  N=" << N << endl;

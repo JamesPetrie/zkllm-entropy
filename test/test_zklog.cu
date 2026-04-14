@@ -20,11 +20,7 @@ static FrTensor from_ulong(unsigned long v) {
 }
 
 static unsigned long fr_to_ul(const Fr_t& a) {
-#ifdef USE_GOLDILOCKS
-    return a.val;
-#else
     return ((unsigned long)a.val[1] << 32) | a.val[0];
-#endif
 }
 
 int main() {

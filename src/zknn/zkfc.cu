@@ -49,15 +49,6 @@ FrTensor zkFC::operator()(const FrTensor& X) const { // X.size is batch_size * i
     if (X.size % inputSize) throw std::runtime_error("input size does not match");
     uint batchSize = X.size / inputSize;
     FrTensor out(batchSize * outputSize);
-#ifdef USE_GOLDILOCKS
-    if (weights_fp16) {
-        // Use fp16 weight kernel: 4x less memory, better L2 cache utilization
-        dim3 blockSize(TILE_WIDTH, TILE_WIDTH);
-        dim3 gridSize((outputSize + blockSize.x - 1) / blockSize.x, (batchSize + blockSize.y - 1) / blockSize.y);
-        matmul_fp16w<<<gridSize, blockSize>>>(X.gpu_data, weights_fp16, out.gpu_data,
-                                               batchSize, inputSize, outputSize, scaling_factor);
-    } else
-#endif
     {
         dim3 blockSize(TILE_WIDTH, TILE_WIDTH);
         dim3 gridSize((outputSize + blockSize.x - 1) / blockSize.x, (batchSize + blockSize.y - 1) / blockSize.y);

@@ -2,9 +2,7 @@
 #include "zknn/zkfc.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
-#ifndef USE_GOLDILOCKS
 #include "commit/commitment.cuh"
-#endif
 #include "zknn/rescaling.cuh"
 #include <string>
 
@@ -18,20 +16,12 @@ int main(int argc, char *argv[])
     string layer_prefix = argv[6];
     string output_file_name = argv[7];
 
-#ifdef USE_GOLDILOCKS
-    auto rmsnorm_weight = create_weight(
-        workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-int.bin",
-        workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-gold-commitment.bin",
-        1, embed_dim
-    );
-#else
     auto rmsnorm_weight = create_weight(
         workdir + "/" + which + "_layernorm.weight-pp.bin",
         workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-int.bin",
         workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-commitment.bin",
         1, embed_dim
     );
-#endif
 
     FrTensor X = FrTensor::from_int_bin(input_file_name);
     FrTensor rms_inv_temp = FrTensor::from_int_bin("rms_inv_temp.bin");

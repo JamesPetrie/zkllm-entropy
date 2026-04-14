@@ -1,37 +1,5 @@
 #include "poly/polynomial.cuh"
 
-#ifdef USE_GOLDILOCKS
-// ── CPU-side scalar field operators (Goldilocks) ─────────────────────────────
-// Goldilocks arithmetic is simple 64-bit integer math — no need for GPU kernels.
-// This eliminates ~16k cudaMalloc/cudaFree calls per layer proof.
-
-Fr_t operator+(const Fr_t& a, const Fr_t& b) {
-    return gold_add(a, b);
-}
-
-Fr_t operator-(const Fr_t& a, const Fr_t& b) {
-    return gold_sub(a, b);
-}
-
-Fr_t operator-(const Fr_t& a) {
-    return gold_sub(Gold_t{0ULL}, a);
-}
-
-Fr_t operator*(const Fr_t& a, const Fr_t& b) {
-    return gold_mul(a, b);
-}
-
-Fr_t operator/(const Fr_t& a, const Fr_t& b) {
-    if (b.val == 0) throw std::runtime_error("divide by zero");
-    return gold_div(a, b);
-}
-
-Fr_t inv(const Fr_t& a) {
-    if (a.val == 0) throw std::runtime_error("inverse of zero");
-    return gold_inverse(a);
-}
-
-#else
 //kernel for operator+
 __global__ void addKernel(const Fr_t* a, const Fr_t* b, Fr_t* c)
 {
@@ -132,11 +100,7 @@ __global__ void divKernel(const Fr_t* a, const Fr_t* b, Fr_t* c)
 
 Fr_t operator/(const Fr_t& a, const Fr_t& b)
 {
-#ifdef USE_GOLDILOCKS
-    if (b.val == 0) {
-#else
     if (!b.val[0] && !b.val[1] && !b.val[2] && !b.val[3] && !b.val[4] && !b.val[5] && !b.val[6] && !b.val[7]) {
-#endif
         throw std::runtime_error("divide by zero");
     }
     //copy a and b to cuda
@@ -163,11 +127,7 @@ __global__ void invKernel(const Fr_t* a, Fr_t* c)
 
 Fr_t inv(const Fr_t& a)
 {   
-#ifdef USE_GOLDILOCKS
-    if (a.val == 0) {
-#else
     if (!a.val[0] && !a.val[1] && !a.val[2] && !a.val[3] && !a.val[4] && !a.val[5] && !a.val[6] && !a.val[7]) {
-#endif
         throw std::runtime_error("divide by zero");
     }
     //copy a to cuda
@@ -183,7 +143,6 @@ Fr_t inv(const Fr_t& a)
     return c;
 }
 
-#endif
 
 Polynomial::Polynomial() : degree_(0), coefficients_(nullptr) {}
 
