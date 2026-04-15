@@ -107,6 +107,12 @@ int main() {
               "multi-row: v matches direct MLE evaluation of t at u");
     }
 
+    // Negative-test helper: take a valid transcript and flip one bit of
+    // a named group-element or scalar field, then confirm the verifier
+    // rejects.  Cleaner than re-listing every field in aggregate init.
+    // (OpeningProof holds an FrTensor z which has a user-defined deep-
+    // copy ctor, so `OpeningProof bad = res.proof;` deep-copies safely.)
+
     // ── Test 3: negative — tampered δ ────────────────────────────────────
     {
         const uint N = 4;
@@ -117,12 +123,7 @@ int main() {
         Fr_t c = FrTensor::random(1)(0);
 
         auto res = pp.open_zk(t, hc.r, hc.com, u, c);
-        OpeningProof bad = {
-            res.proof.delta, res.proof.beta, res.proof.tau,
-            res.proof.z, res.proof.z_delta, res.proof.z_beta,
-            res.proof.r_tau
-        };
-        // Flip one bit of δ.
+        OpeningProof bad = res.proof;
         bad.delta.x.val[0] ^= 1u;
         check(!pp.verify_zk(hc.com, u, res.v, bad, c),
               "tampered δ is rejected");
@@ -138,11 +139,7 @@ int main() {
         Fr_t c = FrTensor::random(1)(0);
 
         auto res = pp.open_zk(t, hc.r, hc.com, u, c);
-        OpeningProof bad = {
-            res.proof.delta, res.proof.beta, res.proof.tau,
-            res.proof.z, res.proof.z_delta, res.proof.z_beta,
-            res.proof.r_tau
-        };
+        OpeningProof bad = res.proof;
         bad.beta.x.val[0] ^= 1u;
         check(!pp.verify_zk(hc.com, u, res.v, bad, c),
               "tampered β is rejected");
@@ -158,11 +155,7 @@ int main() {
         Fr_t c = FrTensor::random(1)(0);
 
         auto res = pp.open_zk(t, hc.r, hc.com, u, c);
-        OpeningProof bad = {
-            res.proof.delta, res.proof.beta, res.proof.tau,
-            res.proof.z, res.proof.z_delta, res.proof.z_beta,
-            res.proof.r_tau
-        };
+        OpeningProof bad = res.proof;
         bad.tau.x.val[0] ^= 1u;
         check(!pp.verify_zk(hc.com, u, res.v, bad, c),
               "tampered τ is rejected (τ-binding check)");
@@ -178,31 +171,11 @@ int main() {
         Fr_t c = FrTensor::random(1)(0);
 
         auto res = pp.open_zk(t, hc.r, hc.com, u, c);
-        // Add a non-trivial perturbation to z[0]: bad_z = z + one.
-        Fr_t one = FR_FROM_INT(1);
-        FrTensor one_t(1, &one);
-        // Build a perturbation vector: 1 at index 0, 0 elsewhere.
-        FrTensor pert(N);
-        {
-            Fr_t zeros[4] = {
-                FR_FROM_INT(0), FR_FROM_INT(0),
-                FR_FROM_INT(0), FR_FROM_INT(0)
-            };
-            // Can't do this cleanly without int* init; use random and add 1.
-            // Simpler: copy z and mutate via a temp host-side Fr.
-            FrTensor tmp(N, zeros);
-            cudaMemcpy(pert.gpu_data, tmp.gpu_data, N*sizeof(Fr_t),
-                       cudaMemcpyDeviceToDevice);
-        }
-        // Overwrite pert[0] with one.
-        cudaMemcpy(pert.gpu_data, &one, sizeof(Fr_t), cudaMemcpyHostToDevice);
-        FrTensor bad_z = res.proof.z + pert;
-
-        OpeningProof bad = {
-            res.proof.delta, res.proof.beta, res.proof.tau,
-            bad_z, res.proof.z_delta, res.proof.z_beta,
-            res.proof.r_tau
-        };
+        // Perturb z by a fresh random vector — overwhelmingly unlikely
+        // to leave the dot-product check satisfied.
+        FrTensor pert = FrTensor::random(N);
+        OpeningProof bad = res.proof;
+        bad.z = res.proof.z + pert;
         check(!pp.verify_zk(hc.com, u, res.v, bad, c),
               "tampered z is rejected");
     }
@@ -217,12 +190,8 @@ int main() {
         Fr_t c = FrTensor::random(1)(0);
 
         auto res = pp.open_zk(t, hc.r, hc.com, u, c);
-        Fr_t bad_zd = res.proof.z_delta;
-        bad_zd.val[0] ^= 1u;
-        OpeningProof bad = {
-            res.proof.delta, res.proof.beta, res.proof.tau,
-            res.proof.z, bad_zd, res.proof.z_beta, res.proof.r_tau
-        };
+        OpeningProof bad = res.proof;
+        bad.z_delta.val[0] ^= 1u;
         check(!pp.verify_zk(hc.com, u, res.v, bad, c),
               "tampered z_δ is rejected");
     }
@@ -237,12 +206,8 @@ int main() {
         Fr_t c = FrTensor::random(1)(0);
 
         auto res = pp.open_zk(t, hc.r, hc.com, u, c);
-        Fr_t bad_zb = res.proof.z_beta;
-        bad_zb.val[0] ^= 1u;
-        OpeningProof bad = {
-            res.proof.delta, res.proof.beta, res.proof.tau,
-            res.proof.z, res.proof.z_delta, bad_zb, res.proof.r_tau
-        };
+        OpeningProof bad = res.proof;
+        bad.z_beta.val[0] ^= 1u;
         check(!pp.verify_zk(hc.com, u, res.v, bad, c),
               "tampered z_β is rejected");
     }
