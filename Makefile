@@ -1,9 +1,16 @@
 # Compilers
 NVCC := /usr/local/cuda/bin/nvcc
 
-# Include and library paths
-INCLUDES := -I$(CONDA_PREFIX)/include -Isrc
-LIBS := -L$(CONDA_PREFIX)/lib
+# Include and library paths.
+#
+# BLST is a host-side dependency used by src/field/hash_to_curve.* for
+# RFC 9380 hash-to-curve (Phase 1.5, no toxic-waste generators).  On the
+# H100 (jpetrieamodo) the library is built from source at ~/blst/; set
+# BLST_DIR to override for other installs.
+BLST_DIR ?= $(HOME)/blst
+INCLUDES := -I$(CONDA_PREFIX)/include -Isrc -I$(BLST_DIR)/bindings
+LIBS := -L$(CONDA_PREFIX)/lib -L$(BLST_DIR)
+EXTRA_LIBS := -lblst
 
 # get compute capability from retrieved value
 ARCH := sm_90
@@ -21,7 +28,8 @@ NVCC_FLAGS := -arch=$(ARCH) -std=c++17 -O3
 BUILD := build
 
 # ── BLS12-381 source files ──────────────────────────────────────────────────
-CU_SRCS := src/field/bls12-381.cu src/util/ioutils.cu src/commit/commitment.cu \
+CU_SRCS := src/field/bls12-381.cu src/field/hash_to_curve.cu \
+           src/util/ioutils.cu src/commit/commitment.cu \
            src/tensor/fr-tensor.cu src/tensor/g1-tensor.cu src/proof/proof.cu \
            src/zknn/zkrelu.cu src/zknn/zkfc.cu src/zknn/tlookup.cu \
            src/poly/polynomial.cu src/zknn/zksoftmax.cu src/zknn/rescaling.cu \
@@ -37,6 +45,7 @@ BLS_TARGETS := main ppgen commit-param self-attn ffn rmsnorm skip-connection \
                zkllm_entropy commit_logits test_zkargmax test_zklog test_zknormalcdf test_zkentropy \
                test_hiding_pedersen test_open_zk test_verify_weight_zk \
                test_opening_distinguisher \
+               test_hash_to_curve_rfc9380 test_htc_generators test_pp_format \
                zkllm_entropy_timed bench_field_arith bench_commitment
 
 # Create build subdirectories
@@ -70,67 +79,76 @@ $(BUILD)/bench/%.o: bench/%.cu
 
 # Entry points in bin/
 main: $(BUILD)/bin/main.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 ppgen: $(BUILD)/bin/ppgen.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 commit-param: $(BUILD)/bin/commit-param.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 commit_logits: $(BUILD)/bin/commit_logits.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 zkllm_entropy: $(BUILD)/bin/zkllm_entropy.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 zkllm_entropy_timed: $(BUILD)/bin/zkllm_entropy_timed.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 # LLM layer targets (source in src/llm/)
 self-attn: $(BUILD)/llm/self-attn.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 ffn: $(BUILD)/llm/ffn.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 rmsnorm: $(BUILD)/llm/rmsnorm.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 skip-connection: $(BUILD)/llm/skip-connection.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 # Test targets (source in test/)
 test_zkargmax: $(BUILD)/test/test_zkargmax.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_zklog: $(BUILD)/test/test_zklog.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_zknormalcdf: $(BUILD)/test/test_zknormalcdf.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_zkentropy: $(BUILD)/test/test_zkentropy.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_hiding_pedersen: $(BUILD)/test/test_hiding_pedersen.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_open_zk: $(BUILD)/test/test_open_zk.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_verify_weight_zk: $(BUILD)/test/test_verify_weight_zk.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_opening_distinguisher: $(BUILD)/test/test_opening_distinguisher.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
+
+test_hash_to_curve_rfc9380: $(BUILD)/test/test_hash_to_curve_rfc9380.o $(CU_OBJS) $(CPP_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
+
+test_htc_generators: $(BUILD)/test/test_htc_generators.o $(CU_OBJS) $(CPP_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
+
+test_pp_format: $(BUILD)/test/test_pp_format.o $(CU_OBJS) $(CPP_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 # Bench targets (source in bench/)
 bench_field_arith: $(BUILD)/bench/bench_field_arith.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 bench_commitment: $(BUILD)/bench/bench_commitment.o $(CU_OBJS) $(CPP_OBJS)
-	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 # ── Clean rule ───────────────────────────────────────────────────────────────
 clean:

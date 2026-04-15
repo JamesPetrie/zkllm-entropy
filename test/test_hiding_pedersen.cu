@@ -2,7 +2,7 @@
 //
 // Covers:
 //   (1) is_hiding() sanity: random()→false, hiding_random()→true
-//   (2) save_hiding / load_hiding pp roundtrip with .h sidecar
+//   (2) save_hiding / load_hiding pp roundtrip (Phase 1.5 v2 format)
 //   (3) commit_hiding refuses non-hiding pp (fails loud, not silent)
 //   (4) Collision resistance: N commitments of the same message with
 //       fresh r are all byte-distinct.  Catches r=0 / fixed-r bugs that
@@ -98,18 +98,8 @@ int main() {
         }
         cout << "PASS: load_hiding restores all G_i byte-exactly" << endl;
 
-        // Backward compat: a pp written without a .u sidecar (Phase 1
-        // legacy) must still load successfully as hiding-but-not-openable.
-        remove((path + ".u").c_str());
-        Commitment legacy_loaded = Commitment::load_hiding(path);
-        check(legacy_loaded.is_hiding(),
-              "load_hiding without .u still produces hiding pp");
-        check(!legacy_loaded.is_openable(),
-              "load_hiding without .u produces non-openable pp (U stays identity)");
-
-        // Cleanup
+        // Cleanup (Phase 1.5 v2 format: single file, no sidecars)
         remove(path.c_str());
-        remove((path + ".h").c_str());
     }
 
     // ── Test 3: commit_hiding refuses non-hiding pp ───────────────────────
@@ -287,19 +277,19 @@ int main() {
         check(w_legacy.r.size == 0,
               "create_weight(legacy) produces empty r (size 0)");
 
-        // Cleanup
+        // Cleanup (Phase 1.5 v2 format: single pp file, no sidecars)
         remove(pp_path.c_str());
-        remove((pp_path + ".h").c_str());
-        remove((pp_path + ".u").c_str());
         remove(com_path.c_str());
         remove(r_path.c_str());
         remove(int_path.c_str());
     }
 
-    // ── Test 9: create_weight(hiding) throws when .h sidecar is missing ──
-    // A Phase-1 hiding weight that ships without its .h sidecar (because
-    // ppgen was run in --legacy mode, or the sidecar was deleted) must
-    // fail loud at load, not silently degrade to non-hiding.
+    // ── Test 9: create_weight(hiding) throws on corrupted pp file ────────
+    // Phase 1.5 equivalent of the old "missing .h sidecar" test: a
+    // corrupted pp file (flip a byte inside a G_i slot) must fail loud
+    // at load time via verify_pp, not silently degrade.  test_pp_format
+    // has the fine-grained tamper coverage; this check ensures the
+    // rejection propagates through the create_weight entry point too.
     {
         const uint in_dim = 1;
         const uint out_dim = 4;
@@ -322,8 +312,20 @@ int main() {
         hc.r.save(r_path);
         weight.save_int(int_path);
 
-        // Delete the .h sidecar — this is the Phase-1-legacy pp case.
-        remove((pp_path + ".h").c_str());
+        // Flip a byte somewhere in the middle of the pp file.  Exact
+        // offset doesn't matter — any corruption inside the G_i / H / U
+        // region will trip verify_pp.  We pick an offset past the DST
+        // header (~80 bytes) to guarantee we hit a generator byte.
+        {
+            FILE* f = fopen(pp_path.c_str(), "r+b");
+            fseek(f, 200, SEEK_SET);
+            uint8_t b;
+            fread(&b, 1, 1, f);
+            fseek(f, 200, SEEK_SET);
+            b ^= 0x01;
+            fwrite(&b, 1, 1, f);
+            fclose(f);
+        }
 
         bool threw = false;
         try {
@@ -334,10 +336,9 @@ int main() {
             threw = true;
         }
         check(threw,
-              "create_weight(hiding) throws when .h sidecar is missing");
+              "create_weight(hiding) throws when pp file is corrupted");
 
         remove(pp_path.c_str());
-        remove((pp_path + ".u").c_str());
         remove(com_path.c_str());
         remove(r_path.c_str());
         remove(int_path.c_str());
@@ -384,8 +385,6 @@ int main() {
               "create_weight(hiding) throws when r.size != com.size");
 
         remove(pp_path.c_str());
-        remove((pp_path + ".h").c_str());
-        remove((pp_path + ".u").c_str());
         remove(com_path.c_str());
         remove(r_path.c_str());
         remove(int_path.c_str());

@@ -1,5 +1,9 @@
 #include "commit/commitment.cuh"
+#include "field/hash_to_curve.cuh"
 #include "util/ioutils.cuh"
+#include <cstdio>
+#include <cstring>
+#include <vector>
 
 Commitment Commitment::random(uint size)
 {
@@ -8,46 +12,74 @@ Commitment Commitment::random(uint size)
     return out;
 }
 
-// Pedersen hiding pp: G_i = s_i * G for i = 0..size-1, plus H = s_H * G.
-// All scalars sampled locally via FrTensor::random.
+// Phase 1.5 hiding pp: every generator derived via RFC 9380 hash-to-curve
+// from a public DST.  Deterministic, no RNG, no secret scalars.
 //
-// Reference: Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
+// Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
 //   "Informally, a commitment scheme allows a sender to produce a message
 //    C = Com(m) that hides m from a receiver but binds the sender to the
 //    value m."
 //
-// Trust model: whoever runs this function knows every scalar {s_i, s_H}.
-// Hiding against the verifier holds regardless — the verifier never sees
-// the scalars.  Binding against an equivocating prover requires that the
-// prover not know the cross-dlogs among {G_i, H}; in this codebase that's
-// deferred to the same trusted-setup assumption that the non-hiding
-// pp already makes (zkLLM §3.4).
+// Binding requires that nobody knows pairwise discrete logs among
+// {G_i, H, U}.  Hash-to-curve satisfies this unconditionally — the
+// output of RFC 9380 SSWU+cofactor-clearing on a fresh input is
+// computationally indistinguishable from a uniformly random G1 element,
+// so no party holds any dlog.
 Commitment Commitment::hiding_random(uint size)
 {
-    Commitment out(size, G1Jacobian_generator);
-    out *= FrTensor::random(size);
+    return hiding_random(size, ZKLLM_ENTROPY_PEDERSEN_DST_V1);
+}
 
-    Commitment h_tmp(1, G1Jacobian_generator);
-    h_tmp *= FrTensor::random(1);
-    out.hiding_generator = h_tmp(0);
-
-    // Sample U independently from the same generator — used as the
-    // inner-product target in Hyrax §A.2 Figure 6.
-    Commitment u_tmp(1, G1Jacobian_generator);
-    u_tmp *= FrTensor::random(1);
-    out.u_generator = u_tmp(0);
+Commitment Commitment::hiding_random(uint size, const string& dst)
+{
+    HashedGenerators gen = hash_to_curve_generators(dst, size);
+    Commitment out(size, gen.G.data());
+    out.hiding_generator = gen.H;
+    out.u_generator = gen.U;
 
     if (!out.is_hiding()) {
         throw std::runtime_error(
-            "Commitment::hiding_random: sampled H is the G1 identity; "
-            "RNG bug or catastrophic coincidence");
+            "Commitment::hiding_random: hash-to-curve returned identity for H; "
+            "DST or blst wrapper is broken");
     }
     if (!out.is_openable()) {
         throw std::runtime_error(
-            "Commitment::hiding_random: sampled U is the G1 identity; "
-            "RNG bug or catastrophic coincidence");
+            "Commitment::hiding_random: hash-to-curve returned identity for U; "
+            "DST or blst wrapper is broken");
     }
     return out;
+}
+
+static bool g1_bytes_equal(const G1Jacobian_t& a, const G1Jacobian_t& b)
+{
+    return std::memcmp(&a, &b, sizeof(G1Jacobian_t)) == 0;
+}
+
+bool Commitment::verify_pp(const string& dst) const
+{
+    HashedGenerators gen = hash_to_curve_generators(dst, size);
+
+    // Pull stored G_i off the GPU a batch at a time and byte-compare.
+    std::vector<G1Jacobian_t> host_G(size);
+    cudaMemcpy(host_G.data(), gpu_data,
+               size * sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
+
+    for (uint i = 0; i < size; i++) {
+        if (!g1_bytes_equal(host_G[i], gen.G[i])) {
+            throw std::runtime_error(
+                "Commitment::verify_pp: generator mismatch at index " +
+                std::to_string(i));
+        }
+    }
+    if (!g1_bytes_equal(hiding_generator, gen.H)) {
+        throw std::runtime_error(
+            "Commitment::verify_pp: hiding generator H does not match DST derivation");
+    }
+    if (!g1_bytes_equal(u_generator, gen.U)) {
+        throw std::runtime_error(
+            "Commitment::verify_pp: inner-product generator U does not match DST derivation");
+    }
+    return true;
 }
 
 bool Commitment::is_hiding() const
@@ -71,75 +103,116 @@ bool Commitment::is_openable() const
     return false;
 }
 
+// Phase 1.5 v2 pp file format.
+//
+//   magic   : 8 bytes  "ZKEPP\x00v2"
+//   version : uint32   2
+//   flags   : uint32   bit 0: hiding, bit 1: openable, bit 2: htc-derived
+//   dst_len : uint32
+//   dst     : dst_len bytes
+//   size    : uint32
+//   G_i     : size * sizeof(G1Jacobian_t)
+//   H       : sizeof(G1Jacobian_t)   (iff flag bit 0 set)
+//   U       : sizeof(G1Jacobian_t)   (iff flag bit 1 set)
+
+static const char PP_V2_MAGIC[8] = {'Z','K','E','P','P','\0','v','2'};
+static const uint32_t PP_V2_VERSION = 2;
+static const uint32_t PP_FLAG_HIDING       = 1u << 0;
+static const uint32_t PP_FLAG_OPENABLE     = 1u << 1;
+static const uint32_t PP_FLAG_HTC_DERIVED  = 1u << 2;
+
 void Commitment::save_hiding(const string& pp_file) const
 {
-    // Write the G_i vector with the inherited serializer — the legacy pp
-    // file format is unchanged.
-    this->save(pp_file);
+    if (!is_hiding()) {
+        throw std::runtime_error("Commitment::save_hiding: pp is not hiding");
+    }
 
-    // Write H to a sidecar file.  One G1Jacobian_t on disk.
-    G1Jacobian_t* d_h;
-    cudaMalloc(&d_h, sizeof(G1Jacobian_t));
-    cudaMemcpy(d_h, &hiding_generator, sizeof(G1Jacobian_t), cudaMemcpyHostToDevice);
-    savebin(pp_file + ".h", d_h, sizeof(G1Jacobian_t));
-    cudaFree(d_h);
+    const string dst = ZKLLM_ENTROPY_PEDERSEN_DST_V1;
+    uint32_t flags = PP_FLAG_HIDING | PP_FLAG_HTC_DERIVED;
+    if (is_openable()) flags |= PP_FLAG_OPENABLE;
 
-    // Write U to its own sidecar.  Independent of the `.h` format so a
-    // future reader with only `.h` continues to work in the hiding-but-
-    // not-openable configuration.
-    G1Jacobian_t* d_u;
-    cudaMalloc(&d_u, sizeof(G1Jacobian_t));
-    cudaMemcpy(d_u, &u_generator, sizeof(G1Jacobian_t), cudaMemcpyHostToDevice);
-    savebin(pp_file + ".u", d_u, sizeof(G1Jacobian_t));
-    cudaFree(d_u);
+    FILE* f = fopen(pp_file.c_str(), "wb");
+    if (!f) throw std::runtime_error("save_hiding: cannot open " + pp_file);
+
+    fwrite(PP_V2_MAGIC, 1, 8, f);
+    fwrite(&PP_V2_VERSION, sizeof(uint32_t), 1, f);
+    fwrite(&flags, sizeof(uint32_t), 1, f);
+
+    uint32_t dst_len = static_cast<uint32_t>(dst.size());
+    fwrite(&dst_len, sizeof(uint32_t), 1, f);
+    fwrite(dst.data(), 1, dst_len, f);
+
+    uint32_t sz = size;
+    fwrite(&sz, sizeof(uint32_t), 1, f);
+
+    std::vector<G1Jacobian_t> host_G(size);
+    cudaMemcpy(host_G.data(), gpu_data,
+               size * sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
+    fwrite(host_G.data(), sizeof(G1Jacobian_t), size, f);
+
+    fwrite(&hiding_generator, sizeof(G1Jacobian_t), 1, f);
+    if (is_openable()) {
+        fwrite(&u_generator, sizeof(G1Jacobian_t), 1, f);
+    }
+
+    fclose(f);
 }
 
 Commitment Commitment::load_hiding(const string& pp_file)
 {
-    // Load G_i via inherited ctor.  `Commitment` inherits G1TensorJacobian's
-    // string ctor, which gives a non-hiding Commitment with
-    // hiding_generator == identity.
-    Commitment out(pp_file);
+    FILE* f = fopen(pp_file.c_str(), "rb");
+    if (!f) throw std::runtime_error("load_hiding: cannot open " + pp_file);
 
-    string h_file = pp_file + ".h";
-    FILE* probe = fopen(h_file.c_str(), "rb");
-    if (!probe) {
-        // Legacy pp without H sidecar.  Stays non-hiding.  Upstream callers
-        // that need hiding should check is_hiding() and error out.
-        return out;
-    }
-    fclose(probe);
+    auto fail = [&](const string& msg) -> Commitment {
+        fclose(f);
+        throw std::runtime_error("load_hiding: " + msg);
+    };
 
-    if (findsize(h_file) != sizeof(G1Jacobian_t)) {
-        throw std::runtime_error(
-            "Commitment::load_hiding: H sidecar file has unexpected size: " + h_file);
+    char magic[8];
+    if (fread(magic, 1, 8, f) != 8) return fail("short read on magic");
+    if (std::memcmp(magic, PP_V2_MAGIC, 8) != 0) {
+        return fail("pp file is not v2 hash-to-curve format (Phase 1 v1 files "
+                    "are no longer accepted; regenerate via ppgen)");
     }
 
-    G1Jacobian_t* d_h;
-    cudaMalloc(&d_h, sizeof(G1Jacobian_t));
-    loadbin(h_file, d_h, sizeof(G1Jacobian_t));
-    cudaMemcpy(&out.hiding_generator, d_h, sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
-    cudaFree(d_h);
+    uint32_t version = 0, flags = 0, dst_len = 0, sz = 0;
+    if (fread(&version, sizeof(uint32_t), 1, f) != 1) return fail("short read on version");
+    if (version != PP_V2_VERSION) return fail("unsupported version");
+    if (fread(&flags, sizeof(uint32_t), 1, f) != 1) return fail("short read on flags");
+    if (!(flags & PP_FLAG_HIDING)) return fail("flags: hiding bit not set");
+    if (!(flags & PP_FLAG_HTC_DERIVED)) return fail("flags: htc-derived bit not set");
 
-    // U sidecar is optional: pp that was hiding-only (Phase 1) won't have
-    // it, and load_hiding stays backward-compatible by leaving
-    // u_generator at identity.  Phase 2 callers must check is_openable().
-    string u_file = pp_file + ".u";
-    FILE* u_probe = fopen(u_file.c_str(), "rb");
-    if (!u_probe) return out;
-    fclose(u_probe);
+    if (fread(&dst_len, sizeof(uint32_t), 1, f) != 1) return fail("short read on dst_len");
+    if (dst_len == 0 || dst_len > 4096) return fail("dst_len out of range");
+    std::vector<char> dst_buf(dst_len);
+    if (fread(dst_buf.data(), 1, dst_len, f) != dst_len) return fail("short read on dst");
+    string dst(dst_buf.data(), dst_len);
 
-    if (findsize(u_file) != sizeof(G1Jacobian_t)) {
-        throw std::runtime_error(
-            "Commitment::load_hiding: U sidecar file has unexpected size: " + u_file);
+    if (fread(&sz, sizeof(uint32_t), 1, f) != 1) return fail("short read on size");
+    if (sz == 0) return fail("size is zero");
+
+    std::vector<G1Jacobian_t> host_G(sz);
+    if (fread(host_G.data(), sizeof(G1Jacobian_t), sz, f) != sz) {
+        return fail("short read on G_i vector");
     }
 
-    G1Jacobian_t* d_u;
-    cudaMalloc(&d_u, sizeof(G1Jacobian_t));
-    loadbin(u_file, d_u, sizeof(G1Jacobian_t));
-    cudaMemcpy(&out.u_generator, d_u, sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
-    cudaFree(d_u);
+    G1Jacobian_t h = G1Jacobian_ZERO;
+    if (fread(&h, sizeof(G1Jacobian_t), 1, f) != 1) return fail("short read on H");
 
+    G1Jacobian_t u = G1Jacobian_ZERO;
+    if (flags & PP_FLAG_OPENABLE) {
+        if (fread(&u, sizeof(G1Jacobian_t), 1, f) != 1) return fail("short read on U");
+    }
+    fclose(f);
+
+    Commitment out(sz, host_G.data());
+    out.hiding_generator = h;
+    out.u_generator = u;
+
+    // Publicly recomputable integrity: recompute from DST and byte-compare.
+    // Catches in-transit tampering and bit-rot without needing any
+    // attestation from the producer.
+    out.verify_pp(dst);
     return out;
 }
 

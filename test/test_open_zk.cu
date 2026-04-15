@@ -20,7 +20,7 @@
 //  12. wrong challenge c on verify → rejects.
 //
 // Sanity:
-//  13. open_zk throws on non-openable pp (missing .u).
+//  13. open_zk throws on non-openable pp (legacy Commitment::random).
 //
 // Hyrax (Wahby et al. 2018, eprint 2017/1132) §A.2 Figure 6, Theorem 11
 // (p. 18): "The protocol of Figure 6 is complete, honest-verifier

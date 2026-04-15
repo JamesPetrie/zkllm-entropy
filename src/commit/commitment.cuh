@@ -51,11 +51,12 @@ struct OpeningProof {
 //      {Com(m_0; r)}_{r<-R} and {Com(m_1; r)}_{r<-R} are identically
 //      distributed."
 //
-// H is stored in a sidecar file next to the main pp file so the existing
-// G1TensorJacobian save/load path stays untouched. H is identity
-// (G1Jacobian_t zero) for a non-hiding Commitment produced by the legacy
-// `random()` factory; use `hiding_random()` to get a Commitment with a
-// real H.  Callers can check `is_hiding()` to distinguish the two.
+// H (and the §A.2 Figure 6 inner-product target U) are stored inline
+// in the v2 pp file alongside {G_i} (see save_hiding / load_hiding).
+// They're identity (G1Jacobian_t zero) for a non-hiding Commitment
+// produced by the legacy `random()` factory; use `hiding_random()` to
+// get a Commitment with real H and U.  Callers can check `is_hiding()`
+// or `is_openable()` to distinguish.
 class Commitment: public G1TensorJacobian
 {
     public:
@@ -75,8 +76,7 @@ class Commitment: public G1TensorJacobian
     // §A.2 Figure 6 ZK dot-product protocol (the "g" in
     // "τ = g^{y} ⊙ h^{r_τ}", Hyrax p. 17).  Distinct from both the message
     // generators {G_i} and the hiding generator H.  Identity for legacy
-    // non-hiding Commitments; populated by hiding_random() and persisted
-    // in the `.u` sidecar.
+    // non-hiding Commitments; populated by hiding_random().
     G1Jacobian_t u_generator = G1Jacobian_ZERO;
 
     bool is_hiding() const;
@@ -139,17 +139,45 @@ class Commitment: public G1TensorJacobian
     // existing test fixtures and binaries that don't need hiding.
     static Commitment random(uint size);
 
-    // New hiding pp factory.  Samples the `size` message generators
-    // {G_i = s_i * G} and additionally samples `H = s_H * G` where
-    // s_H <- F_r uniformly.  All scalars are generated locally by whoever
-    // runs this factory (same trusted-setup model as the non-hiding
-    // version; zkLLM §3.4 assumes "trusted public parameters").
+    // Hiding pp factory (Phase 1.5 — hash-to-curve, no toxic waste).
+    //
+    // Derives every generator from a public domain-separation tag via
+    // RFC 9380 hash-to-curve, so no party — including whoever runs this
+    // factory — knows any pairwise discrete log.  Deterministic function
+    // of (DST, size); no RNG, no secret state.
+    //
+    // Replaces the Phase 1 `s_i · G_base` scheme, which left whoever ran
+    // ppgen holding every dlog (classic toxic waste).  Hyrax's binding
+    // proof (Wahby et al. 2018, eprint 2017/1132, §3.1) assumes no
+    // known dlog relations among {G_i, H, U}; hash-to-curve makes that
+    // assumption hold unconditionally.
+    //
+    // Default DST is ZKLLM_ENTROPY_PEDERSEN_DST_V1.  Passing a custom
+    // DST is supported for RFC 9380 test-vector harnesses only.
     static Commitment hiding_random(uint size);
+    static Commitment hiding_random(uint size, const string& dst);
 
-    // Serialization for hiding pp.  Writes the G_i vector to `pp_file`
-    // (inherited G1TensorJacobian layout, unchanged) and writes H to a
-    // sidecar `pp_file + ".h"` file.  Loading from a path without an
-    // ".h" sidecar leaves hiding_generator at identity.
+    // Byte-compare the stored generators against a fresh hash-to-curve
+    // derivation from `dst`.  Returns true iff every generator matches.
+    // On mismatch, throws runtime_error naming the first index that
+    // disagrees (so truncation or single-point corruption is diagnosable).
+    bool verify_pp(const string& dst) const;
+
+    // Serialization for hiding pp — v2 format (Phase 1.5).
+    //
+    //   magic     : 8 bytes  = "ZKEPP\x00v2"
+    //   version   : uint32   = 2
+    //   flags     : uint32   (bit 0: hiding; bit 1: openable; bit 2: htc-derived)
+    //   dst_len   : uint32
+    //   dst       : dst_len bytes
+    //   size      : uint32
+    //   G_i       : size * sizeof(G1Jacobian_t)
+    //   H         : sizeof(G1Jacobian_t)  (if hiding)
+    //   U         : sizeof(G1Jacobian_t)  (if openable)
+    //
+    // load_hiding recomputes generators from DST and rejects on mismatch
+    // (throws runtime_error).  No v1-format read path — Phase 1 `.h` / `.u`
+    // sidecar files are no longer accepted.
     void save_hiding(const string& pp_file) const;
     static Commitment load_hiding(const string& pp_file);
 

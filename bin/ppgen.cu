@@ -1,24 +1,26 @@
 // ppgen: generate public Pedersen commitment parameters for zkllm-entropy.
 //
-// Emits:
-//   <out_file>      : {G_i} generators (G1TensorJacobian layout, unchanged)
-//   <out_file>.h    : Hiding generator H (single G1Jacobian_t; sidecar)
+// Phase 1.5: generators are derived from a public domain-separation tag
+// via RFC 9380 hash-to-curve, so ppgen holds no secret scalars and the
+// output pp has no pairwise-dlog toxic waste.
 //
-// The H sidecar makes commitments hiding (Hyrax §3.1). The original file
-// format is unchanged so existing non-hiding consumers keep working; they
-// simply ignore the sidecar and get hiding_generator == identity.
+// Emits a single v2 file containing {G_i} + H + U and the DST used for
+// derivation (see Commitment::save_hiding for the layout).  Receivers
+// verify integrity by recomputing from the DST (Commitment::verify_pp /
+// Commitment::load_hiding).
 //
-// Reference, Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
+// Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
 //   "Informally, a commitment scheme allows a sender to produce a message
 //    C = Com(m) that hides m from a receiver but binds the sender to the
 //    value m."
 //
-// Use --legacy to emit the old non-hiding pp only (useful for regression
-// testing existing test fixtures during the Phase 1 migration).
+// Use --legacy to emit the old non-hiding pp only (no hiding generators,
+// no v2 wrapper) for regression testing against pre-Phase-1 fixtures.
 //
 // Usage: ./ppgen <size> <out_file> [--legacy]
 
 #include "commit/commitment.cuh"
+#include "field/hash_to_curve.cuh"
 #include <iostream>
 #include <string>
 #include <cstring>
@@ -42,9 +44,10 @@ int main(int argc, char *argv[]) {
     } else {
         Commitment pp = Commitment::hiding_random(padded);
         pp.save_hiding(filename);
-        std::cout << "Emitted hiding pp (" << padded
-                  << " generators + H) -> " << filename
-                  << " (+ " << filename << ".h)" << std::endl;
+        std::cout << "Emitted hash-to-curve hiding pp (" << padded
+                  << " generators + H + U, DST "
+                  << ZKLLM_ENTROPY_PEDERSEN_DST_V1 << ") -> "
+                  << filename << std::endl;
     }
     return 0;
 }
