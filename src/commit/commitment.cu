@@ -164,6 +164,70 @@ G1TensorJacobian Commitment::commit_int_multi(const vector<FrTensor>& ts) const{
     return temp.rowwise_sum(temp.size / size, size);
 }
 
+// ─── Hiding commit variants ─────────────────────────────────────────────────
+//
+// Each returns (C, r) where C[row] = Σ_j G_j · t[row,j] + r[row] · H and
+// r[row] ← F_r uniformly, independently per row.
+//
+// Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
+//   "We say that Com_pp(m; r) is a commitment to the message m with
+//    randomness r".
+//
+// Requires pp to have been produced by `hiding_random`; we throw
+// otherwise so a caller who forgot to migrate their pp doesn't
+// silently get a non-hiding commitment.
+
+// Shared helper: given a plain non-hiding row-wise commitment `base_com`
+// (size m × 1 in field elements), produce `base_com + r · H` along with
+// the fresh r tensor.
+static Commitment::HidingCommit add_blinding(
+    const Commitment& pp,
+    G1TensorJacobian&& base_com,
+    uint num_rows)
+{
+    if (!pp.is_hiding()) {
+        throw std::runtime_error(
+            "Commitment::commit*_hiding: pp was not produced by "
+            "hiding_random(); hiding_generator is identity");
+    }
+
+    FrTensor r = FrTensor::random(num_rows);
+
+    // Compute r[row] · H per row using the existing size-1 Commitment
+    // scalar-mul path (H as the single generator).
+    Commitment h_as_commitment(1, pp.hiding_generator);
+    G1TensorJacobian rH = h_as_commitment.commit(r);  // size == num_rows
+
+    return {base_com + rH, std::move(r)};
+}
+
+Commitment::HidingCommit Commitment::commit_hiding(const FrTensor& t) const
+{
+    if (t.size % size != 0) throw std::runtime_error("Commitment::commit_hiding - Incompatible dimensions");
+    uint m = t.size / size;
+    G1TensorJacobian base = this->commit(t);
+    return add_blinding(*this, std::move(base), m);
+}
+
+Commitment::HidingCommit Commitment::commit_int_hiding(const FrTensor& t) const
+{
+    if (t.size % size != 0) throw std::runtime_error("Commitment::commit_int_hiding - Incompatible dimensions");
+    uint m = t.size / size;
+    G1TensorJacobian base = this->commit_int(t);
+    return add_blinding(*this, std::move(base), m);
+}
+
+Commitment::HidingCommit Commitment::commit_int_multi_hiding(const vector<FrTensor>& ts) const
+{
+    uint num_row = 0;
+    for (auto& t : ts) {
+        if (t.size % size != 0) throw std::runtime_error("Commitment::commit_int_multi_hiding - Incompatible dimensions");
+        num_row += t.size / size;
+    }
+    G1TensorJacobian base = this->commit_int_multi(ts);
+    return add_blinding(*this, std::move(base), num_row);
+}
+
 KERNEL void me_open_step(GLOBAL Fr_t* scalars, GLOBAL G1Jacobian_t* generators, Fr_t u, // always assume that scalars and u is in mont form
     GLOBAL Fr_t* new_scalars, GLOBAL G1Jacobian_t* new_generators,
     GLOBAL G1Jacobian_t* temp_out, GLOBAL G1Jacobian_t* temp_out0, GLOBAL G1Jacobian_t* temp_out1, 

@@ -45,6 +45,27 @@ class Commitment: public G1TensorJacobian
     G1TensorJacobian commit_int (const FrTensor& t) const;
     G1TensorJacobian commit_int_multi(const vector<FrTensor>& t) const;
 
+    // Hiding variants of commit / commit_int / commit_int_multi.
+    //
+    // Each committed row gets its own fresh blinding scalar r_row; the
+    // returned pair holds the row-wise commitment tensor C together with
+    // the FrTensor r of per-row blindings.  C[row] = sum_j G_j * t[row,j]
+    // + r[row] * H.
+    //
+    // Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
+    //   "We say that Com_pp(m; r) is a commitment to the message m with
+    //    randomness r, and sometimes do the same for the opening".
+    //
+    // These methods require is_hiding() == true; they throw otherwise
+    // to prevent silent loss of the hiding property.
+    struct HidingCommit {
+        G1TensorJacobian com;
+        FrTensor r;
+    };
+    HidingCommit commit_hiding(const FrTensor& t) const;
+    HidingCommit commit_int_hiding(const FrTensor& t) const;
+    HidingCommit commit_int_multi_hiding(const vector<FrTensor>& ts) const;
+
     Fr_t open(const FrTensor& t, const G1TensorJacobian& c, const vector<Fr_t>& u) const;
 
     // Legacy non-hiding pp factory.  Kept for backwards compatibility with
