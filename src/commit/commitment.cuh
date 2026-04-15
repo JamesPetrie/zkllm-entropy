@@ -39,7 +39,18 @@ class Commitment: public G1TensorJacobian
     // G1 identity for legacy non-hiding Commitments.
     G1Jacobian_t hiding_generator = G1Jacobian_ZERO;
 
+    // Additional generator used as the inner-product target in the Hyrax
+    // §A.2 Figure 6 ZK dot-product protocol (the "g" in
+    // "τ = g^{y} ⊙ h^{r_τ}", Hyrax p. 17).  Distinct from both the message
+    // generators {G_i} and the hiding generator H.  Identity for legacy
+    // non-hiding Commitments; populated by hiding_random() and persisted
+    // in the `.u` sidecar.
+    G1Jacobian_t u_generator = G1Jacobian_ZERO;
+
     bool is_hiding() const;
+    // True iff both hiding_generator (H) and u_generator (U) are non-identity;
+    // i.e. this pp is usable by the Figure 6 open_zk / verify_zk path.
+    bool is_openable() const;
 
     G1TensorJacobian commit(const FrTensor& t) const;
     G1TensorJacobian commit_int (const FrTensor& t) const;

@@ -31,9 +31,20 @@ Commitment Commitment::hiding_random(uint size)
     h_tmp *= FrTensor::random(1);
     out.hiding_generator = h_tmp(0);
 
+    // Sample U independently from the same generator — used as the
+    // inner-product target in Hyrax §A.2 Figure 6.
+    Commitment u_tmp(1, G1Jacobian_generator);
+    u_tmp *= FrTensor::random(1);
+    out.u_generator = u_tmp(0);
+
     if (!out.is_hiding()) {
         throw std::runtime_error(
             "Commitment::hiding_random: sampled H is the G1 identity; "
+            "RNG bug or catastrophic coincidence");
+    }
+    if (!out.is_openable()) {
+        throw std::runtime_error(
+            "Commitment::hiding_random: sampled U is the G1 identity; "
             "RNG bug or catastrophic coincidence");
     }
     return out;
@@ -51,6 +62,15 @@ bool Commitment::is_hiding() const
     return false;
 }
 
+bool Commitment::is_openable() const
+{
+    if (!is_hiding()) return false;
+    for (uint i = 0; i < blstrs__fp__Fp_LIMBS; i++) {
+        if (u_generator.z.val[i] != 0) return true;
+    }
+    return false;
+}
+
 void Commitment::save_hiding(const string& pp_file) const
 {
     // Write the G_i vector with the inherited serializer — the legacy pp
@@ -63,6 +83,15 @@ void Commitment::save_hiding(const string& pp_file) const
     cudaMemcpy(d_h, &hiding_generator, sizeof(G1Jacobian_t), cudaMemcpyHostToDevice);
     savebin(pp_file + ".h", d_h, sizeof(G1Jacobian_t));
     cudaFree(d_h);
+
+    // Write U to its own sidecar.  Independent of the `.h` format so a
+    // future reader with only `.h` continues to work in the hiding-but-
+    // not-openable configuration.
+    G1Jacobian_t* d_u;
+    cudaMalloc(&d_u, sizeof(G1Jacobian_t));
+    cudaMemcpy(d_u, &u_generator, sizeof(G1Jacobian_t), cudaMemcpyHostToDevice);
+    savebin(pp_file + ".u", d_u, sizeof(G1Jacobian_t));
+    cudaFree(d_u);
 }
 
 Commitment Commitment::load_hiding(const string& pp_file)
@@ -91,6 +120,25 @@ Commitment Commitment::load_hiding(const string& pp_file)
     loadbin(h_file, d_h, sizeof(G1Jacobian_t));
     cudaMemcpy(&out.hiding_generator, d_h, sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
     cudaFree(d_h);
+
+    // U sidecar is optional: pp that was hiding-only (Phase 1) won't have
+    // it, and load_hiding stays backward-compatible by leaving
+    // u_generator at identity.  Phase 2 callers must check is_openable().
+    string u_file = pp_file + ".u";
+    FILE* u_probe = fopen(u_file.c_str(), "rb");
+    if (!u_probe) return out;
+    fclose(u_probe);
+
+    if (findsize(u_file) != sizeof(G1Jacobian_t)) {
+        throw std::runtime_error(
+            "Commitment::load_hiding: U sidecar file has unexpected size: " + u_file);
+    }
+
+    G1Jacobian_t* d_u;
+    cudaMalloc(&d_u, sizeof(G1Jacobian_t));
+    loadbin(u_file, d_u, sizeof(G1Jacobian_t));
+    cudaMemcpy(&out.u_generator, d_u, sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
+    cudaFree(d_u);
 
     return out;
 }

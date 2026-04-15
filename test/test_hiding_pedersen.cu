@@ -53,15 +53,23 @@ static bool fr_bytes_eq(const Fr_t& a, const Fr_t& b) {
 }
 
 int main() {
-    // ── Test 1: is_hiding() sanity ────────────────────────────────────────
+    // ── Test 1: is_hiding() / is_openable() sanity ────────────────────────
     {
         Commitment pp_nh = Commitment::random(4);
         check(!pp_nh.is_hiding(),
               "Commitment::random produces non-hiding pp (H == identity)");
+        check(!pp_nh.is_openable(),
+              "Commitment::random produces non-openable pp (U == identity)");
 
         Commitment pp_h = Commitment::hiding_random(4);
         check(pp_h.is_hiding(),
               "Commitment::hiding_random produces hiding pp (H != identity)");
+        check(pp_h.is_openable(),
+              "Commitment::hiding_random produces openable pp (U != identity)");
+        // H and U must be independent points; equality would collapse the
+        // Figure 6 Com(·; ·) into a degenerate form.
+        check(!g1_bytes_eq(pp_h.hiding_generator, pp_h.u_generator),
+              "hiding_random samples H and U as distinct points");
     }
 
     // ── Test 2: save_hiding / load_hiding roundtrip ───────────────────────
@@ -77,8 +85,11 @@ int main() {
         Commitment loaded = Commitment::load_hiding(path);
         check(loaded.size == pp.size, "load_hiding preserves size");
         check(loaded.is_hiding(), "load_hiding restores hiding_generator");
+        check(loaded.is_openable(), "load_hiding restores u_generator");
         check(g1_bytes_eq(loaded.hiding_generator, pp.hiding_generator),
               "load_hiding restores H byte-exactly");
+        check(g1_bytes_eq(loaded.u_generator, pp.u_generator),
+              "load_hiding restores U byte-exactly");
         for (uint i = 0; i < pp.size; i++) {
             if (!g1_bytes_eq(loaded(i), pp(i))) {
                 cerr << "FAIL: load_hiding G_i differs at i=" << i << endl;
@@ -86,6 +97,15 @@ int main() {
             }
         }
         cout << "PASS: load_hiding restores all G_i byte-exactly" << endl;
+
+        // Backward compat: a pp written without a .u sidecar (Phase 1
+        // legacy) must still load successfully as hiding-but-not-openable.
+        remove((path + ".u").c_str());
+        Commitment legacy_loaded = Commitment::load_hiding(path);
+        check(legacy_loaded.is_hiding(),
+              "load_hiding without .u still produces hiding pp");
+        check(!legacy_loaded.is_openable(),
+              "load_hiding without .u produces non-openable pp (U stays identity)");
 
         // Cleanup
         remove(path.c_str());
@@ -270,6 +290,7 @@ int main() {
         // Cleanup
         remove(pp_path.c_str());
         remove((pp_path + ".h").c_str());
+        remove((pp_path + ".u").c_str());
         remove(com_path.c_str());
         remove(r_path.c_str());
         remove(int_path.c_str());
@@ -316,6 +337,7 @@ int main() {
               "create_weight(hiding) throws when .h sidecar is missing");
 
         remove(pp_path.c_str());
+        remove((pp_path + ".u").c_str());
         remove(com_path.c_str());
         remove(r_path.c_str());
         remove(int_path.c_str());
@@ -363,6 +385,7 @@ int main() {
 
         remove(pp_path.c_str());
         remove((pp_path + ".h").c_str());
+        remove((pp_path + ".u").c_str());
         remove(com_path.c_str());
         remove(r_path.c_str());
         remove(int_path.c_str());
