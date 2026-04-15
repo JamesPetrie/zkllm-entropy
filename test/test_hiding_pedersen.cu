@@ -152,31 +152,46 @@ int main() {
         check(!fr_bytes_eq(hc2.r(0), hc3.r(0)), "r across calls: 2 vs 3 differ");
     }
 
-    // ── Test 6: algebraic identity C = Σ tᵢGᵢ + r·H on zero message ─────
-    // For t = 0 vector, Σ tᵢ Gᵢ = 0, so commit_hiding(t).com[row] must
-    // equal the size-1 commit of r[row] against H.  Both sides go through
-    // the same commit pipeline (commit → rowwise_sum), so byte-equality
-    // is a meaningful structural check.
+    // ── Test 6: algebraic identity C = Σ tᵢGᵢ + r·H ──────────────────────
+    // (a) t = 0: Σ tᵢ Gᵢ = 0, so commit_hiding(t).com[row] must equal the
+    //     size-1 commit of r[row] against H.
+    // (b) t ≠ 0 (random): commit_hiding(t).com[row] must equal
+    //     pp.commit(t)[row] + r·H[row], i.e. the plain Pedersen base plus
+    //     the fresh blinding term.  This is the structural check that the
+    //     hiding path really is Σ tᵢGᵢ + r·H — not, say, Σ tᵢGᵢ alone
+    //     with r separately appended to the struct but ignored.
     {
         Commitment pp = Commitment::hiding_random(4);
+        Commitment h_as_commitment(1, pp.hiding_generator);
 
-        // t = 0 vector of size 4 (one row, since t.size / pp.size == 1).
+        // (a) t = 0 case
         Fr_t zeros[4] = {
             {0,0,0,0,0,0,0,0}, {0,0,0,0,0,0,0,0},
             {0,0,0,0,0,0,0,0}, {0,0,0,0,0,0,0,0}
         };
-        FrTensor t(4, zeros);
-        auto hc = pp.commit_hiding(t);
-        check(hc.com.size == 1, "zero-message commit has single row");
+        FrTensor t_zero(4, zeros);
+        auto hc_zero = pp.commit_hiding(t_zero);
+        check(hc_zero.com.size == 1, "zero-message commit has single row");
 
-        // Independently compute r[0] · H via the size-1 commit path.
-        Commitment h_as_commitment(1, pp.hiding_generator);
-        G1TensorJacobian rH = h_as_commitment.commit(hc.r);
-        check(rH.size == 1, "r·H computation has single row");
-
-        check(g1_bytes_eq(hc.com(0), rH(0)),
+        G1TensorJacobian rH_zero = h_as_commitment.commit(hc_zero.r);
+        check(rH_zero.size == 1, "r·H computation has single row");
+        check(g1_bytes_eq(hc_zero.com(0), rH_zero(0)),
               "zero-message commit equals r · H byte-exactly "
               "(C = Σ tᵢGᵢ + r·H with Σ tᵢGᵢ = 0)");
+
+        // (b) random t ≠ 0 case: C = base + r·H where base = Σ tᵢGᵢ.
+        // Both sides are computed through the same rowwise_sum pipeline,
+        // so byte-equality is meaningful.
+        FrTensor t_rand = FrTensor::random(4);
+        auto hc_rand = pp.commit_hiding(t_rand);
+        check(hc_rand.com.size == 1, "random-message commit has single row");
+
+        G1TensorJacobian base = pp.commit(t_rand);  // Σ tᵢ Gᵢ
+        G1TensorJacobian rH_rand = h_as_commitment.commit(hc_rand.r);
+        G1TensorJacobian expected = base + rH_rand;
+        check(g1_bytes_eq(hc_rand.com(0), expected(0)),
+              "random-message commit equals base + r · H byte-exactly "
+              "(C = Σ tᵢGᵢ + r·H with t random)");
     }
 
     // ── Test 7: multi-row hiding commit ───────────────────────────────────
@@ -253,6 +268,99 @@ int main() {
               "create_weight(legacy) produces empty r (size 0)");
 
         // Cleanup
+        remove(pp_path.c_str());
+        remove((pp_path + ".h").c_str());
+        remove(com_path.c_str());
+        remove(r_path.c_str());
+        remove(int_path.c_str());
+    }
+
+    // ── Test 9: create_weight(hiding) throws when .h sidecar is missing ──
+    // A Phase-1 hiding weight that ships without its .h sidecar (because
+    // ppgen was run in --legacy mode, or the sidecar was deleted) must
+    // fail loud at load, not silently degrade to non-hiding.
+    {
+        const uint in_dim = 1;
+        const uint out_dim = 4;
+        Commitment pp = Commitment::hiding_random(out_dim);
+        int int_weight[4] = {1, 2, 3, 4};
+        FrTensor weight(out_dim, int_weight);
+        auto hc = pp.commit_int_hiding(weight);
+
+        char ppt[] = "/tmp/zke_neg_h_pp_XXXXXX";
+        char comt[] = "/tmp/zke_neg_h_com_XXXXXX";
+        char intt[] = "/tmp/zke_neg_h_int_XXXXXX";
+        int f1 = mkstemp(ppt);  close(f1);
+        int f2 = mkstemp(comt); close(f2);
+        int f3 = mkstemp(intt); close(f3);
+        string pp_path = ppt, com_path = comt, int_path = intt;
+        string r_path = com_path + ".r";
+
+        pp.save_hiding(pp_path);
+        hc.com.save(com_path);
+        hc.r.save(r_path);
+        weight.save_int(int_path);
+
+        // Delete the .h sidecar — this is the Phase-1-legacy pp case.
+        remove((pp_path + ".h").c_str());
+
+        bool threw = false;
+        try {
+            Weight w = create_weight(pp_path, int_path, com_path, r_path,
+                                     in_dim, out_dim);
+            (void)w;
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw,
+              "create_weight(hiding) throws when .h sidecar is missing");
+
+        remove(pp_path.c_str());
+        remove(com_path.c_str());
+        remove(r_path.c_str());
+        remove(int_path.c_str());
+    }
+
+    // ── Test 10: create_weight(hiding) throws on r.size != com.size ─────
+    // The hiding overload cross-checks the per-row blinding tensor size
+    // against the commitment row count; a mismatch (corrupted sidecar,
+    // accidental re-use of a sibling weight's .r) must fail loud.
+    {
+        const uint in_dim = 1;
+        const uint out_dim = 4;
+        Commitment pp = Commitment::hiding_random(out_dim);
+        int int_weight[4] = {7, -1, 11, 0};
+        FrTensor weight(out_dim, int_weight);
+        auto hc = pp.commit_int_hiding(weight);  // hc.com.size == 1
+
+        char ppt[] = "/tmp/zke_neg_rs_pp_XXXXXX";
+        char comt[] = "/tmp/zke_neg_rs_com_XXXXXX";
+        char intt[] = "/tmp/zke_neg_rs_int_XXXXXX";
+        int f1 = mkstemp(ppt);  close(f1);
+        int f2 = mkstemp(comt); close(f2);
+        int f3 = mkstemp(intt); close(f3);
+        string pp_path = ppt, com_path = comt, int_path = intt;
+        string r_path = com_path + ".r";
+
+        pp.save_hiding(pp_path);
+        hc.com.save(com_path);
+        weight.save_int(int_path);
+
+        // Write a mismatched r: 2 rows where the com has 1.
+        FrTensor bad_r = FrTensor::random(2);
+        bad_r.save(r_path);
+
+        bool threw = false;
+        try {
+            Weight w = create_weight(pp_path, int_path, com_path, r_path,
+                                     in_dim, out_dim);
+            (void)w;
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        check(threw,
+              "create_weight(hiding) throws when r.size != com.size");
+
         remove(pp_path.c_str());
         remove((pp_path + ".h").c_str());
         remove(com_path.c_str());

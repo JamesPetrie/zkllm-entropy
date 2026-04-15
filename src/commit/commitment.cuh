@@ -64,7 +64,6 @@ class Commitment: public G1TensorJacobian
     };
     HidingCommit commit_hiding(const FrTensor& t) const;
     HidingCommit commit_int_hiding(const FrTensor& t) const;
-    HidingCommit commit_int_multi_hiding(const vector<FrTensor>& ts) const;
 
     Fr_t open(const FrTensor& t, const G1TensorJacobian& c, const vector<Fr_t>& u) const;
 

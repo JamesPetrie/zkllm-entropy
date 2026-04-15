@@ -217,17 +217,6 @@ Commitment::HidingCommit Commitment::commit_int_hiding(const FrTensor& t) const
     return add_blinding(*this, std::move(base), m);
 }
 
-Commitment::HidingCommit Commitment::commit_int_multi_hiding(const vector<FrTensor>& ts) const
-{
-    uint num_row = 0;
-    for (auto& t : ts) {
-        if (t.size % size != 0) throw std::runtime_error("Commitment::commit_int_multi_hiding - Incompatible dimensions");
-        num_row += t.size / size;
-    }
-    G1TensorJacobian base = this->commit_int_multi(ts);
-    return add_blinding(*this, std::move(base), num_row);
-}
-
 KERNEL void me_open_step(GLOBAL Fr_t* scalars, GLOBAL G1Jacobian_t* generators, Fr_t u, // always assume that scalars and u is in mont form
     GLOBAL Fr_t* new_scalars, GLOBAL G1Jacobian_t* new_generators,
     GLOBAL G1Jacobian_t* temp_out, GLOBAL G1Jacobian_t* temp_out0, GLOBAL G1Jacobian_t* temp_out1, 
