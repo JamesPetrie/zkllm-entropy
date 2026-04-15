@@ -292,9 +292,42 @@ Fr_t Commitment::open(const FrTensor& t, const G1TensorJacobian& com, const vect
     return me_open(t.partial_me(u_out, t.size / com.size), *this, u_in.begin(), u_in.end(), proof);
 }
 
-Weight create_weight(string generator_filename, string weight_filename, string com_filename, uint in_dim, uint out_dim) {
+Weight create_weight(string generator_filename, string weight_filename,
+                     string com_filename,
+                     uint in_dim, uint out_dim) {
     Commitment generator(generator_filename);
     FrTensor weight = FrTensor::from_int_bin(weight_filename);
     G1TensorJacobian com(com_filename);
-    return {generator, weight, com, in_dim, out_dim};
+    return {generator, weight, com, FrTensor(0), in_dim, out_dim};
+}
+
+// Hiding create_weight: loads generators via the hiding-pp sidecar
+// path (so `generator.hiding_generator` is populated) and additionally
+// loads the per-row blinding tensor `r` from `r_filename`.
+//
+// Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
+//   "We say that Com_pp(m; r) is a commitment to the message m with
+//    randomness r".
+//
+// The produced Weight satisfies `r.size == com.size` and
+// `generator.is_hiding() == true`; these are the preconditions the
+// Phase 2 blinded opening will rely on.
+Weight create_weight(string generator_filename, string weight_filename,
+                     string com_filename, string r_filename,
+                     uint in_dim, uint out_dim) {
+    Commitment generator = Commitment::load_hiding(generator_filename);
+    if (!generator.is_hiding()) {
+        throw std::runtime_error(
+            "create_weight(hiding): generator pp is missing its H sidecar: "
+            + generator_filename + ".h");
+    }
+    FrTensor weight = FrTensor::from_int_bin(weight_filename);
+    G1TensorJacobian com(com_filename);
+    FrTensor r(r_filename);
+    if (r.size != com.size) {
+        throw std::runtime_error(
+            "create_weight(hiding): blinding tensor size " + std::to_string(r.size)
+            + " does not match commitment row count " + std::to_string(com.size));
+    }
+    return {generator, weight, com, r, in_dim, out_dim};
 }

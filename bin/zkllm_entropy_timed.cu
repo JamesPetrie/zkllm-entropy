@@ -85,16 +85,20 @@ int main(int argc, char* argv[]) {
     if (rms_inv.size != seq_len)
         throw std::runtime_error("rms_inv size mismatch");
 
+    // Hiding Pedersen weights (Hyrax §3.1); see zkllm_entropy.cu for
+    // the on-disk layout including the .h / .r sidecars.
     Weight final_norm_w = create_weight(
         path("input_layernorm.weight-pp.bin"),
         path("final_norm.weight-int.bin"),
         path("final_norm.weight-commitment.bin"),
+        path("final_norm.weight-commitment.bin.r"),
         1, hidden_size);
 
     Weight lm_head_w = create_weight(
         path("lm_head-pp.bin"),
         path("lm_head-weight-int.bin"),
         path("lm_head-weight-commitment.bin"),
+        path("lm_head-weight-commitment.bin.r"),
         hidden_size, vocab_size);
 
     vector<uint> tokens = load_token_sequence(tokens_file);

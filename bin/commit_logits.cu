@@ -28,8 +28,9 @@ int main(int argc, char* argv[]) {
     string logits_file = argv[2];
     string out_file    = argv[3];
 
-    // Load generators.
-    Commitment generators(gen_file);
+    // Load generators via hiding-pp path; if the `.h` sidecar is absent
+    // this still succeeds and leaves is_hiding() == false (legacy pp).
+    Commitment generators = Commitment::load_hiding(gen_file);
     uint padded = generators.size;
 
     // Load logit tensor.
@@ -50,13 +51,22 @@ int main(int argc, char* argv[]) {
         ? logits
         : logits.pad({n_elements}, FR_FROM_INT(0));
 
-    // Commit: C = sum_i generators[i] * logits_padded[i]  (single-row commit, m=1).
-    G1TensorJacobian com = generators.commit(logits_padded);
-
-    // Save commitment.
-    com.save(out_file);
-
-    cout << "Committed " << n_elements << " elements (padded to " << padded
-         << ") -> " << out_file << endl;
+    // Commit: hiding if pp has H, legacy non-hiding otherwise.
+    //
+    // Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
+    //   "We say that Com_pp(m; r) is a commitment to the message m with
+    //    randomness r".
+    if (generators.is_hiding()) {
+        auto hc = generators.commit_hiding(logits_padded);
+        hc.com.save(out_file);
+        hc.r.save(out_file + ".r");
+        cout << "Committed " << n_elements << " elements (padded to " << padded
+             << ") -> " << out_file << " (+ " << out_file << ".r, hiding)" << endl;
+    } else {
+        G1TensorJacobian com = generators.commit(logits_padded);
+        com.save(out_file);
+        cout << "Committed " << n_elements << " elements (padded to " << padded
+             << ") -> " << out_file << " (legacy non-hiding)" << endl;
+    }
     return 0;
 }

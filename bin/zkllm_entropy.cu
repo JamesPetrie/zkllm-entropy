@@ -95,12 +95,18 @@ int main(int argc, char* argv[]) {
     if (rms_inv.size != seq_len)
         throw std::runtime_error("rms_inv size mismatch");
 
-    // ── Load committed weights ────────────────────────────────────────────────
+    // ── Load committed weights (hiding Pedersen, Hyrax §3.1) ─────────────────
+    // Each weight ships with a sibling `.r` sidecar holding the per-row
+    // blinding tensor used at commit time.  The `-pp.bin.h` sidecar next
+    // to the pp file carries the hiding generator H.  See
+    // docs/plans/phase-1-hiding-pedersen.md for the full file-format spec.
+    //
     // final_norm: in_dim=1, out_dim=hidden_size (same shape as per-layer norms)
     Weight final_norm_w = create_weight(
         path("input_layernorm.weight-pp.bin"),
         path("final_norm.weight-int.bin"),
         path("final_norm.weight-commitment.bin"),
+        path("final_norm.weight-commitment.bin.r"),
         1, hidden_size);
 
     // lm_head: in_dim=hidden_size, out_dim=vocab_size
@@ -108,6 +114,7 @@ int main(int argc, char* argv[]) {
         path("lm_head-pp.bin"),
         path("lm_head-weight-int.bin"),
         path("lm_head-weight-commitment.bin"),
+        path("lm_head-weight-commitment.bin.r"),
         hidden_size, vocab_size);
 
     // ── Step 1: Final RMSNorm ─────────────────────────────────────────────────

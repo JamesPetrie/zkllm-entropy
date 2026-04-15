@@ -89,15 +89,44 @@ class Commitment: public G1TensorJacobian
     static Fr_t me_open(const FrTensor& t, const Commitment& generators, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end, vector<G1Jacobian_t>& proof);
 };
 
+// A committed weight tensor.
+//
+// `r` holds the per-row blinding scalars that were used when `com` was
+// produced via Commitment::commit_int_hiding / commit_hiding.  For
+// legacy non-hiding commitments produced by the 5-arg create_weight
+// overload, `r` is empty (size == 0); downstream Phase 2 consumers
+// that require hiding must check `r.size == com.size` and error out
+// otherwise.
+//
+// Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
+//   "We say that Com_pp(m; r) is a commitment to the message m with
+//    randomness r".
 struct Weight {
     Commitment generator;
     FrTensor weight;
     G1TensorJacobian com;
+    FrTensor r;
     uint in_dim;
     uint out_dim;
 };
 
-Weight create_weight(string generator_filename, string weight_filename, string com_filename, uint in_dim, uint out_dim);
+// Legacy non-hiding create_weight.  Produces a Weight with an empty
+// `r` tensor (size 0).  Kept so call sites that haven't migrated to
+// the hiding pipeline (the per-layer proofs in src/llm/*.cu) keep
+// compiling and behaving identically.
+Weight create_weight(string generator_filename, string weight_filename,
+                     string com_filename,
+                     uint in_dim, uint out_dim);
+
+// Hiding create_weight: additionally loads the per-row blinding
+// tensor `r` from `r_filename`.  The file must contain exactly
+// (in_dim_rows) Fr_t elements — one blinding per committed row — in
+// the on-disk format produced by FrTensor::save.  Throws if the file
+// is missing or the wrong size.  Callers who want a hiding commitment
+// must use this overload.
+Weight create_weight(string generator_filename, string weight_filename,
+                     string com_filename, string r_filename,
+                     uint in_dim, uint out_dim);
 // KERNEL void sum_axis_n_optimized(GLOBAL G1Jacobian_t* arr, GLOBAL G1Jacobian_t* arr_out, uint n, uint m);
 
 
