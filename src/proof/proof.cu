@@ -14,6 +14,38 @@ void verifyWeightClaim(const Weight& w, const Claim& c)
     cout << "Opening complete" << endl;
 }
 
+void verifyWeightClaimZK(const Weight& w, const Claim& c)
+{
+    if (!w.generator.is_openable()) {
+        throw std::runtime_error(
+            "verifyWeightClaimZK: pp is not openable — generator must come "
+            "from hiding_random / load_hiding with a .u sidecar");
+    }
+    if (w.r.size != w.com.size) {
+        throw std::runtime_error(
+            "verifyWeightClaimZK: w.r.size != w.com.size — Weight was not "
+            "produced by the hiding create_weight overload");
+    }
+
+    vector<Fr_t> u_cat = concatenate(vector<vector<Fr_t>>({c.u[1], c.u[0]}));
+    auto w_padded = w.weight.pad({w.in_dim, w.out_dim});
+
+    // Fresh Σ-protocol challenge.  Real protocol will derive this via
+    // Fiat-Shamir over a transcript hash (Phase 5).
+    Fr_t chal = FrTensor::random(1)(0);
+
+    auto res = w.generator.open_zk(w_padded, w.r, w.com, u_cat, chal);
+    if (!w.generator.verify_zk(w.com, u_cat, res.v, res.proof, chal)) {
+        throw std::runtime_error(
+            "verifyWeightClaimZK: verify_zk rejected the OpeningProof");
+    }
+    if (res.v != c.claim) {
+        throw std::runtime_error(
+            "verifyWeightClaimZK: opening v != c.claim");
+    }
+    cout << "ZK opening complete" << endl;
+}
+
 KERNEL void Fr_ip_sc_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint in_size, uint out_size)
 {
     const uint gid = GET_GLOBAL_ID();

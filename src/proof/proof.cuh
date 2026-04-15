@@ -20,6 +20,20 @@ struct Claim {
 struct Weight;
 void verifyWeightClaim(const Weight& w, const Claim& c);
 
+// ZK opening variant of verifyWeightClaim.  Consumes `w.r` (per-row
+// blindings, populated by the hiding create_weight overload) and the
+// `u_generator` on `w.generator`, so it requires a pp produced by
+// `Commitment::hiding_random` and loaded via `load_hiding` with a `.u`
+// sidecar present.  Runs prover + verifier inline (Hyrax §A.2 Figure 6
+// composed with §6.1): samples a fresh Σ-protocol challenge, calls
+// `open_zk` to produce an `OpeningProof`, calls `verify_zk`, and checks
+// the claimed evaluation against `c.claim`.  Throws on any mismatch.
+//
+// The legacy `verifyWeightClaim` stays in place for call sites that
+// haven't migrated to the hiding pipeline yet (Weights produced by the
+// 5-arg `create_weight` that leaves `r` empty).
+void verifyWeightClaimZK(const Weight& w, const Claim& c);
+
 KERNEL void Fr_ip_sc_step(GLOBAL Fr_t *a, GLOBAL Fr_t *b, GLOBAL Fr_t *out0, GLOBAL Fr_t *out1, GLOBAL Fr_t *out2, uint in_size, uint out_size);
 
 void Fr_ip_sc(const FrTensor& a, const FrTensor& b, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end, vector<Fr_t>& proof);
