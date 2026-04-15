@@ -23,11 +23,12 @@ void verifyWeightClaim(const Weight& w, const Claim& c);
 // ZK opening variant of verifyWeightClaim.  Consumes `w.r` (per-row
 // blindings, populated by the hiding create_weight overload) and the
 // `u_generator` on `w.generator`, so it requires a pp produced by
-// `Commitment::hiding_random` and loaded via `load_hiding` with a `.u`
-// sidecar present.  Runs prover + verifier inline (Hyrax §A.2 Figure 6
-// composed with §6.1): samples a fresh Σ-protocol challenge, calls
-// `open_zk` to produce an `OpeningProof`, calls `verify_zk`, and checks
-// the claimed evaluation against `c.claim`.  Throws on any mismatch.
+// `Commitment::hiding_random` and loaded via `load_hiding` (v2 pp file
+// with embedded H/U from hash-to-curve, see src/field/hash_to_curve.*).
+// Runs prover + verifier inline (Hyrax §A.2 Figure 6 composed with
+// §6.1): samples a fresh Σ-protocol challenge, calls `open_zk` to
+// produce an `OpeningProof`, calls `verify_zk`, and checks the claimed
+// evaluation against `c.claim`.  Throws on any mismatch.
 //
 // The legacy `verifyWeightClaim` stays in place for call sites that
 // haven't migrated to the hiding pipeline yet (Weights produced by the

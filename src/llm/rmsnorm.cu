@@ -20,6 +20,7 @@ int main(int argc, char *argv[])
         workdir + "/" + which + "_layernorm.weight-pp.bin",
         workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-int.bin",
         workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-commitment.bin",
+        workdir + "/" + layer_prefix + "-" + which + "_layernorm.weight-commitment.bin.r",
         1, embed_dim
     );
 
@@ -46,7 +47,7 @@ int main(int argc, char *argv[])
     Y_.save_int(output_file_name);
     hadamard_product_sumcheck(g_inv_rms_, X, random_vec(ceilLog2(Y.size)), random_vec(ceilLog2(Y.size)));
     rs1.prove(g_inv_rms, g_inv_rms_);
-    verifyWeightClaim(rmsnorm_weight, g.prove(rms_inv_temp, g_inv_rms)[0]);
+    verifyWeightClaimZK(rmsnorm_weight, g.prove(rms_inv_temp, g_inv_rms)[0]);
     return 0;
     
 }

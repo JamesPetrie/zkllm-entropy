@@ -22,16 +22,19 @@ int main(int argc, char *argv[])
             workdir + "/self_attn.q_proj.weight-pp.bin",
             workdir + "/" + layer_prefix + "-self_attn.q_proj.weight-int.bin",
             workdir + "/" + layer_prefix + "-self_attn.q_proj.weight-commitment.bin",
+            workdir + "/" + layer_prefix + "-self_attn.q_proj.weight-commitment.bin.r",
             embed_dim, embed_dim);
         auto k_proj = create_weight(
             workdir + "/self_attn.k_proj.weight-pp.bin",
             workdir + "/" + layer_prefix + "-self_attn.k_proj.weight-int.bin",
             workdir + "/" + layer_prefix + "-self_attn.k_proj.weight-commitment.bin",
+            workdir + "/" + layer_prefix + "-self_attn.k_proj.weight-commitment.bin.r",
             embed_dim, embed_dim);
         auto v_proj = create_weight(
             workdir + "/self_attn.v_proj.weight-pp.bin",
             workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-int.bin",
             workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-commitment.bin",
+            workdir + "/" + layer_prefix + "-self_attn.v_proj.weight-commitment.bin.r",
             embed_dim, embed_dim);
         zkFC q_layer(embed_dim, embed_dim, q_proj.weight);
         zkFC k_layer(embed_dim, embed_dim, k_proj.weight);
@@ -54,9 +57,9 @@ int main(int argc, char *argv[])
         k_rescale.prove(K, K_);
         v_rescale.prove(V, V_);
 
-        verifyWeightClaim(k_proj, k_layer.prove(input, K)[0]);
-        verifyWeightClaim(q_proj, q_layer.prove(input, Q)[0]);
-        verifyWeightClaim(v_proj, v_layer.prove(input, V)[0]);
+        verifyWeightClaimZK(k_proj, k_layer.prove(input, K)[0]);
+        verifyWeightClaimZK(q_proj, q_layer.prove(input, Q)[0]);
+        verifyWeightClaimZK(v_proj, v_layer.prove(input, V)[0]);
 
         Q_.save_int("temp_Q.bin");
         K_.save_int("temp_K.bin");

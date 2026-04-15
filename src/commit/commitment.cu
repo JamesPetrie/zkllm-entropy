@@ -622,8 +622,8 @@ Weight create_weight(string generator_filename, string weight_filename,
     Commitment generator = Commitment::load_hiding(generator_filename);
     if (!generator.is_hiding()) {
         throw std::runtime_error(
-            "create_weight(hiding): generator pp is missing its H sidecar: "
-            + generator_filename + ".h");
+            "create_weight(hiding): generator pp is not hiding "
+            "(expected v2 pp with embedded H): " + generator_filename);
     }
     FrTensor weight = FrTensor::from_int_bin(weight_filename);
     G1TensorJacobian com(com_filename);

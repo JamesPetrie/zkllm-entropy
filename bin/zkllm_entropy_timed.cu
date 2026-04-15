@@ -170,7 +170,7 @@ int main(int argc, char* argv[]) {
     t_lmhead_prove.start();
     cout << "Proving lm_head (zkFC)..." << endl;
     rs_lm.prove(logits_batch, logits_batch_);
-    verifyWeightClaim(lm_head_w, lm_fc.prove(normed_, logits_batch)[0]);
+    verifyWeightClaimZK(lm_head_w, lm_fc.prove(normed_, logits_batch)[0]);
     cudaDeviceSynchronize();
     t_lmhead_prove.stop();
 
@@ -181,7 +181,7 @@ int main(int argc, char* argv[]) {
     auto u_hp = random_vec(ceilLog2(normed.size));
     hadamard_product_sumcheck(g_inv_rms_, hidden, u_hp, random_vec(ceilLog2(normed.size)));
     rs_norm1.prove(g_inv_rms, g_inv_rms_);
-    verifyWeightClaim(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
+    verifyWeightClaimZK(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
     cudaDeviceSynchronize();
     t_rmsnorm_prove.stop();
 

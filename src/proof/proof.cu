@@ -19,7 +19,7 @@ void verifyWeightClaimZK(const Weight& w, const Claim& c)
     if (!w.generator.is_openable()) {
         throw std::runtime_error(
             "verifyWeightClaimZK: pp is not openable — generator must come "
-            "from hiding_random / load_hiding with a .u sidecar");
+            "from hiding_random / load_hiding (v2 pp file with embedded H/U)");
     }
     if (w.r.size != w.com.size) {
         throw std::runtime_error(
