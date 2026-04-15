@@ -453,20 +453,32 @@ bool Commitment::verify_zk(
     // ξ = Σ ẽq(bits(i), u_R) · Cᵢ   (§6.1, verifier-recomputes).
     G1Jacobian_t xi = (com.size == 1) ? com(0) : com(u_R);
 
-    // τ binding: recompute τ_expected = v·U + r_τ·H and byte-compare.
+    // G1 points computed via different Jacobian paths can have the same
+    // affine value but different (X:Y:Z) limbs.  Compare via A - B and
+    // test whether the difference is the identity (Z == 0).
+    auto g1_eq = [](G1Jacobian_t a, G1Jacobian_t b) {
+        G1TensorJacobian A(1, a);
+        G1TensorJacobian B(1, b);
+        G1TensorJacobian D = A - B;
+        G1Jacobian_t d = D(0);
+        for (uint i = 0; i < blstrs__fp__Fp_LIMBS; i++) {
+            if (d.z.val[i] != 0) return false;
+        }
+        return true;
+    };
+
+    // τ binding: recompute τ_expected = v·U + r_τ·H.
     G1Jacobian_t tau_expected = g1_add_host(
         g1_scalar_mul_host(u_generator, v),
         g1_scalar_mul_host(hiding_generator, proof.r_tau));
-    if (memcmp(&tau_expected, &proof.tau, sizeof(G1Jacobian_t)) != 0) {
-        return false;
-    }
+    if (!g1_eq(tau_expected, proof.tau)) return false;
 
     // eq 13:  c·ξ + δ  =?  Σ zᵢ·Gᵢ + z_δ·H.
     G1Jacobian_t lhs13 = g1_add_host(g1_scalar_mul_host(xi, c), proof.delta);
     G1TensorJacobian zG = this->commit(proof.z);
     G1Jacobian_t rhs13 = g1_add_host(zG(0),
                                      g1_scalar_mul_host(hiding_generator, proof.z_delta));
-    if (memcmp(&lhs13, &rhs13, sizeof(G1Jacobian_t)) != 0) return false;
+    if (!g1_eq(lhs13, rhs13)) return false;
 
     // eq 14:  c·τ + β  =?  ⟨z⃗,â⟩·U + z_β·H.
     Fr_t za_dot = (u_L.empty()) ? proof.z(0) : proof.z(u_L);
@@ -475,7 +487,7 @@ bool Commitment::verify_zk(
     G1Jacobian_t rhs14 = g1_add_host(
         g1_scalar_mul_host(u_generator, za_dot),
         g1_scalar_mul_host(hiding_generator, proof.z_beta));
-    if (memcmp(&lhs14, &rhs14, sizeof(G1Jacobian_t)) != 0) return false;
+    if (!g1_eq(lhs14, rhs14)) return false;
 
     return true;
 }
