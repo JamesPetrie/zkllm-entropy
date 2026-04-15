@@ -17,51 +17,76 @@
 // `Fr_bin_sc_step`) with this commitment + Σ-protocol layer; the GPU
 // kernels themselves are reused unchanged.
 //
-// The plain-sumcheck implementations in src/proof/proof.cu emit each
-// round polynomial as 3 scalars (coefficients of X^0, X^1, X^2 for the
-// degree-2 cases).  Each scalar is a linear function of the witness
-// and leaks information about it.  The ZK driver replaces those
-// scalars with Pedersen commitments T_j^{(k)} = Com(c_j^{(k)}; ρ_j^{(k)})
-// for k = 0..d, and proves the per-round sumcheck identity at
-// commitment level via a §A.1 proof-of-equality.
+// Per-round transcript, verbatim from §4 (p. 7):
+//   "In round j of the sum-check, P commits to s_j(t) = c_{0,j} + c_{1,j}·t
+//    + c_{2,j}·t² + c_{3,j}·t³, via δc_{0,j}←Com(c_{0,j}), …, and P and V
+//    execute proof-of-opening for each one.  Now P convinces V that
+//    s_j(0) + s_j(1) = s_{j-1}(r_{j-1})."
+//
+// Round-to-round chaining:
+//   - LHS of sumcheck identity:  Com(g_j(0) + g_j(1)) computed verifier-side
+//     by homomorphism as  Σ α_k · T_k  (for standard sumcheck α = (2,1,1,…);
+//     for the Libra/Xie eq-factored HP variant α = (1, u_j, u_j)).
+//   - RHS:  previous-round evaluation commitment T_{j-1}(r_{j-1}).
+//   - Tie:  §A.1 proof-of-equality since the two commitments carry the
+//     same scalar under different blindings.
+//
+// Top-level handoff (§4 "Step 1"):
+//   "V computes C_0 = Com(Ṽ_y(q',q); 0)."
+// The verifier constructs the initial claim commitment directly from
+// the public claim S with blinding 0 — no prover commitment, no
+// top-level proof-of-opening.  First round's equality proof ties
+// "Σ α_k · T_1[k] (round 0's LHS)" to  S · U  (that C_0), at which
+// point the chain starts.  This strictly binds T to S — a prover who
+// tries to run the chain with a different S' cannot match the round-0
+// equality because Σ α_k · T_1[k] would need to equal S' · U, not
+// S · U.
 
 // ─── Per-round transcript ─────────────────────────────────────────────
 //
 // `T` are the d+1 commitments to coefficients of g_j(X) in coefficient
-// form.  `eq_proof` is a Hyrax §A.1 proof-of-equality showing that the
-// sum-at-{0,1} commitment 2·T[0] + T[1] + … + T[d] equals the
-// previous-round evaluation commitment (or T0 for round 0).  Both
-// commit to the same scalar — the per-round sumcheck identity says
-// g_j(0) + g_j(1) = g_{j-1}(r_{j-1}) — but with different blindings,
-// which is exactly the proof-of-equality statement.
+// form.  `T_open[k]` is a §A.1 proof-of-opening for T[k] — Hyrax §4
+// requires these per coefficient so the extractor can lift the round
+// polynomial.  `eq_proof` is the §A.1 proof-of-equality tying
+// Σ α_k · T_k (LHS) to the previous-round evaluation commitment.
 struct ZKSumcheckRound {
-    std::vector<G1Jacobian_t> T;
-    SigmaEqualityProof        eq_proof;
+    std::vector<G1Jacobian_t>      T;
+    std::vector<SigmaOpeningProof> T_open;    // size T.size()
+    SigmaEqualityProof             eq_proof;
 };
 
 // ─── Full transcript ──────────────────────────────────────────────────
 //
-// `T0` pins the claimed sum S via Com(S; ρ_0); `T0_open` is a §A.1
-// proof-of-opening showing the prover knows (S, ρ_0).  `rounds` carries
-// the per-round transcripts.  `T_final` is the final-round evaluation
-// commitment T_n(r_n) = Com(g_n(r_n); ρ_final), which the caller
-// passes to Phase 2's verify_zk to discharge the final dot-product
-// claim (Hyrax §4 Protocol 3 final step → §A.2 Figure 6).
+// `rounds` carries the per-round transcripts.  `T_final` is the
+// final-round evaluation commitment T_n(r_n) = Com(g_n(r_n); ρ_final),
+// which the caller passes to Phase 2's verify_zk to discharge the
+// final dot-product claim (Hyrax §4 Protocol 3 final step → §A.2
+// Figure 6).  No top-level commitment to S: the verifier computes
+// C_0 = S · U directly, per §4 Step 1.
 struct ZKSumcheckProof {
-    G1Jacobian_t                  T0;
-    SigmaOpeningProof             T0_open;
     std::vector<ZKSumcheckRound>  rounds;
     G1Jacobian_t                  T_final;
 };
 
-// Prover-side handoff metadata not part of the proof.  Needed for the
-// Phase 2 verify_zk handoff (Phase 2's `r_tau` field).  Verifier
-// derives nothing from this; it's witness-equivalent.
+// Prover-side handoff metadata not part of the proof.  Only ρ_final
+// escapes — the caller needs it to discharge T_final via Phase 2's
+// verify_zk (Phase 2's `r_tau` field).  Round-0's previous-eval
+// blinding is identically 0 (C_0 = S·U has no hiding), so no ρ_0 to
+// carry.
 struct ZKSumcheckProverHandoff {
-    Fr_t  S;                       // claimed sum (witness for T0 opening)
-    Fr_t  rho0;                    // blinding for T0
-    Fr_t  rho_final;               // blinding for T_final
+    Fr_t  rho_final;
 };
+
+// ─── Sigma-challenge layout ───────────────────────────────────────────
+//
+// Per round consumes (d + 2) Σ-protocol challenges:
+//   - d+1 for per-coefficient proof-of-openings (Hyrax §4 requires one
+//     per δc_{k,j}).
+//   - 1 for the round-to-round proof-of-equality.
+//
+// For degree-2 sumchecks (IP, binary, HP): 4 challenges per round.
+// For degree-(K+1) multi-Hadamard: K+3 per round.  The driver APIs
+// below validate |sigma_challenges| against this layout.
 
 // ─── Generic round-level helpers ──────────────────────────────────────
 //
@@ -70,9 +95,10 @@ struct ZKSumcheckProverHandoff {
 // (a) the kernel that produces the round coefficients and (b) the
 // state-update kernel that folds the underlying tensors with r_j.
 
-// Prover: given the d+1 coefficients of g_j(X), the previous-round
-// (T_eval, ρ_eval), and challenges (r_j for the multilinear fold,
-// e_j for the Σ-protocol), emit the round bundle and the new
+// Prover: given the d+1 coefficients of g_j(X), the weights α for the
+// sumcheck identity LHS (standard: (2,1,1,…); HP: (1,u_j,u_j,…)), the
+// previous-round (T_eval, ρ_eval), and per-round Σ challenges (d+1 for
+// openings + 1 for equality), emit the round bundle and the new
 // (T_eval, ρ_eval) for round j+1.
 struct ZKRoundOutput {
     ZKSumcheckRound   round;
@@ -84,50 +110,25 @@ ZKRoundOutput emit_zk_round(
     G1Jacobian_t U,
     G1Jacobian_t H,
     const std::vector<Fr_t>& coeffs,
+    const std::vector<Fr_t>& alphas,              // size coeffs.size()
+    std::vector<Fr_t>::const_iterator sigma_begin, // consumes d+2
     G1Jacobian_t T_prev_eval,
     Fr_t         rho_prev_eval,
-    Fr_t         r_j,
-    Fr_t         e_j);
+    Fr_t         r_j);
 
-// Verifier: given the round bundle, the previous-round commitment
-// T_prev_eval, and the same challenges (r_j, e_j), check the per-
-// round sumcheck identity and return the new T_eval for round j+1.
-// Throws std::runtime_error with a specific message on failure so
+// Verifier: given the round bundle, the weights α, the previous-round
+// commitment T_prev_eval, and matching challenges, check per-
+// coefficient openings + round-to-round equality and return the new
+// T_eval for round j+1.  Throws with a specific message on failure so
 // negative tests can pinpoint which check rejected.
 G1Jacobian_t verify_zk_round(
+    G1Jacobian_t U,
     G1Jacobian_t H,
     const ZKSumcheckRound& round,
+    const std::vector<Fr_t>& alphas,
+    std::vector<Fr_t>::const_iterator sigma_begin,
     G1Jacobian_t T_prev_eval,
-    Fr_t         r_j,
-    Fr_t         e_j);
-
-// ─── Top-level commit + opening proof ─────────────────────────────────
-//
-// Both callable by the prover as the very first step.  The verifier
-// uses verify_top_open to validate the same against a claimed S.
-
-struct ZKTopLevel {
-    G1Jacobian_t       T0;
-    Fr_t               rho0;          // prover-side
-    SigmaOpeningProof  open_proof;
-};
-
-ZKTopLevel commit_and_open_top(
-    G1Jacobian_t U,
-    G1Jacobian_t H,
-    Fr_t         S,
-    Fr_t         e_top);
-
-// Returns true iff the proof-of-opening accepts T0 against the claimed
-// S.  The verifier knows S as the sumcheck claim (it's the public
-// input to the protocol).
-bool verify_top_open(
-    G1Jacobian_t U,
-    G1Jacobian_t H,
-    G1Jacobian_t T0,
-    Fr_t         S,
-    const SigmaOpeningProof& open_proof,
-    Fr_t         e_top);
+    Fr_t         r_j);
 
 // ─── Per-variant drivers ──────────────────────────────────────────────
 //
@@ -137,10 +138,10 @@ bool verify_top_open(
 // discharges those via Phase 2 verify_zk as in the plain code path.
 //
 // `eval_challenges` are the standard sumcheck challenges (size n);
-// `sigma_challenges` are the Σ-protocol challenges (size n+1, one
-// extra for T0_open at the top).  `final_a` and `final_b` are the
-// contracted scalars a(r), b(r) — returned to the caller for the
-// Phase 2 discharge.
+// `sigma_challenges` are the per-round Σ-protocol challenges
+// (size n·(d+2) = n·4 for degree-2 variants).  `final_a` and `final_b`
+// are the contracted scalars a(r), b(r) — returned to the caller for
+// the Phase 2 discharge.
 ZKSumcheckProof prove_zk_inner_product(
     G1Jacobian_t U,
     G1Jacobian_t H,
@@ -154,7 +155,7 @@ ZKSumcheckProof prove_zk_inner_product(
     ZKSumcheckProverHandoff& handoff_out);
 
 // Verifier: walks the same per-round sumcheck identity chain and
-// returns true iff every check (top-level opening + n proof-of-
+// returns true iff every check (per-coef openings + round-to-round
 // equalities) accepts.  The final commitment T_final is left for the
 // caller to feed into Phase 2 verify_zk (with the contracted scalars
 // the prover sent).  Throws on rejection so the test can identify
@@ -179,15 +180,13 @@ bool verify_zk_inner_product(
 //   c_0 + u_j · c_1 + u_j · c_2 = h_{j-1}(v_{j-1})
 // and at commitment level reduces to a same-message equality between
 // the weighted combination Σ α_k · T_k (α = (1, u_j, u_j)) and the
-// previous-round evaluation commitment.  See src/proof/zk_sumcheck.cu
-// for the derivation.
+// previous-round evaluation commitment.
 //
 // Two independent challenge sequences are consumed:
 //   * u_challenges (size n): the eq-factor point — this is where the
 //     prover's claim is evaluated.
 //   * v_challenges (size n): the sumcheck fold challenges.
-//   * sigma_challenges (size n+1): Σ-protocol challenges, one extra
-//     for the top-level proof-of-opening.
+//   * sigma_challenges (size n·4): per-round Σ-protocol challenges.
 //
 // Final-claim contraction: T_final commits to h_{n-1}(v) = a(v)·b(v),
 // same as the inner-product driver — the caller discharges it via
