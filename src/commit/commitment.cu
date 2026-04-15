@@ -355,6 +355,22 @@ static G1Jacobian_t g1_add_host(G1Jacobian_t a, G1Jacobian_t b) {
     return C(0);
 }
 
+// Convert a vector<Fr_t> from the plain-form storage convention (as used
+// by Fr_me / partial_me) to the Montgomery-form convention that
+// G1_me_step expects on input.  G1_me_step unmonts its scalar argument
+// before feeding it to G1Jacobian_mul (which consumes bits as plain);
+// so to have com(u) evaluate the MLE at the same point u that
+// partial_me(u, ...) evaluates at, we mont-convert u here.
+static vector<Fr_t> mont_vec_host(const vector<Fr_t>& v) {
+    if (v.empty()) return v;
+    FrTensor t(v.size(), v.data());
+    t.mont();
+    vector<Fr_t> out;
+    out.reserve(v.size());
+    for (uint i = 0; i < v.size(); i++) out.push_back(t(i));
+    return out;
+}
+
 // ─── Hyrax §A.2 Figure 6 opening (with §6.1 row reduction) ────────────
 
 Commitment::OpeningResult Commitment::open_zk(
@@ -451,7 +467,12 @@ bool Commitment::verify_zk(
     vector<Fr_t> u_L(u.begin(), u.end() - log_rows);
 
     // ξ = Σ ẽq(bits(i), u_R) · Cᵢ   (§6.1, verifier-recomputes).
-    G1Jacobian_t xi = (com.size == 1) ? com(0) : com(u_R);
+    // G1TensorJacobian MLE eval (G1_me_step) unmonts its u argument
+    // before multiplication; the Fr-side partial_me / Fr_me kernels
+    // mont their u argument.  Pass u_R in Montgomery form here so the
+    // G1 MLE evaluates at the same point u_R that the prover used
+    // for the §6.1 fold.
+    G1Jacobian_t xi = (com.size == 1) ? com(0) : com(mont_vec_host(u_R));
 
     // G1 points computed via different Jacobian paths can have the same
     // affine value but different (X:Y:Z) limbs.  Compare via A - B and
