@@ -12,6 +12,27 @@ Replace every Pedersen commitment on the BLS12-381 path from
 `C = Σᵢ tᵢ · Gᵢ` (binding only) with
 `C = Σᵢ tᵢ · Gᵢ + r · H` (binding + hiding), where:
 
+> **Hyrax §3.1 Commitment schemes (p. 4):** "Informally, a commitment
+> scheme allows a sender to produce a message C = Com(m) that hides m
+> from a receiver but binds the sender to the value m. The sender
+> reveals m, or equivalently may be convinced that this was indeed
+> the sender's original value. We say that Com_pp(m; r) is a
+> commitment to the message m with randomness r, and sometimes do
+> the same for the opening, e.g., Com(m, r)."
+
+> **Hyrax §3.1 Perfect hiding definition (p. 4):** "Perfect hiding:
+> For any m_0, m_1 ∈ {0, 1}^λ and m_0 ≠ m_1: {Com(m_0; r)}_{r←R} and
+> {Com(m_1; r)}_{r←R} are identically distributed."
+
+> **Hyrax §3.1 (p. 4):** "We define only the computational variant of
+> binding and the perfect variant of hiding because the commitment
+> schemes used in our implementation satisfy these properties."
+
+Our construction instantiates `Com` with Pedersen (§A.1 Fig. 5,
+Pedersen 1991 [85] in Hyrax's bibliography). The phase-1 commit
+function matches `Com(t; r) = Σᵢ tᵢ Gᵢ + r H` with `r` sampled uniformly
+per commitment.
+
 - `H ∈ G1` is an independent generator (no known discrete log
   relative to any `Gᵢ`),
 - `r ∈ F_r` is sampled uniformly at random per commitment,
@@ -24,6 +45,22 @@ and *unblinded* openings — hiding at the commitment level alone does
 **not** give ZK. Phase 1 is a *prerequisite* for Phase 2 (blinded
 opening) and Phase 3 (Hyrax §4 ZK sumcheck), which together deliver the
 full hiding property.
+
+## Anchor quote for the construction
+
+The construction below implements Pedersen commitments as used by
+Hyrax's Appendix A.1 Σ-protocols:
+
+> **Hyrax §A.1 proof-of-opening (p. 20), Figure 5:** The prover holds
+> `x, r` such that `C = g^x · h^r` (multiplicative notation; our
+> additive form is `C = x · G + r · H`). The prover sends a "blinded"
+> commitment `A = g^{x'} · h^{r'}` to random `x', r'`; the verifier
+> replies with a challenge `c`; the prover opens `z_1 = x' + c · x`,
+> `z_2 = r' + c · r`; and the verifier checks
+> `g^{z_1} · h^{z_2} = A · C^c`.
+
+Phase 1 only introduces the commitment; Phases 2 and 3 will build the
+Σ-protocols on top of it that Hyrax §A describes.
 
 ## Non-goals for this phase
 
@@ -199,7 +236,8 @@ malicious/flawed implementation would need to pass.
 For each committed tensor `t`, the commitment `C = Σ tᵢ Gᵢ + r · H` has
 the following property: given `H` with unknown discrete log and `r`
 uniform in `F_r`, the distribution of `C` over `r` is independent of
-`t` (it's uniform over the coset `t·G + ⟨H⟩ = ⟨H⟩`-rotated value).
+`t` — this is exactly Hyrax's "perfect hiding" property (§3.1 quoted
+above).
 
 The simulator for Phase 1 (standalone, no opening) is trivial:
 
@@ -209,10 +247,16 @@ Sim(statement):
     output C' = r' · H
 ```
 
-The simulator's output is computationally indistinguishable from a real
-commitment under DDH on G1 (equivalently, Pedersen's standard hiding
-proof with H-as-random-coin). This argument gets extended in Phase 2
-once `open` also becomes hiding.
+The simulator's output is *perfectly* indistinguishable from a real
+commitment: for any target `t`, since `r ∈ F_r` is uniform, so is
+`r − Σ tᵢ · dlog_H(Gᵢ)` (ill-defined as an algorithm but well-defined
+as a distribution), meaning `C = Σ tᵢ Gᵢ + r H` is uniform over `G1`.
+This matches Hyrax §3.1's definition of perfect hiding.
+
+The hiding property proved by this simulator is a *commitment-level*
+property only. Phase 2 extends it to the opening transcript using the
+blinded recursive-halving construction of Bulletproofs §4.2; Phase 3
+extends it to the sumcheck transcript using Hyrax §4.
 
 ## Risks
 
