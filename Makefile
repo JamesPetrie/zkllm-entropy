@@ -31,7 +31,8 @@ BUILD := build
 CU_SRCS := src/field/bls12-381.cu src/field/hash_to_curve.cu \
            src/util/ioutils.cu src/commit/commitment.cu \
            src/tensor/fr-tensor.cu src/tensor/g1-tensor.cu src/proof/proof.cu \
-           src/proof/hyrax_sigma.cu \
+           src/proof/hyrax_sigma.cu src/proof/zk_round_commit.cu \
+           src/proof/zk_sumcheck.cu \
            src/zknn/zkrelu.cu src/zknn/zkfc.cu src/zknn/tlookup.cu \
            src/poly/polynomial.cu src/zknn/zksoftmax.cu src/zknn/rescaling.cu \
            src/zknn/zkargmax.cu src/zknn/zklog.cu src/zknn/zknormalcdf.cu \
@@ -47,7 +48,7 @@ BLS_TARGETS := main ppgen commit-param self-attn ffn rmsnorm skip-connection \
                test_hiding_pedersen test_open_zk test_verify_weight_zk \
                test_opening_distinguisher \
                test_hash_to_curve_rfc9380 test_htc_generators test_pp_format \
-               test_hyrax_sigma \
+               test_hyrax_sigma test_zk_round_commit test_zk_sumcheck \
                zkllm_entropy_timed bench_field_arith bench_commitment
 
 # Create build subdirectories
@@ -146,6 +147,12 @@ test_pp_format: $(BUILD)/test/test_pp_format.o $(CU_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_hyrax_sigma: $(BUILD)/test/test_hyrax_sigma.o $(CU_OBJS) $(CPP_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
+
+test_zk_round_commit: $(BUILD)/test/test_zk_round_commit.o $(CU_OBJS) $(CPP_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
+
+test_zk_sumcheck: $(BUILD)/test/test_zk_sumcheck.o $(CU_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 # Bench targets (source in bench/)
