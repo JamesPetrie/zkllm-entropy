@@ -471,14 +471,14 @@ bool Commitment::verify_zk(
     G1Jacobian_t tau_expected = g1_add_host(
         g1_scalar_mul_host(u_generator, v),
         g1_scalar_mul_host(hiding_generator, proof.r_tau));
-    if (!g1_eq(tau_expected, proof.tau)) return false;
+    if (!g1_eq(tau_expected, proof.tau)) { fprintf(stderr, "verify_zk: tau-binding failed\n"); return false; }
 
     // eq 13:  c·ξ + δ  =?  Σ zᵢ·Gᵢ + z_δ·H.
     G1Jacobian_t lhs13 = g1_add_host(g1_scalar_mul_host(xi, c), proof.delta);
     G1TensorJacobian zG = this->commit(proof.z);
     G1Jacobian_t rhs13 = g1_add_host(zG(0),
                                      g1_scalar_mul_host(hiding_generator, proof.z_delta));
-    if (!g1_eq(lhs13, rhs13)) return false;
+    if (!g1_eq(lhs13, rhs13)) { fprintf(stderr, "verify_zk: eq 13 failed\n"); return false; }
 
     // eq 14:  c·τ + β  =?  ⟨z⃗,â⟩·U + z_β·H.
     Fr_t za_dot = (u_L.empty()) ? proof.z(0) : proof.z(u_L);
@@ -487,7 +487,7 @@ bool Commitment::verify_zk(
     G1Jacobian_t rhs14 = g1_add_host(
         g1_scalar_mul_host(u_generator, za_dot),
         g1_scalar_mul_host(hiding_generator, proof.z_beta));
-    if (!g1_eq(lhs14, rhs14)) return false;
+    if (!g1_eq(lhs14, rhs14)) { fprintf(stderr, "verify_zk: eq 14 failed\n"); return false; }
 
     return true;
 }
