@@ -137,20 +137,56 @@ for one experienced engineer working focused.
 **Reuse:** none — new work.
 **Risk:** medium — large number of call sites. Mechanical but easy to miss one.
 
-### Phase 2 — Hiding opening proof (1.5 weeks)
+### Phase 2 — Hiding opening proof, Hyrax §A.2 Figure 6 (1.5 weeks)
+
+**Approach:** Implement the Hyrax evaluation-proof protocol (Wahby et al.
+2018, eprint 2017/1132, §A.2 Figure 6 — `proof-of-dot-prod`). Composition:
+Hyrax §6.1 matrix-layout reduction (row-wise commitments → single ξ via
+the public `ẽq`-MLE weights) followed by §A.2 Figure 6's single-round
+Σ-protocol over the size-n folded row. The transcript carries blinding
+against the hiding generator `H` introduced in Phase 1, plus a new `U`
+generator introduced here for the scalar-target commitment `τ`.
+Rationale: matches zkLLM §3.4, which names Hyrax as its polynomial
+commitment scheme; Figure 6 is also reused in Phase 3 to finalize
+sumcheck round commitments, so picking it here keeps the verifier and
+simulator argument uniform across phases. O(log n) Figure 7+8 is
+deferred — see the kickoff doc's "Future work" section.
 
 **Work:**
-- Rewrite `Commitment::me_open` (`src/commit/commitment.cu:109-129`) to
-  thread blinding through each recursive-halving round (Bulletproofs §4.2
-  construction).
-- Update `verifyWeightClaim` and all upstream openers to handle the blinded
-  return value.
-- Soundness tests: verifier rejects when blinding is replayed incorrectly.
+- Extend pp format: add `U ∈ G1` sampled in `hiding_random`, saved as a
+  `.u` sidecar alongside Phase 1's `.h`.
+- Introduce new opening primitive `Commitment::open_zk` emitting the
+  Figure 6 transcript: two group elements (`δ = h^{r_δ} ⊙ Π gᵢ^{dᵢ}`,
+  `β = g^{⟨â,d⃗⟩} ⊙ h^{r_β}`) and `n + 2` field elements
+  (`z⃗ = c·x̂ + d⃗`, `z_δ = c·r_ξ + r_δ`, `z_β = c·r_τ + r_β`), plus
+  the scalar-target commitment `τ = g^v ⊙ h^{r_τ}` carried alongside.
+  Keep `me_open`/`open` in place as the legacy non-ZK path until the
+  last caller is migrated.
+- Matching verifier helper `Commitment::verify_zk` that checks the two
+  Figure 6 equations (p. 18): `ξ^c ⊙ δ = Com_{g⃗}(z⃗; z_δ)` (eq 13)
+  and `τ^c ⊙ β = Com(⟨z⃗, â⟩; z_β)` (eq 14). `ξ` is recomputed
+  homomorphically as `Σ ẽq(bits(i), u_R) · C_i` from the Phase 1 row
+  commitments, and `â_j = ẽq(bits(j), u_L)` from `u⃗`.
+- Update `verifyWeightClaim` with a new overload that consumes the
+  `OpeningProof` struct; thread through the six `verifyWeightClaim`
+  call sites surveyed in Phase 1.
+- Soundness tests: verifier rejects tampered `δ, β, z⃗, z_δ, z_β, τ`
+  and wrong claimed `v`.
+- Hiding distinguisher test: `d⃗, r_δ, r_β, r_τ` freshly sampled per
+  `open_zk` call (catches a future refactor that collapses the RNG).
 
-**Reuse:** structure of existing `me_open`. Algorithm change is the
-Bulletproofs blinding pattern.
-**Risk:** medium — easy to introduce a subtle bug that still verifies for
-correct inputs but silently weakens hiding.
+**Reuse:** blinding primitives from Phase 1 (`H` generator, per-row
+`r` already threaded into `Weight.r`); the row-blinding fold
+`r_ξ = Σ ẽq(bits(i), u_R) · r_{ξ,i}` is the homomorphic counterpart of
+the commitment fold that Phase 1 already underpins. Verifier-side work
+is fresh because `me_open` never had a standalone verifier.
+**Risk:** medium — subtle bugs that still verify correct inputs but
+silently weaken hiding; O(n) transcript size at `n = out_dim` is
+acceptable but not negligible (~1 MB per row opening). Mitigation:
+fresh-agent audit A2 against the Figure 6 transcript, distinguisher
+test gates merges, proof-size budget tracked in the kickoff doc's
+acceptance criteria. Kickoff doc:
+`docs/plans/phase-2-blinded-opening.md`.
 
 ### Phase 3 — ZK sumcheck, Hyrax §4 / §A.2 (3 weeks, revised up)
 
@@ -408,6 +444,7 @@ Before starting, confirm:
 - `docs/plans/plan-full-verifier.md` — detailed verifier architecture
   (from `pq-goldilocks` branch)
 - `docs/plans/phase-1-hiding-pedersen.md` — kickoff doc for Phase 1
+- `docs/plans/phase-2-blinded-opening.md` — kickoff doc for Phase 2
 - `docs/analysis/prover-determinism.md` — sources of prover freedom and
   the sandwich fix
 - `docs/analysis/security-review.md` — identified soundness gaps
@@ -418,8 +455,12 @@ Before starting, confirm:
   Phases 2–5. §4 = ZK sumcheck compilation; §A.1 Fig 5 = Σ-protocols
   (proof-of-opening, -equality, -product); §A.2 Fig 6 = ZK dot-product;
   §6.1 = matrix-layout multilinear commitment.
-- Bünz et al. 2018, "Bulletproofs" — §4.2 recursive halving opening
-  (blinded form used in Phase 2).
+- Bünz et al. 2018, "Bulletproofs" — §4.2 recursive halving IPA. Cited
+  as the historical ancestor of the log-n optimization path (Hyrax
+  §A.3 Figures 7+8 wrap `bullet-reduce` around Figure 6); the Phase 2
+  transcript is Figure 6's plain single-round Σ-protocol, not the
+  recursive variant. Figures 7+8 are deferred — see the Phase 2
+  kickoff doc's "Future work" section.
 - Xie et al. 2019 / XZZ+19 — transcript masking technique (comparison
   reference, not implemented).
 - Plonky2 whitepaper §3.6 — comparison reference for the alternative
