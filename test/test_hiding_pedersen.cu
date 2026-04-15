@@ -198,6 +198,68 @@ int main() {
         check(!g1_bytes_eq(hc.com(1), hc.com(2)), "multi-row com: 1 vs 2 differ");
     }
 
+    // ── Test 8: create_weight hiding overload — .r sidecar roundtrip ──────
+    // Step 3 acceptance gate: save a hiding Weight's pp + com + r, then
+    // load it back via the hiding create_weight and confirm r round-trips
+    // byte-exactly and that the non-hiding overload stays non-throwing.
+    {
+        // Build a small hiding pp and a small int-valued weight.
+        const uint in_dim = 1;
+        const uint out_dim = 4;
+        Commitment pp = Commitment::hiding_random(out_dim);
+        int int_weight[4] = {17, -3, 42, 100};
+        FrTensor weight(out_dim, int_weight);  // int ctor
+
+        auto hc = pp.commit_int_hiding(weight);
+        check(hc.com.size == in_dim, "create_weight smoke: com has in_dim rows");
+        check(hc.r.size == in_dim, "create_weight smoke: r has in_dim rows");
+
+        // Write pp + com + r + int-weight sidecars to /tmp.
+        char ppt[] = "/tmp/zke_cw_pp_XXXXXX";
+        char comt[] = "/tmp/zke_cw_com_XXXXXX";
+        char intt[] = "/tmp/zke_cw_int_XXXXXX";
+        int f1 = mkstemp(ppt);  close(f1);
+        int f2 = mkstemp(comt); close(f2);
+        int f3 = mkstemp(intt); close(f3);
+        string pp_path = ppt;
+        string com_path = comt;
+        string int_path = intt;
+        string r_path = com_path + ".r";
+
+        pp.save_hiding(pp_path);
+        hc.com.save(com_path);
+        hc.r.save(r_path);
+        weight.save_int(int_path);
+
+        // Load via hiding create_weight.
+        Weight w = create_weight(pp_path, int_path, com_path, r_path, in_dim, out_dim);
+        check(w.generator.is_hiding(),
+              "create_weight(hiding) restores is_hiding() == true");
+        check(w.r.size == in_dim,
+              "create_weight(hiding) restores r with correct row count");
+        check(w.com.size == in_dim,
+              "create_weight(hiding) restores com with correct row count");
+        check(fr_bytes_eq(w.r(0), hc.r(0)),
+              "create_weight(hiding) restores r[0] byte-exactly");
+        check(g1_bytes_eq(w.com(0), hc.com(0)),
+              "create_weight(hiding) restores com[0] byte-exactly");
+        check(g1_bytes_eq(w.generator.hiding_generator, pp.hiding_generator),
+              "create_weight(hiding) restores H byte-exactly");
+
+        // Legacy overload: non-hiding Weight has r.size == 0.
+        Weight w_legacy = create_weight(pp_path, int_path, com_path,
+                                        in_dim, out_dim);
+        check(w_legacy.r.size == 0,
+              "create_weight(legacy) produces empty r (size 0)");
+
+        // Cleanup
+        remove(pp_path.c_str());
+        remove((pp_path + ".h").c_str());
+        remove(com_path.c_str());
+        remove(r_path.c_str());
+        remove(int_path.c_str());
+    }
+
     cout << "All hiding-Pedersen tests PASSED." << endl;
     return 0;
 }
