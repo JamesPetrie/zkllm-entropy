@@ -72,30 +72,43 @@ Phase 1 only introduces the commitment; Phases 2 and 3 will build the
 
 ## Generator `H` derivation
 
-**Approach: hash-to-curve, deterministic, public.**
+**Approach: one more random-scalar generator, written into pp.**
 
-`H` is derived from a fixed domain-separation string by hash-to-curve.
-Rationale:
+`H = s_H · G` where `s_H ← F_r` is sampled once inside `ppgen`
+alongside the `Gᵢ = sᵢ · G` generators that `Commitment::random`
+already samples. `H` is saved into the pp file next to the `Gᵢ`.
 
-- No trusted setup — `H` is publicly verifiable.
-- Independence from `{Gᵢ}` reduces to "SHA-256 output is not in the
-  linear span of `{Gᵢ}` output by `Commitment::random`" — a concrete
-  random-oracle assumption, not a new setup assumption.
-- Reproducible across machines — the verifier and the prover compute
-  the same `H` from the same DST.
+**Trust model.** This matches the existing trust model of the
+codebase: whoever runs `ppgen` knows all pairwise discrete logs
+among `{Gᵢ}`, and now also knows `dlog_G(H)`. That knowledge does
+**not** affect the hiding property (which is against the verifier,
+who never sees any scalar). It does affect binding: an adversary
+who runs `ppgen` themselves could equivocate on commitments they
+produce. Binding against a prover who also ran `ppgen` is therefore
+assumed at the setup level — same assumption as the existing
+zkLLM paper (§3.4 "trusted public parameters"), carried over
+unchanged.
 
-**DST (domain separation tag):**
-`b"zkllm-entropy/v1/hiding-generator-H"`
+**Independence.** `H` is independent of `{Gᵢ}` in the sense that
+matters for perfect hiding: `s_H` is an independent fresh uniform
+draw from `F_r`. `H` may land in the linear span of `{Gᵢ}` with
+probability `N/|F_r|` ≈ 2^(-245), which is a cryptographic
+non-event on BLS12-381.
 
-**Algorithm:** RFC 9380 `hash_to_curve` for BLS12-381 G1 with suite
-`BLS12381G1_XMD:SHA-256_SSWU_RO_`. Existing `blst` / `blstrs` support is
-available in this codebase; if not present, we implement simplified
-SWU with a ~50-line CPU helper (one-time computation, result cached as
-a constant). The computed `H` is then written into the pp file.
+**Sanity check.** After generation, verify `H` is not the identity
+(defensive, cheap).
 
-**Sanity check against `{Gᵢ}`:** After generation, verify that `H`
-is not the identity and not equal to any `Gᵢ` in the freshly generated
-pp (defensive, cheap).
+**Alternative considered and rejected:** RFC 9380 hash-to-curve
+(SHA-256 XMD + SSWU + isogeny) would give a publicly verifiable `H`
+independent of any pp ceremony. That's the right answer for a
+production deployment that wants to remove the trusted setup. It's
+out of scope for Phase 1 because (a) no hash-to-curve exists in
+this codebase (zkLLM's BLS12-381 implementation is custom, not
+`blst`/`blstrs`), (b) implementing SSWU+isogeny is ~400 lines of
+new crypto code plus RFC-vector test harness, and (c) it wouldn't
+materially change the security story while the `Gᵢ` themselves
+stay trusted-setup-generated. Flag for future work alongside a
+full setup-ceremony redesign.
 
 ## Public-parameter file format change
 
@@ -111,8 +124,6 @@ flags     : uint32   = bit 0 set ⇒ hiding (contains H)
 size      : uint32   = number of G_i generators
 G_i       : size * sizeof(G1Jacobian_t)
 H         : sizeof(G1Jacobian_t)
-H_dst_len : uint32
-H_dst     : H_dst_len bytes   (the DST used to derive H, for audit)
 ```
 
 Backwards-compat read path: if the first 8 bytes don't match the new
@@ -214,8 +225,8 @@ is tighter than the parent plan's ~15 estimate.
 7. **`test_hiding_missing_r_rejects`**: loading a hiding-pp and then
    calling `create_weight` without an r-file raises (once we've
    dropped the compat shim; initially this is a warning).
-8. **`test_hiding_H_not_in_G_span`**: sanity check that the derived `H`
-   is not equal to any `Gᵢ` in a freshly generated pp.
+8. **`test_hiding_H_not_identity`**: sanity check that `H` is not the
+   G1 identity after `ppgen`.
 
 ### Hiding property (statistical)
 
@@ -263,10 +274,11 @@ extends it to the sumcheck transcript using Hyrax §4.
 1. **Reading `r` inadvertently leaks it.** Tests and debug prints must
    not print `r`. Mitigation: add a `[[nodiscard]]` wrapper type
    `Blinding` that disallows ostream operations.
-2. **H derivation bug silently produces dependent `H`.** If `H = α · G₀`
-   for some `α` a future attacker knows, hiding collapses. Mitigation:
-   publish the DST and hash-to-curve trace in the pp file; unit test
-   that `H` matches the hash-to-curve expected output byte-for-byte.
+2. **`H` equal to zero or to an existing `Gᵢ` by accident.** Nominally
+   impossible at cryptographic probability, but an RNG bug could make
+   it happen. Mitigation: `ppgen` checks `H ≠ 0` after sampling and
+   loudly aborts otherwise. No protection against `H = α · G_i` for
+   small `α` because that's the setup trust assumption by design.
 3. **Pp file format migration breaks other branches.** The
    `pq-goldilocks` branch uses its own pp format, so no cross-branch
    impact. `zk-masking-implementation` is reference-only.
@@ -294,8 +306,8 @@ The Phase 1 audit should check:
    backwards-compat path).
 2. Walk every logging / serialization site for `r`: ensure `r` is
    never written to any file that ends up in the proof transcript.
-3. Confirm `H` derivation: DST matches spec, hash-to-curve
-   implementation is standard, `H` is saved with the pp.
+3. Confirm `H` derivation: one fresh `Fr` scalar sampled in `ppgen`,
+   `H = s_H · G`, `H` saved with the pp, non-zero check present.
 4. Confirm `create_weight` fails loudly when pp is hiding but
    `r_file` is missing (once compat shim is removed).
 5. Confirm the simulator argument in this doc is consistent with the
