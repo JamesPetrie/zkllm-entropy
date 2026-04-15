@@ -508,45 +508,219 @@ bool verify_zk_binary(
     return true;
 }
 
-// ── Hadamard-product driver ──
+// ── Hadamard-product driver (eq-factored) ──
 //
-// Hadamard-product sumcheck in its eq-factored form (plain path
-// `hadamard_product_sumcheck` in src/proof/proof.cu) sends per-round
-// `(out_0(u_), out_1(u_), out_2(u_))` — three *partial multilinear
-// evaluations* of the round polynomial in the remaining u-challenges —
-// not `(c_0, c_1, c_2)` coefficients.  The round check that ties
-// consecutive rounds together is the eq-factored identity
-// `eq(u_{j-1}, v_{j-1}) · g_{j-1}(v_{j-1}) = (1−u_j)·t_0(u_) + u_j·(t_0+t_1+t_2)(u_)`
-// from Thaler §4.3 / Xie et al. 2019 (Libra) Appendix A, which does
-// not match the "2·c_0 + c_1 + c_2 = prev_eval" identity wired into
-// `verify_zk_round`.  The Hyrax §4 Protocol 3 ZK driver's §A.1
-// proof-of-equality commits the prover to a single linear combination;
-// lifting it to the eq-factored multi-term identity requires a
-// generalized round-equality primitive that is out of scope for this
-// phase.
+// The plain `hadamard_product_sumcheck` in src/proof/proof.cu is the
+// eq-factored multilinear sumcheck (Libra-style, Xie et al. 2019
+// Appendix A) proving S = (a∘b)(u) = Σ_x eq(x,u)·a(x)·b(x).  Each
+// round's polynomial g_j(X) = Σ_{rest} eq((X, rest), u)·a·b factors
+// as `g_j(X) = eq(X, u_j) · h_j(X)` with h_j degree 2; the prover
+// sends only h_j's 3 coefficients (c_0, c_1, c_2).
 //
-// Phase 3 therefore exposes `prove_zk_hadamard_product` /
-// `verify_zk_hadamard_product` as thin wrappers that delegate to the
-// inner-product driver.  Call sites that want the eq-factored claim
-// `(a∘b)(u)` must be migrated at wiring time to use the standard
-// `Σ_x a(x)·b(x)` claim (same polynomial, different contraction), or
-// to a future ZK driver that ports the eq-factored identity.
+// Round-to-round check.  After round j-1 the verifier holds
+// h_{j-1}(v_{j-1}).  The standard sumcheck "g_j(0) + g_j(1) = prev"
+// step becomes, after cancelling the dangling eq factor on both sides,
+//   (1 - u_j)·h_j(0) + u_j·h_j(1) = h_{j-1}(v_{j-1})
+// and in coefficient form
+//   c_0 + u_j · c_1 + u_j · c_2 = h_{j-1}(v_{j-1}).
+// At commitment level this is a same-message equality between the
+// weighted combination Σ α_k · T_j[k] (α = (1, u_j, u_j)) and the
+// previous-round evaluation commitment T_{j-1}(v_{j-1}).  Both sides
+// commit to the same scalar under different blindings, so the §A.1
+// proof-of-equality from Phase 3 (1) discharges it unchanged — we
+// just combine the coefficient commitments with HP-specific weights
+// instead of the standard (2, 1, 1) before handing to prove_equality.
+//
+// Bottom of recursion.  After n rounds of folding tensors at v, the
+// `a` and `b` tensors have collapsed to singletons with values a(v)
+// and b(v).  The sumcheck-reduced claim is h_{n-1}(v_{n-1}) = a(v)·b(v)
+// — same final contraction as the inner-product driver.
+
+ZKRoundOutput emit_zk_round_hp(
+    G1Jacobian_t U,
+    G1Jacobian_t H,
+    const std::vector<Fr_t>& coeffs,
+    G1Jacobian_t T_prev_eval,
+    Fr_t         rho_prev_eval,
+    Fr_t         v_j,
+    Fr_t         u_j,
+    Fr_t         e_j)
+{
+    if (coeffs.size() != 3) {
+        throw std::runtime_error(
+            "emit_zk_round_hp: HP round must have 3 coefficients (degree 2)");
+    }
+
+    // Step 1: commit h_j's 3 coefficients with fresh blindings.
+    RoundCommitment rc = commit_round_poly(U, H, coeffs);
+
+    // Step 2: build the weighted LHS commitment at alphas = (1, u_j, u_j).
+    //   C2     = T[0] + u_j · T[1] + u_j · T[2]
+    //   rho_C2 = ρ[0] + u_j · ρ[1] + u_j · ρ[2]
+    // commits to c_0 + u_j·c_1 + u_j·c_2 = h_{j-1}(v_{j-1}).
+    Fr_t one = {1,0,0,0,0,0,0,0};
+    std::vector<Fr_t> alphas = { one, u_j, u_j };
+    G1Jacobian_t C2     = combine_commitments_weighted(rc.T, alphas);
+    Fr_t         rho_C2 = combine_blindings_weighted (rc.rho, alphas);
+
+    // Step 3: same-message equality with the previous-round eval.
+    SigmaEqualityProof eq = prove_equality(H,
+                                           T_prev_eval,
+                                           C2,
+                                           rho_prev_eval,
+                                           rho_C2,
+                                           e_j);
+
+    ZKRoundOutput out;
+    out.round.T        = rc.T;
+    out.round.eq_proof = eq;
+    out.T_eval         = fold_commitments_at(rc.T, v_j);
+    out.rho_eval       = fold_blindings_at(rc.rho, v_j);
+    return out;
+}
+
+G1Jacobian_t verify_zk_round_hp(
+    G1Jacobian_t H,
+    const ZKSumcheckRound& round,
+    G1Jacobian_t T_prev_eval,
+    Fr_t         v_j,
+    Fr_t         u_j,
+    Fr_t         e_j)
+{
+    if (round.T.size() != 3) {
+        throw std::runtime_error(
+            "verify_zk_round_hp: expected 3 commitments (degree 2)");
+    }
+    Fr_t one = {1,0,0,0,0,0,0,0};
+    std::vector<Fr_t> alphas = { one, u_j, u_j };
+    G1Jacobian_t C2 = combine_commitments_weighted(round.T, alphas);
+    if (!verify_equality(H, T_prev_eval, C2, round.eq_proof, e_j)) {
+        throw std::runtime_error(
+            "verify_zk_round_hp: per-round proof-of-equality rejected");
+    }
+    return fold_commitments_at(round.T, v_j);
+}
+
+static void zk_hp_sc_recurse(
+    G1Jacobian_t U,
+    G1Jacobian_t H,
+    const FrTensor& a,
+    const FrTensor& b,
+    std::vector<Fr_t>::const_iterator u_begin,
+    std::vector<Fr_t>::const_iterator u_end,
+    std::vector<Fr_t>::const_iterator v_begin,
+    std::vector<Fr_t>::const_iterator v_end,
+    std::vector<Fr_t>::const_iterator sigma_begin,
+    G1Jacobian_t T_prev_eval,
+    Fr_t         rho_prev_eval,
+    std::vector<ZKSumcheckRound>& rounds_out,
+    G1Jacobian_t& T_final_out,
+    Fr_t&         rho_final_out,
+    Fr_t&         final_a_out,
+    Fr_t&         final_b_out)
+{
+    if (a.size != b.size)
+        throw std::runtime_error("zk_hp_sc_recurse: a.size != b.size");
+    if ((u_end - u_begin) != (v_end - v_begin))
+        throw std::runtime_error("zk_hp_sc_recurse: |u| != |v|");
+
+    if (v_begin >= v_end) {
+        T_final_out  = T_prev_eval;
+        rho_final_out = rho_prev_eval;
+        final_a_out  = a(0);
+        final_b_out  = b(0);
+        return;
+    }
+
+    auto in_size  = a.size;
+    auto out_size = (in_size + 1) / 2;
+
+    // Same kernel as the inner-product driver — Fr_ip_sc_step emits
+    // per-pair (out0, out1, out2) = coefficients of X^k in a·b.
+    FrTensor out0(out_size), out1(out_size), out2(out_size);
+    Fr_ip_sc_step<<<(out_size + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        a.gpu_data, b.gpu_data,
+        out0.gpu_data, out1.gpu_data, out2.gpu_data,
+        in_size, out_size);
+
+    // Normalise form (same rationale as IP driver — see form-correction
+    // note at top of this file).
+    out0.mont(); out1.mont(); out2.mont();
+
+    // Partial multilinear evaluation at u_ = u[1..] gives h_j's
+    // coefficients.  u_j = *u_begin is consumed as the eq-factor weight
+    // for this round's round-identity check; u[1..] is the remaining
+    // eq-factor point that gets absorbed into h_j per Libra's factoring.
+    std::vector<Fr_t> u_(u_begin + 1, u_end);
+    std::vector<Fr_t> coeffs = { out0(u_), out1(u_), out2(u_) };
+
+    Fr_t v_j = *v_begin;
+    Fr_t u_j = *u_begin;
+    Fr_t e_j = *sigma_begin;
+
+    ZKRoundOutput ro = emit_zk_round_hp(U, H, coeffs,
+                                         T_prev_eval, rho_prev_eval,
+                                         v_j, u_j, e_j);
+    rounds_out.push_back(ro.round);
+
+    // Fold tensors with v_j (matches plain Fr_hp_sc — fold-challenge v
+    // is distinct from the eq-factor point u).
+    FrTensor a_new(out_size), b_new(out_size);
+    Fr_me_step<<<(out_size + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        a.gpu_data, a_new.gpu_data, v_j, in_size, out_size);
+    Fr_me_step<<<(out_size + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+        b.gpu_data, b_new.gpu_data, v_j, in_size, out_size);
+
+    zk_hp_sc_recurse(U, H, a_new, b_new,
+                     u_begin + 1, u_end,
+                     v_begin + 1, v_end,
+                     sigma_begin + 1,
+                     ro.T_eval, ro.rho_eval,
+                     rounds_out,
+                     T_final_out, rho_final_out,
+                     final_a_out, final_b_out);
+}
+
 ZKSumcheckProof prove_zk_hadamard_product(
     G1Jacobian_t U,
     G1Jacobian_t H,
     Fr_t         claimed_S,
     const FrTensor& a,
     const FrTensor& b,
-    const std::vector<Fr_t>& eval_challenges,
+    const std::vector<Fr_t>& u_challenges,
+    const std::vector<Fr_t>& v_challenges,
     const std::vector<Fr_t>& sigma_challenges,
     Fr_t&        final_a_out,
     Fr_t&        final_b_out,
     ZKSumcheckProverHandoff& handoff_out)
 {
-    return prove_zk_inner_product(U, H, claimed_S, a, b,
-                                  eval_challenges, sigma_challenges,
-                                  final_a_out, final_b_out,
-                                  handoff_out);
+    if (a.size != b.size)
+        throw std::runtime_error("prove_zk_hadamard_product: |a| != |b|");
+    if (u_challenges.size() != v_challenges.size())
+        throw std::runtime_error(
+            "prove_zk_hadamard_product: |u| != |v|");
+    if (sigma_challenges.size() != u_challenges.size() + 1)
+        throw std::runtime_error(
+            "prove_zk_hadamard_product: sigma_challenges must have size n+1");
+
+    Fr_t e_top = sigma_challenges[0];
+    ZKTopLevel top = commit_and_open_top(U, H, claimed_S, e_top);
+
+    ZKSumcheckProof proof;
+    proof.T0      = top.T0;
+    proof.T0_open = top.open_proof;
+    handoff_out.S    = claimed_S;
+    handoff_out.rho0 = top.rho0;
+
+    zk_hp_sc_recurse(U, H, a, b,
+                     u_challenges.begin(), u_challenges.end(),
+                     v_challenges.begin(), v_challenges.end(),
+                     sigma_challenges.begin() + 1,
+                     top.T0, top.rho0,
+                     proof.rounds,
+                     proof.T_final, handoff_out.rho_final,
+                     final_a_out, final_b_out);
+    return proof;
 }
 
 bool verify_zk_hadamard_product(
@@ -554,9 +728,41 @@ bool verify_zk_hadamard_product(
     G1Jacobian_t H,
     Fr_t         claimed_S,
     const ZKSumcheckProof& proof,
-    const std::vector<Fr_t>& eval_challenges,
+    const std::vector<Fr_t>& u_challenges,
+    const std::vector<Fr_t>& v_challenges,
     const std::vector<Fr_t>& sigma_challenges)
 {
-    return verify_zk_inner_product(U, H, claimed_S, proof,
-                                    eval_challenges, sigma_challenges);
+    if (u_challenges.size() != v_challenges.size())
+        throw std::runtime_error(
+            "verify_zk_hadamard_product: |u| != |v|");
+    if (sigma_challenges.size() != u_challenges.size() + 1)
+        throw std::runtime_error(
+            "verify_zk_hadamard_product: sigma_challenges must have size n+1");
+    if (proof.rounds.size() != u_challenges.size())
+        throw std::runtime_error(
+            "verify_zk_hadamard_product: proof has wrong number of rounds");
+
+    if (!verify_top_open(U, H, proof.T0, claimed_S,
+                         proof.T0_open, sigma_challenges[0]))
+        throw std::runtime_error(
+            "verify_zk_hadamard_product: top-level proof-of-opening rejected");
+
+    G1Jacobian_t T_prev = proof.T0;
+    for (uint j = 0; j < proof.rounds.size(); j++) {
+        T_prev = verify_zk_round_hp(H,
+                                     proof.rounds[j],
+                                     T_prev,
+                                     v_challenges[j],
+                                     u_challenges[j],
+                                     sigma_challenges[j + 1]);
+    }
+
+    G1TensorJacobian L(1, T_prev), R(1, proof.T_final);
+    G1Jacobian_t d = (L - R)(0);
+    for (uint i = 0; i < blstrs__fp__Fp_LIMBS; i++) {
+        if (d.z.val[i] != 0)
+            throw std::runtime_error(
+                "verify_zk_hadamard_product: T_final mismatch");
+    }
+    return true;
 }

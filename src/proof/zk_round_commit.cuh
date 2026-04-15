@@ -85,4 +85,20 @@ G1Jacobian_t sumcheck_identity_lhs(
 Fr_t sumcheck_identity_blinding(
     const std::vector<Fr_t>& rho);
 
+// Generic weighted combination Σ_k α_k · T_k.  Used by the eq-factored
+// Hadamard round identity, whose LHS is a non-uniform linear
+// combination of the round-coefficient commitments (weights
+// (1, u_j, u_j) for degree 2).  The standard sumcheck identity
+// (`sumcheck_identity_lhs`) is the special case α = (2, 1, 1, …).
+//
+// Mismatched |T| and |alphas| throws; empty vectors throw.
+G1Jacobian_t combine_commitments_weighted(
+    const std::vector<G1Jacobian_t>& T,
+    const std::vector<Fr_t>& alphas);
+
+// Prover-callable: matching blinding combination for the weighted LHS.
+Fr_t combine_blindings_weighted(
+    const std::vector<Fr_t>& rho,
+    const std::vector<Fr_t>& alphas);
+
 #endif

@@ -179,32 +179,56 @@ static void positive_binary(uint N, G1Jacobian_t U, G1Jacobian_t H) {
     check(g1_pt_eq(proof.T_final, T_expected), buf);
 }
 
+// Public claim for HP: S = (a ∘ b)(u) — multilinear evaluation of the
+// elementwise product at the eq-factor point u.  Computed host-side
+// via a length-N tensor of products, then its operator() evaluates the
+// multilinear extension at u — an independent code path from the
+// driver (which computes the sum incrementally via the GPU kernel).
+static Fr_t hadamard_claim(const FrTensor& a, const FrTensor& b,
+                           const std::vector<Fr_t>& u) {
+    if (a.size != b.size) throw std::runtime_error("|a| != |b|");
+    std::vector<Fr_t> h(a.size);
+    for (uint i = 0; i < a.size; i++) h[i] = a(i) * b(i);
+    FrTensor h_t(a.size, h.data());
+    return h_t(u);
+}
+
 static void positive_hadamard(uint N, G1Jacobian_t U, G1Jacobian_t H) {
-    // Phase 3 ships the Hadamard driver as a thin wrapper over the
-    // inner-product driver (see src/proof/zk_sumcheck.cu).  The
-    // eq-factored HP round identity is out of scope for this phase,
-    // so the wrapper proves the same `Σ_x a(x)·b(x)` claim as IP.
+    // Eq-factored HP: S = (a∘b)(u).  Two independent challenge
+    // sequences — u is the eq-factor point where the claim is
+    // evaluated, v is the sumcheck fold challenges.
     uint n = ceil_log2(N);
     if ((1u << n) != N) throw std::runtime_error("N must be power of 2");
 
     FrTensor a = FrTensor::random(N);
     FrTensor b = FrTensor::random(N);
 
-    FrTensor evals  = FrTensor::random(n);
+    FrTensor u_t = FrTensor::random(n);
+    FrTensor v_t = FrTensor::random(n);
     FrTensor sigmas = FrTensor::random(n + 1);
-    std::vector<Fr_t> ev, sg;
-    for (uint i = 0; i < n; i++) ev.push_back(evals(i));
+    std::vector<Fr_t> u, v, sg;
+    for (uint i = 0; i < n; i++) u.push_back(u_t(i));
+    for (uint i = 0; i < n; i++) v.push_back(v_t(i));
     for (uint i = 0; i < n + 1; i++) sg.push_back(sigmas(i));
 
-    Fr_t S = inner_product_claim(a, b);
+    Fr_t S = hadamard_claim(a, b, u);
 
     Fr_t fa, fb;
     ZKSumcheckProverHandoff handoff;
-    auto proof = prove_zk_hadamard_product(U, H, S, a, b, ev, sg,
+    auto proof = prove_zk_hadamard_product(U, H, S, a, b, u, v, sg,
                                            fa, fb, handoff);
     char buf[128];
     snprintf(buf, sizeof(buf), "hp N=%u: honest verifier accepts", N);
-    check(verify_zk_hadamard_product(U, H, S, proof, ev, sg), buf);
+    check(verify_zk_hadamard_product(U, H, S, proof, u, v, sg), buf);
+
+    // T_final commits to h_{n-1}(v) = a(v)·b(v) — same final claim as
+    // the inner-product driver.  Verify byte-exactly against
+    // Com(fa·fb; handoff.rho_final).
+    Fr_t expected_msg = fa * fb;
+    G1Jacobian_t expected = commit_mU_rH(U, H, expected_msg, handoff.rho_final);
+    snprintf(buf, sizeof(buf),
+             "hp N=%u: T_final == Com(a(v)·b(v); rho_final)", N);
+    check(g1_pt_eq(proof.T_final, expected), buf);
 }
 
 // ── negative cases for inner-product (template for the others) ───────
@@ -221,6 +245,62 @@ static bool verifier_throws(std::function<bool()> fn, const char* expected_subst
         }
         return true;
     }
+}
+
+// HP-specific negative: swap the u and v challenges at verify time.
+// For IP the only challenge sequence is the fold sequence, so this
+// test has no IP analogue — it exercises the eq-factor weighting in
+// verify_zk_round_hp, which IP/BIN don't use.
+static void negatives_hadamard(uint N, G1Jacobian_t U, G1Jacobian_t H) {
+    uint n = ceil_log2(N);
+    if (n < 1) return;
+    FrTensor a = FrTensor::random(N);
+    FrTensor b = FrTensor::random(N);
+
+    FrTensor u_t = FrTensor::random(n);
+    FrTensor v_t = FrTensor::random(n);
+    FrTensor sigmas = FrTensor::random(n + 1);
+    std::vector<Fr_t> u, v, sg;
+    for (uint i = 0; i < n; i++) u.push_back(u_t(i));
+    for (uint i = 0; i < n; i++) v.push_back(v_t(i));
+    for (uint i = 0; i < n + 1; i++) sg.push_back(sigmas(i));
+
+    Fr_t S = hadamard_claim(a, b, u);
+
+    Fr_t fa, fb;
+    ZKSumcheckProverHandoff handoff;
+    auto good = prove_zk_hadamard_product(U, H, S, a, b, u, v, sg, fa, fb, handoff);
+
+    char buf[128];
+    // (eq-factor) swap u and v — the weighted-combination check uses
+    // (1, u_j, u_j) on the LHS, so swapping in v_j where u_j is
+    // expected breaks the round identity.
+    {
+        snprintf(buf, sizeof(buf),
+                 "hp N=%u neg: swapped u/v at verify rejected at eq-factor weight", N);
+        check(verifier_throws([&]() {
+            return verify_zk_hadamard_product(U, H, S, good, v, u, sg);
+        }, "proof-of-equality rejected"), buf);
+    }
+    // (wrong u_0) flip just the first u — catches a verifier that
+    // mis-indexes the eq-factor sequence.
+    {
+        std::vector<Fr_t> u_bad = u;
+        Fr_t one = {1,0,0,0,0,0,0,0};
+        u_bad[0] = u_bad[0] + one;
+        snprintf(buf, sizeof(buf),
+                 "hp N=%u neg: wrong u[0] rejected at round 0 eq-proof", N);
+        check(verifier_throws([&]() {
+            return verify_zk_hadamard_product(U, H, S, good, u_bad, v, sg);
+        }, "proof-of-equality rejected"), buf);
+    }
+    // NOTE: "wrong claimed_S" is *not* rejected at current verify time —
+    // `verify_top_open` checks the proof-of-opening is internally
+    // consistent but does not bind T0 to the public S.  This is the
+    // documented weak-binding limitation tracked for Phase 4 (reveal
+    // ρ_0 à la Phase 2's r_tau).  See verify_top_open in
+    // src/proof/zk_sumcheck.cu for the full write-up.  A negative test
+    // here would fail against the deliberately-loose primitive.
 }
 
 static void negatives_inner_product(uint N, G1Jacobian_t U, G1Jacobian_t H) {
@@ -303,6 +383,7 @@ int main() {
 
     // ── (2) negatives at one representative size ──
     negatives_inner_product(64u, U, H);
+    negatives_hadamard(64u, U, H);
 
     // ── (3) composition: two independent runs share no state ──
     {

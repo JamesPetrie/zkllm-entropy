@@ -124,3 +124,37 @@ Fr_t sumcheck_identity_blinding(
     }
     return acc;
 }
+
+G1Jacobian_t combine_commitments_weighted(
+    const std::vector<G1Jacobian_t>& T,
+    const std::vector<Fr_t>& alphas)
+{
+    if (T.empty() || alphas.empty()) {
+        throw std::runtime_error("combine_commitments_weighted: empty vector");
+    }
+    if (T.size() != alphas.size()) {
+        throw std::runtime_error("combine_commitments_weighted: size mismatch");
+    }
+    G1Jacobian_t acc = g1_scalar_mul_host(T[0], alphas[0]);
+    for (uint k = 1; k < T.size(); k++) {
+        acc = g1_add_host(acc, g1_scalar_mul_host(T[k], alphas[k]));
+    }
+    return acc;
+}
+
+Fr_t combine_blindings_weighted(
+    const std::vector<Fr_t>& rho,
+    const std::vector<Fr_t>& alphas)
+{
+    if (rho.empty() || alphas.empty()) {
+        throw std::runtime_error("combine_blindings_weighted: empty vector");
+    }
+    if (rho.size() != alphas.size()) {
+        throw std::runtime_error("combine_blindings_weighted: size mismatch");
+    }
+    Fr_t acc = alphas[0] * rho[0];
+    for (uint k = 1; k < rho.size(); k++) {
+        acc = acc + alphas[k] * rho[k];
+    }
+    return acc;
+}

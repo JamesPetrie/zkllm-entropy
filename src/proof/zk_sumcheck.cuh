@@ -167,19 +167,39 @@ bool verify_zk_inner_product(
     const std::vector<Fr_t>& eval_challenges,
     const std::vector<Fr_t>& sigma_challenges);
 
-// Hadamard sumcheck.  Same shape as inner-product (degree 2) but the
-// caller-supplied tensor folding follows the v-pattern from
-// hadamard_product_sumcheck (sumcheck claim at the end is contracted
-// via partial_me with two distinct challenges).  In Phase 3 the
-// driver only handles the round-by-round transcript; the final claim
-// shape stays variant-specific and is returned to the caller.
+// Hadamard sumcheck — eq-factored variant (Libra-style, Xie et al.
+// 2019 Appendix A).  The claim is `S = (a∘b)(u)`, the multilinear
+// evaluation of the elementwise product `a ⊙ b` at a public point u.
+// Internally the sumcheck splits each round polynomial g_j as
+// `g_j(X) = eq(X, u_j) · h_j(X)` with h_j degree 2.  The prover
+// commits the 3 coefficients of h_j; the round-to-round check is the
+// weighted identity
+//   (1 - u_j)·h_j(0) + u_j·h_j(1) = h_{j-1}(v_{j-1})
+// which in coefficient form becomes
+//   c_0 + u_j · c_1 + u_j · c_2 = h_{j-1}(v_{j-1})
+// and at commitment level reduces to a same-message equality between
+// the weighted combination Σ α_k · T_k (α = (1, u_j, u_j)) and the
+// previous-round evaluation commitment.  See src/proof/zk_sumcheck.cu
+// for the derivation.
+//
+// Two independent challenge sequences are consumed:
+//   * u_challenges (size n): the eq-factor point — this is where the
+//     prover's claim is evaluated.
+//   * v_challenges (size n): the sumcheck fold challenges.
+//   * sigma_challenges (size n+1): Σ-protocol challenges, one extra
+//     for the top-level proof-of-opening.
+//
+// Final-claim contraction: T_final commits to h_{n-1}(v) = a(v)·b(v),
+// same as the inner-product driver — the caller discharges it via
+// Phase 2 verify_zk.
 ZKSumcheckProof prove_zk_hadamard_product(
     G1Jacobian_t U,
     G1Jacobian_t H,
     Fr_t         claimed_S,
     const FrTensor& a,
     const FrTensor& b,
-    const std::vector<Fr_t>& eval_challenges,
+    const std::vector<Fr_t>& u_challenges,
+    const std::vector<Fr_t>& v_challenges,
     const std::vector<Fr_t>& sigma_challenges,
     Fr_t&        final_a_out,
     Fr_t&        final_b_out,
@@ -190,7 +210,8 @@ bool verify_zk_hadamard_product(
     G1Jacobian_t H,
     Fr_t         claimed_S,
     const ZKSumcheckProof& proof,
-    const std::vector<Fr_t>& eval_challenges,
+    const std::vector<Fr_t>& u_challenges,
+    const std::vector<Fr_t>& v_challenges,
     const std::vector<Fr_t>& sigma_challenges);
 
 // Binary sumcheck (`f(x) = a(x)·(a(x) - 1)`).  Degree 2 in X.
