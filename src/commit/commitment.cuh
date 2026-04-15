@@ -78,6 +78,31 @@ class Commitment: public G1TensorJacobian
 
     Fr_t open(const FrTensor& t, const G1TensorJacobian& c, const vector<Fr_t>& u) const;
 
+    // ZK opening per Hyrax §A.2 Figure 6 composed with §6.1 row
+    // reduction.  Produces a transcript that reveals nothing about the
+    // committed witness beyond the public evaluation value.  Requires
+    // `is_openable() == true` (hiding_generator and u_generator both
+    // populated); throws otherwise.
+    //
+    //   t            length == row_blindings.size * size (padded)
+    //   row_blindings length == com.size (the per-row r from Phase 1)
+    //   com          the row commitments {C_i} (Phase 1 output)
+    //   u            evaluation point; last ceilLog2(com.size) coords
+    //                fold rows, leading coords fold within row
+    //   c            verifier-supplied challenge (Figure 6 step 2)
+    struct OpeningResult { OpeningProof proof; Fr_t v; };
+    OpeningResult open_zk(const FrTensor& t,
+                          const FrTensor& row_blindings,
+                          const G1TensorJacobian& com,
+                          const vector<Fr_t>& u,
+                          Fr_t c) const;
+
+    bool verify_zk(const G1TensorJacobian& com,
+                   const vector<Fr_t>& u,
+                   Fr_t v,
+                   const OpeningProof& proof,
+                   Fr_t c) const;
+
     // Legacy non-hiding pp factory.  Kept for backwards compatibility with
     // existing test fixtures and binaries that don't need hiding.
     static Commitment random(uint size);
@@ -97,6 +122,38 @@ class Commitment: public G1TensorJacobian
     static Commitment load_hiding(const string& pp_file);
 
     static Fr_t me_open(const FrTensor& t, const Commitment& generators, vector<Fr_t>::const_iterator begin, vector<Fr_t>::const_iterator end, vector<G1Jacobian_t>& proof);
+};
+
+// Transcript of a Hyrax §A.2 Figure 6 `proof-of-dot-prod` opening,
+// composed with the §6.1 matrix-layout reduction so that a single
+// OpeningProof attests to a multilinear-polynomial evaluation.
+//
+// Field names map to Hyrax 2017/1132 Figure 6 verbatim.  Hyrax p. 18:
+//   "δ ← Com_{g⃗}(d⃗; r_δ), β ← Com(⟨â,d⃗⟩; r_β)" (step 1; eqs 11, 12).
+//   "z⃗ ← c·x̂ + d⃗, z_δ ← c·r_ξ + r_δ, z_β ← c·r_τ + r_β" (step 3).
+//
+// `tau` commits the claimed evaluation `v = f̃(u)` with fresh blinding
+// `r_tau`.  Phase 2's interactive-verifier model sends `r_tau` alongside
+// the Σ-protocol responses so the verifier can check `τ = v·U + r_tau·H`,
+// binding the Figure-6 protocol's internal y to the public v.  The r_tau
+// field deviates from the Phase-2 plan's initial struct listing; see
+// docs/plans/phase-2-blinded-opening.md "Value binding" (added after
+// implementation revealed Figure 6 alone does not bind τ to a public v).
+struct OpeningProof {
+    // Figure 6 step 1 (P → V), eqs 11 & 12.
+    G1Jacobian_t delta;       // δ = h^{r_δ} ⊙ Π gᵢ^{dᵢ}
+    G1Jacobian_t beta;        // β = g^{⟨â,d⃗⟩} ⊙ h^{r_β}
+
+    // Commitment to the claimed evaluation.
+    G1Jacobian_t tau;         // τ = g^v ⊙ h^{r_τ}
+
+    // Figure 6 step 3 (P → V): n + 2 field elements.
+    FrTensor     z;           // z⃗ = c·x̂ + d⃗   (length pp.size)
+    Fr_t         z_delta;     // z_δ = c·r_ξ + r_δ
+    Fr_t         z_beta;      // z_β = c·r_τ + r_β
+
+    // Extra field for binding τ to the public evaluation value v.
+    Fr_t         r_tau;       // r_τ revealed so V recomputes τ = v·U + r_τ·H
 };
 
 // A committed weight tensor.

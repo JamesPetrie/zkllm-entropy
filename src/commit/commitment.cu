@@ -319,6 +319,167 @@ Fr_t Commitment::me_open(const FrTensor& t, const Commitment& generators, vector
 
 
 
+// ─── Host-side wrappers for DEVICE-only scalar / group arithmetic ─────
+//
+// Fr and G1Jacobian arithmetic in this codebase lives in DEVICE kernels
+// (bls12-381.cu), so scalar ops on the host bounce through the size-1
+// FrTensor / Commitment wrappers.  One round-trip per op is fine because
+// the Figure 6 path touches O(1) scalars and O(1) single-point group ops;
+// the O(n) work (Σ dᵢ·Gᵢ, c·x̂, etc.) goes through the bulk tensor ops.
+
+static Fr_t fr_mul_host(Fr_t a, Fr_t b) {
+    FrTensor A(1, &a);
+    FrTensor B(1, &b);
+    FrTensor C = A * B;
+    return C(0);
+}
+
+static Fr_t fr_add_host(Fr_t a, Fr_t b) {
+    FrTensor A(1, &a);
+    FrTensor B(1, &b);
+    FrTensor C = A + B;
+    return C(0);
+}
+
+static G1Jacobian_t g1_scalar_mul_host(G1Jacobian_t P, Fr_t s) {
+    Commitment pp1(1, P);
+    FrTensor S(1, &s);
+    G1TensorJacobian out = pp1.commit(S);  // Σ sᵢ·Pᵢ with |S| = |pp1| = 1
+    return out(0);
+}
+
+static G1Jacobian_t g1_add_host(G1Jacobian_t a, G1Jacobian_t b) {
+    G1TensorJacobian A(1, a);
+    G1TensorJacobian B(1, b);
+    G1TensorJacobian C = A + B;
+    return C(0);
+}
+
+// ─── Hyrax §A.2 Figure 6 opening (with §6.1 row reduction) ────────────
+
+Commitment::OpeningResult Commitment::open_zk(
+    const FrTensor& t,
+    const FrTensor& row_blindings,
+    const G1TensorJacobian& com,
+    const vector<Fr_t>& u,
+    Fr_t c) const
+{
+    if (!is_openable()) {
+        throw std::runtime_error(
+            "Commitment::open_zk: pp is not openable — hiding_generator "
+            "or u_generator is identity (missing .h or .u sidecar)");
+    }
+    if (t.size != com.size * size) {
+        throw std::runtime_error(
+            "Commitment::open_zk: t.size must equal com.size * pp.size");
+    }
+    if (row_blindings.size != com.size) {
+        throw std::runtime_error(
+            "Commitment::open_zk: row_blindings.size != com.size");
+    }
+    uint log_rows = ceilLog2(com.size);
+    if (u.size() < log_rows) {
+        throw std::runtime_error("Commitment::open_zk: u too short");
+    }
+    vector<Fr_t> u_R(u.end() - log_rows, u.end());     // folds rows  (§6.1)
+    vector<Fr_t> u_L(u.begin(), u.end() - log_rows);   // folds within-row
+
+    // §6.1 reduction.  x̂ = M · ẽq(·, u_R) has length pp.size;
+    // r_ξ = Σ ẽq(bits(i), u_R) · r_{ξ,i}.
+    FrTensor x_hat = (com.size == 1) ? t : t.partial_me(u_R, size);
+    Fr_t r_xi = (com.size == 1) ? row_blindings(0) : row_blindings(u_R);
+
+    // Fresh masks (Figure 6 step 1 preamble; Hyrax p. 18: "P chooses
+    // d⃗ ← F^n, r_δ, r_β ← F uniformly").
+    FrTensor d = FrTensor::random(size);
+    FrTensor r_scalars = FrTensor::random(3);  // [r_δ, r_β, r_τ]
+    Fr_t r_delta = r_scalars(0);
+    Fr_t r_beta  = r_scalars(1);
+    Fr_t r_tau   = r_scalars(2);
+
+    // δ = Σ dᵢ·Gᵢ + r_δ·H   (eq 11).  commit() here runs the bulk MSM.
+    G1TensorJacobian d_com = this->commit(d);            // size 1
+    G1Jacobian_t delta = g1_add_host(d_com(0),
+                                     g1_scalar_mul_host(hiding_generator, r_delta));
+
+    // v = ⟨x̂, â⟩ = x̂ evaluated as an MLE at u_L.  (Standard identity:
+    // for â_j = ẽq(bits(j), u_L), ⟨x̂, â⟩ equals the multilinear
+    // extension of x̂ at u_L.)
+    Fr_t v = (u_L.empty()) ? x_hat(0) : x_hat(u_L);
+    Fr_t ad_dot = (u_L.empty()) ? d(0) : d(u_L);  // ⟨â, d⃗⟩
+
+    // β = ⟨â,d⃗⟩·U + r_β·H   (eq 12).
+    G1Jacobian_t beta = g1_add_host(g1_scalar_mul_host(u_generator, ad_dot),
+                                    g1_scalar_mul_host(hiding_generator, r_beta));
+
+    // τ = v·U + r_τ·H.  Binds v (see OpeningProof doc).
+    G1Jacobian_t tau = g1_add_host(g1_scalar_mul_host(u_generator, v),
+                                   g1_scalar_mul_host(hiding_generator, r_tau));
+
+    // Σ-protocol responses (Figure 6 step 3).
+    FrTensor z = x_hat * c + d;   // c·x̂ + d⃗, both length pp.size
+    Fr_t z_delta = fr_add_host(fr_mul_host(c, r_xi), r_delta);
+    Fr_t z_beta  = fr_add_host(fr_mul_host(c, r_tau), r_beta);
+
+    OpeningProof proof{
+        delta, beta, tau,
+        std::move(z), z_delta, z_beta,
+        r_tau
+    };
+    return {std::move(proof), v};
+}
+
+bool Commitment::verify_zk(
+    const G1TensorJacobian& com,
+    const vector<Fr_t>& u,
+    Fr_t v,
+    const OpeningProof& proof,
+    Fr_t c) const
+{
+    if (!is_openable()) {
+        throw std::runtime_error(
+            "Commitment::verify_zk: pp is not openable — hiding_generator "
+            "or u_generator is identity");
+    }
+    if (proof.z.size != size) {
+        throw std::runtime_error(
+            "Commitment::verify_zk: proof.z.size != pp.size");
+    }
+    uint log_rows = ceilLog2(com.size);
+    if (u.size() < log_rows) return false;
+    vector<Fr_t> u_R(u.end() - log_rows, u.end());
+    vector<Fr_t> u_L(u.begin(), u.end() - log_rows);
+
+    // ξ = Σ ẽq(bits(i), u_R) · Cᵢ   (§6.1, verifier-recomputes).
+    G1Jacobian_t xi = (com.size == 1) ? com(0) : com(u_R);
+
+    // τ binding: recompute τ_expected = v·U + r_τ·H and byte-compare.
+    G1Jacobian_t tau_expected = g1_add_host(
+        g1_scalar_mul_host(u_generator, v),
+        g1_scalar_mul_host(hiding_generator, proof.r_tau));
+    if (memcmp(&tau_expected, &proof.tau, sizeof(G1Jacobian_t)) != 0) {
+        return false;
+    }
+
+    // eq 13:  c·ξ + δ  =?  Σ zᵢ·Gᵢ + z_δ·H.
+    G1Jacobian_t lhs13 = g1_add_host(g1_scalar_mul_host(xi, c), proof.delta);
+    G1TensorJacobian zG = this->commit(proof.z);
+    G1Jacobian_t rhs13 = g1_add_host(zG(0),
+                                     g1_scalar_mul_host(hiding_generator, proof.z_delta));
+    if (memcmp(&lhs13, &rhs13, sizeof(G1Jacobian_t)) != 0) return false;
+
+    // eq 14:  c·τ + β  =?  ⟨z⃗,â⟩·U + z_β·H.
+    Fr_t za_dot = (u_L.empty()) ? proof.z(0) : proof.z(u_L);
+    G1Jacobian_t lhs14 = g1_add_host(g1_scalar_mul_host(proof.tau, c),
+                                     proof.beta);
+    G1Jacobian_t rhs14 = g1_add_host(
+        g1_scalar_mul_host(u_generator, za_dot),
+        g1_scalar_mul_host(hiding_generator, proof.z_beta));
+    if (memcmp(&lhs14, &rhs14, sizeof(G1Jacobian_t)) != 0) return false;
+
+    return true;
+}
+
 Fr_t Commitment::open(const FrTensor& t, const G1TensorJacobian& com, const vector<Fr_t>& u) const
 {
     const vector<Fr_t> u_out(u.end() - ceilLog2(com.size), u.end());

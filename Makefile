@@ -35,7 +35,7 @@ CPP_OBJS := $(patsubst src/%.cpp,$(BUILD)/%.o,$(CPP_SRCS))
 # Entry-point targets
 BLS_TARGETS := main ppgen commit-param self-attn ffn rmsnorm skip-connection \
                zkllm_entropy commit_logits test_zkargmax test_zklog test_zknormalcdf test_zkentropy \
-               test_hiding_pedersen \
+               test_hiding_pedersen test_open_zk \
                zkllm_entropy_timed bench_field_arith bench_commitment
 
 # Create build subdirectories
@@ -113,6 +113,9 @@ test_zkentropy: $(BUILD)/test/test_zkentropy.o $(CU_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
 
 test_hiding_pedersen: $(BUILD)/test/test_hiding_pedersen.o $(CU_OBJS) $(CPP_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
+
+test_open_zk: $(BUILD)/test/test_open_zk.o $(CU_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ -o $@
 
 # Bench targets (source in bench/)
