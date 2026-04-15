@@ -57,6 +57,10 @@ int main() {
     zkConditionalEntropy prover(vocab_size, cdf_precision, log_precision,
                                 cdf_scale, log_scale, sigma_eff);
 
+    // Throwaway hiding Pedersen pp for ZK sumchecks (tests don't chain to
+    // a real Weight).  Hyrax §3.1: (U, H) are independent random generators.
+    Commitment sc_pp = Commitment::hiding_random(1);
+
     // ── Test 1: argmax correctly identifies winner (legacy interface) ─────
     {
         auto logits = make_logits(vocab_size, /*winner=*/5, 1000L, 100L);
@@ -159,7 +163,8 @@ int main() {
             vector<Claim> claims;
             vector<Fr_t> challenges;
             vector<FriPcsCommitment> commitments;
-            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges, commitments);
+            vector<ZKSumcheckProof> zk_sumchecks;
+            prover.prove(logits, T, vocab_size, tokens, claimed, sc_pp, proof, zk_sumchecks, claims, challenges, commitments);
         } catch (const std::exception& e) {
             cerr << "  prove threw: " << e.what() << endl;
             ok = false;
@@ -202,7 +207,8 @@ int main() {
         vector<Claim> claims;
             vector<Fr_t> challenges;
             vector<FriPcsCommitment> commitments;
-            prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges, commitments);
+            vector<ZKSumcheckProof> zk_sumchecks;
+            prover.prove(logits, T, vocab_size, tokens, claimed, sc_pp, proof, zk_sumchecks, claims, challenges, commitments);
 
         // Old proof: 6 constants per position = 24 for T=4 + argmax polys.
         // New proof: argmax polys + CDF tLookup + 3 constants + log tLookup.
@@ -223,7 +229,8 @@ int main() {
         vector<Claim> claims;
         vector<Fr_t> challenges;
         vector<FriPcsCommitment> commitments;
-        prover.prove(logits, T, vocab_size, tokens, claimed, proof, claims, challenges, commitments);
+        vector<ZKSumcheckProof> zk_sumchecks;
+        prover.prove(logits, T, vocab_size, tokens, claimed, sc_pp, proof, zk_sumchecks, claims, challenges, commitments);
 
         unsigned long entropy_val =
             ((unsigned long)claimed.val[1] << 32) | claimed.val[0];

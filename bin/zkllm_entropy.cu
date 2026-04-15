@@ -34,6 +34,7 @@
 #include "zknn/zkfc.cuh"
 #include "zknn/rescaling.cuh"
 #include "proof/proof.cuh"
+#include "proof/zk_sumcheck.cuh"
 #include "commit/commitment.cuh"
 #include "util/ioutils.cuh"
 #include <iostream>
@@ -162,10 +163,18 @@ int main(int argc, char* argv[]) {
     // ── Step 5: Prove entropy (batched) ──────────────────────────────────────
     cout << "Generating entropy proof..." << endl;
     vector<Polynomial> proof;
+    vector<ZKSumcheckProof> zk_sumchecks;
     vector<Claim> entropy_claims;
     vector<Fr_t> challenges;
     vector<FriPcsCommitment> commitments;
-    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens, total_entropy, proof, entropy_claims, challenges, commitments);
+    // Pedersen generators for the ZK sumchecks come from an existing
+    // weight's pp (lm_head_w).  Phase 3 doesn't introduce a dedicated
+    // sumcheck pp — if ever needed, this is the one caller-visible site
+    // to swap.
+    entropy_prover.prove(logits_batch_, seq_len, vocab_size, tokens,
+                         total_entropy, lm_head_w.generator,
+                         proof, zk_sumchecks, entropy_claims,
+                         challenges, commitments);
 
     // Verify entropy claims against actual logits tensor
     for (auto& c : entropy_claims) {
@@ -183,8 +192,30 @@ int main(int argc, char* argv[]) {
     // ── Step 7: Prove final RMSNorm — links normed_hidden to committed W_norm ─
     cout << "Proving final RMSNorm..." << endl;
     rs_norm2.prove(normed, normed_);
-    auto u_hp = random_vec(ceilLog2(normed.size));
-    hadamard_product_sumcheck(g_inv_rms_, hidden, u_hp, random_vec(ceilLog2(normed.size)));
+    {
+        uint n_hp = ceilLog2(normed.size);
+        auto u_hp = random_vec(n_hp);
+        auto v_hp = random_vec(n_hp);
+        auto sg_hp = random_vec(n_hp * 4);  // degree-2 HP: 3 openings + 1 eq
+        // Claim S = (g_inv_rms_ ∘ hidden)(u_hp) — public via the
+        // upstream commitments.  Host-compute here so the prover can
+        // commit to it for the round-0 equality tie.
+        FrTensor h_hp = g_inv_rms_ * hidden;
+        Fr_t S_hp = h_hp(u_hp);
+        Fr_t fa, fb;
+        ZKSumcheckProverHandoff handoff_hp;
+        ZKSumcheckProof hp_proof = prove_zk_hadamard_product(
+            final_norm_w.generator.u_generator, final_norm_w.generator.hiding_generator,
+            S_hp, g_inv_rms_, hidden,
+            u_hp, v_hp, sg_hp,
+            fa, fb, handoff_hp);
+        zk_sumchecks.push_back(std::move(hp_proof));
+        challenges.insert(challenges.end(), u_hp.begin(), u_hp.end());
+        challenges.insert(challenges.end(), v_hp.begin(), v_hp.end());
+        challenges.insert(challenges.end(), sg_hp.begin(), sg_hp.end());
+        proof.push_back(Polynomial(fa));
+        proof.push_back(Polynomial(fb));
+    }
     rs_norm1.prove(g_inv_rms, g_inv_rms_);
     verifyWeightClaimZK(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
 

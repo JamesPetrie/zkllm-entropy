@@ -10,6 +10,8 @@ struct FriPcsCommitment { Hash256 root; uint32_t size; };
 #include "zknn/zklog.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
+#include "proof/zk_sumcheck.cuh"
+#include "commit/commitment.cuh"
 #include "poly/polynomial.cuh"
 
 // Zero-knowledge conditional entropy calculator (batched).
@@ -82,10 +84,22 @@ public:
     // Appends proof polynomials and returns Claims on logits_all
     // (for chaining with upstream zkFC / rescaling proofs).
     // Returns the verified entropy value H.
+    //
+    // Phase 3 (Hyrax §4): inner-product sumchecks are emitted as
+    // commit-bound ZKSumcheckProof objects (not plain Polynomial
+    // coefficients), appended to `zk_sumchecks` in call order.  The
+    // per-round Σ-protocol challenges are drawn from `random_vec` and
+    // appended to `challenges` alongside the existing sumcheck fold
+    // challenges.  `sc_pp` supplies the (U, H) Pedersen generators for
+    // the ZK sumchecks — in practice the caller passes one of the
+    // existing Weight's pp (e.g. lm_head_w.pp); if a dedicated pp is
+    // ever introduced this is the single caller-visible change.
     Fr_t prove(const FrTensor& logits_all, uint T, uint V,
                const vector<uint>& tokens,
                Fr_t claimed_entropy,
+               const Commitment& sc_pp,
                vector<Polynomial>& proof,
+               vector<ZKSumcheckProof>& zk_sumchecks,
                vector<Claim>& claims,
                vector<Fr_t>& challenges,
                vector<FriPcsCommitment>& commitments);
@@ -100,7 +114,10 @@ public:
 
     // Prove from per-position logit vectors (assembles flat tensor, delegates).
     Fr_t prove(const vector<FrTensor>& logits_seq, const vector<uint>& tokens,
-               Fr_t claimed_entropy, vector<Polynomial>& proof,
+               Fr_t claimed_entropy,
+               const Commitment& sc_pp,
+               vector<Polynomial>& proof,
+               vector<ZKSumcheckProof>& zk_sumchecks,
                vector<Claim>& claims,
                vector<Fr_t>& challenges,
                vector<FriPcsCommitment>& commitments);

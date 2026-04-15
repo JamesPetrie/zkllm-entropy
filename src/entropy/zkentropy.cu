@@ -115,18 +115,41 @@ KERNEL void entropy_bit_extract_kernel(const Fr_t* vals, Fr_t* bits_b, uint bit,
     }
 }
 
-// ── Serialize IP sumcheck proof to Polynomial vector ────────────────────────
-// inner_product_sumcheck returns vector<Fr_t>: [3 values per round] + [a(u), b(u)]
-// Convert to Polynomials: one degree-2 poly per round + 2 constant polys for finals.
+// Phase 3 (Hyrax §4 Protocol 3): replace the plain per-round Polynomial
+// serialization with a commit-bound ZK sumcheck.  The round polynomial
+// coefficients are Pedersen-committed (not sent in clear), so they no
+// longer appear as `Polynomial` entries in `proof`; instead a single
+// `ZKSumcheckProof` object per sumcheck is appended to `zk_sumchecks`.
+// The contracted finals a(r), b(r) are still emitted as constant
+// Polynomials so downstream consistency checks stay intact.  Per-round
+// Σ-protocol challenges come from `random_vec` (size n·4 for degree-2
+// IP) and are appended to `challenges` for transcript continuity.
+static void prove_ip_zk(
+    G1Jacobian_t U, G1Jacobian_t H,
+    Fr_t              claimed_S,
+    const FrTensor&   a,
+    const FrTensor&   b,
+    const vector<Fr_t>& eval_challenges,       // size n
+    vector<Polynomial>&       proof,
+    vector<ZKSumcheckProof>&  zk_sumchecks,
+    vector<Fr_t>&             challenges)
+{
+    uint n = eval_challenges.size();
+    vector<Fr_t> sigma = random_vec(n * 4);  // 3 openings + 1 eq per round
+    challenges.insert(challenges.end(), sigma.begin(), sigma.end());
 
-static void serialize_ip_sumcheck(const vector<Fr_t>& ip_proof, uint num_rounds,
-                                   vector<Polynomial>& proof) {
-    for (uint i = 0; i < num_rounds; i++) {
-        proof.push_back(Polynomial({ip_proof[3*i], ip_proof[3*i+1], ip_proof[3*i+2]}));
-    }
-    // Finals: a(u) and b(u)
-    proof.push_back(Polynomial(ip_proof[3 * num_rounds]));
-    proof.push_back(Polynomial(ip_proof[3 * num_rounds + 1]));
+    Fr_t final_a, final_b;
+    ZKSumcheckProverHandoff handoff;
+    ZKSumcheckProof p = prove_zk_inner_product(
+        U, H, claimed_S, a, b,
+        eval_challenges, sigma,
+        final_a, final_b, handoff);
+    zk_sumchecks.push_back(std::move(p));
+
+    // Finals stay as constant polynomials — downstream proof consumers
+    // still read them from `proof` in the current layout.
+    proof.push_back(Polynomial(final_a));
+    proof.push_back(Polynomial(final_b));
 }
 
 // ── Bit-decomposition non-negativity proof ──────────────────────────────────
@@ -136,7 +159,10 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
                           const vector<Fr_t>& u,
                           const vector<Fr_t>& v_bin,
                           vector<FrTensor>& bit_planes,
-                          vector<Polynomial>& proof) {
+                          G1Jacobian_t U_gen, G1Jacobian_t H_gen,
+                          vector<Polynomial>& proof,
+                          vector<ZKSumcheckProof>& zk_sumchecks,
+                          vector<Fr_t>& challenges) {
     uint N = vals.size;
     uint blocks = (N + FrNumThread - 1) / FrNumThread;
     uint log_size = v_bin.size();
@@ -172,10 +198,17 @@ static void prove_nonneg(const FrTensor& vals, uint num_bits,
         vector<Fr_t> ones_host(N, FR_FROM_INT(1));
         cudaMemcpy(ones.gpu_data, ones_host.data(), N * sizeof(Fr_t), cudaMemcpyHostToDevice);
     }
+    Fr_t fr_zero = {0,0,0,0,0,0,0,0};
     for (uint b = 0; b < num_bits; b++) {
         FrTensor b_minus_1 = bit_planes[base + b] - ones;
-        auto ip_proof = inner_product_sumcheck(bit_planes[base + b], b_minus_1, v_bin);
-        serialize_ip_sumcheck(ip_proof, log_size, proof);
+        // Claim is 0: bit plane is binary iff Σ_x B·(B-1) = 0.  The
+        // verifier-side C_0 = 0·U = identity; round-0 equality ties
+        // Σ α_k · T_1[k] to that identity, which strictly binds the
+        // zero-claim to the transcript.
+        prove_ip_zk(U_gen, H_gen, fr_zero,
+                    bit_planes[base + b], b_minus_1,
+                    v_bin, proof, zk_sumchecks, challenges);
+        (void)log_size;
     }
 }
 
@@ -279,11 +312,19 @@ Fr_t zkConditionalEntropy::prove(
     const FrTensor& logits_all, uint T, uint V,
     const vector<uint>& tokens,
     Fr_t claimed_entropy,
+    const Commitment& sc_pp,
     vector<Polynomial>& proof,
+    vector<ZKSumcheckProof>& zk_sumchecks,
     vector<Claim>& claims,
     vector<Fr_t>& challenges,
     vector<FriPcsCommitment>& commitments)
 {
+    // Pedersen generators for the ZK sumchecks (Hyrax §4 / §A.1).
+    // Named with _gen to avoid shadowing the local `Fr_t H` (the total
+    // entropy) computed below.
+    G1Jacobian_t U_gen = sc_pp.u_generator;
+    G1Jacobian_t H_gen = sc_pp.hiding_generator;
+
     if (logits_all.size != T * V)
         throw std::invalid_argument("prove: logits_all.size != T * V");
     if (tokens.size() != T)
@@ -475,8 +516,10 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_v = random_vec(ceilLog2(V));
         challenges.insert(challenges.end(), u_v.begin(), u_v.end());
-        auto ip_rowsum = inner_product_sumcheck(wp_partial, ones_V, u_v);
-        serialize_ip_sumcheck(ip_rowsum, ceilLog2(V), proof);
+        // Claim = tw_claim: Σ_x wp_partial(x)·ones_V(x) = wp_partial.sum().
+        prove_ip_zk(U_gen, H_gen, tw_claim,
+                    wp_partial, ones_V,
+                    u_v, proof, zk_sumchecks, challenges);
     }
 
     // ── 2d. Actual-token extraction proof ───────────────────────────────────
@@ -496,8 +539,10 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_ext = random_vec(ceilLog2(TV));
         challenges.insert(challenges.end(), u_ext.begin(), u_ext.end());
-        auto ip_extract = inner_product_sumcheck(win_probs_all, indicator, u_ext);
-        serialize_ip_sumcheck(ip_extract, ceilLog2(TV), proof);
+        // Claim = wp_sum: Σ_x win_probs(x)·indicator(x) = actual_wp_raw.sum().
+        prove_ip_zk(U_gen, H_gen, wp_sum,
+                    win_probs_all, indicator,
+                    u_ext, proof, zk_sumchecks, challenges);
 
         auto u_T = random_vec(ceilLog2(T));
         challenges.insert(challenges.end(), u_T.begin(), u_T.end());
@@ -537,13 +582,16 @@ Fr_t zkConditionalEntropy::prove(
         challenges.insert(challenges.end(), v_bin.begin(), v_bin.end());
 
         std::cout << "    q range proof (" << q_bits << " bits)..." << std::endl;
-        prove_nonneg(q_vec, q_bits, u_qr, v_bin, bit_planes, proof);
+        prove_nonneg(q_vec, q_bits, u_qr, v_bin, bit_planes,
+                     U_gen, H_gen, proof, zk_sumchecks, challenges);
 
         std::cout << "    r range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(r_vec, r_bits, u_qr, v_bin, bit_planes, proof);
+        prove_nonneg(r_vec, r_bits, u_qr, v_bin, bit_planes,
+                     U_gen, H_gen, proof, zk_sumchecks, challenges);
 
         std::cout << "    gap range proof (" << r_bits << " bits)..." << std::endl;
-        prove_nonneg(gap, r_bits, u_qr, v_bin, bit_planes, proof);
+        prove_nonneg(gap, r_bits, u_qr, v_bin, bit_planes,
+                     U_gen, H_gen, proof, zk_sumchecks, challenges);
     }
 
     // ── 2f. Surprise log lookup proof ───────────────────────────────────────
@@ -578,12 +626,17 @@ Fr_t zkConditionalEntropy::prove(
 
         auto u_sum = random_vec(ceilLog2(T_padded));
         challenges.insert(challenges.end(), u_sum.begin(), u_sum.end());
-        auto ip_sum = inner_product_sumcheck(surprise_sum_input, ones_T, u_sum);
-        serialize_ip_sumcheck(ip_sum, ceilLog2(T_padded), proof);
+        // Claim = claimed_entropy H: Σ_x surprise(x)·ones_T(x) = H.
+        // (Local variable `H` is the surprise sum; the Pedersen hiding
+        // generator for ZK sumchecks is `H_gen` from the top of prove()).
+        prove_ip_zk(U_gen, H_gen, H,
+                    surprise_sum_input, ones_T,
+                    u_sum, proof, zk_sumchecks, challenges);
     }
 
     std::cout << "zkConditionalEntropy::prove complete (batched, "
               << T << " positions, " << proof.size() << " polynomials, "
+              << zk_sumchecks.size() << " zk sumchecks, "
               << challenges.size() << " challenges, "
               << commitments.size() << " commitments)."
               << std::endl;
@@ -615,7 +668,9 @@ Fr_t zkConditionalEntropy::prove(
     const vector<FrTensor>& logits_seq,
     const vector<uint>& tokens,
     Fr_t claimed_entropy,
+    const Commitment& sc_pp,
     vector<Polynomial>& proof,
+    vector<ZKSumcheckProof>& zk_sumchecks,
     vector<Claim>& claims,
     vector<Fr_t>& challenges,
     vector<FriPcsCommitment>& commitments)
@@ -626,5 +681,6 @@ Fr_t zkConditionalEntropy::prove(
     uint T = logits_seq.size();
     uint V = logits_seq[0].size;
     FrTensor logits_all = catTensors(logits_seq);
-    return prove(logits_all, T, V, tokens, claimed_entropy, proof, claims, challenges, commitments);
+    return prove(logits_all, T, V, tokens, claimed_entropy, sc_pp,
+                 proof, zk_sumchecks, claims, challenges, commitments);
 }

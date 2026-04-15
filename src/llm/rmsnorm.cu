@@ -2,6 +2,7 @@
 #include "zknn/zkfc.cuh"
 #include "tensor/fr-tensor.cuh"
 #include "proof/proof.cuh"
+#include "proof/zk_sumcheck.cuh"
 #include "commit/commitment.cuh"
 #include "zknn/rescaling.cuh"
 #include <string>
@@ -45,7 +46,21 @@ int main(int argc, char *argv[])
 
     rs2.prove(Y, Y_);
     Y_.save_int(output_file_name);
-    hadamard_product_sumcheck(g_inv_rms_, X, random_vec(ceilLog2(Y.size)), random_vec(ceilLog2(Y.size)));
+    {
+        uint n_hp = ceilLog2(Y.size);
+        auto u_hp = random_vec(n_hp);
+        auto v_hp = random_vec(n_hp);
+        auto sg_hp = random_vec(n_hp * 4);
+        FrTensor h_hp = g_inv_rms_ * X;
+        Fr_t S_hp = h_hp(u_hp);
+        Fr_t fa, fb;
+        ZKSumcheckProverHandoff handoff_hp;
+        (void)prove_zk_hadamard_product(
+            rmsnorm_weight.generator.u_generator, rmsnorm_weight.generator.hiding_generator,
+            S_hp, g_inv_rms_, X,
+            u_hp, v_hp, sg_hp,
+            fa, fb, handoff_hp);
+    }
     rs1.prove(g_inv_rms, g_inv_rms_);
     verifyWeightClaimZK(rmsnorm_weight, g.prove(rms_inv_temp, g_inv_rms)[0]);
     return 0;
