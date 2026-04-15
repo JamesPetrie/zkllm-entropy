@@ -357,6 +357,145 @@ static void negatives_hadamard(uint N, G1Jacobian_t U, G1Jacobian_t H) {
     }
 }
 
+// Public claim S = (Π_k X_k)(u) for multi-Hadamard.
+static Fr_t multi_hadamard_claim(const std::vector<FrTensor>& Xs,
+                                 const std::vector<Fr_t>& u) {
+    uint N = Xs[0].size;
+    std::vector<Fr_t> prod(N);
+    for (uint i = 0; i < N; i++) {
+        Fr_t acc = Xs[0](i);
+        for (uint k = 1; k < Xs.size(); k++) acc = acc * Xs[k](i);
+        prod[i] = acc;
+    }
+    FrTensor h(N, prod.data());
+    return h(u);
+}
+
+static void positive_multi_hadamard(uint N, uint K,
+                                    G1Jacobian_t U, G1Jacobian_t H) {
+    uint n = ceil_log2(N);
+    if ((1u << n) != N) throw std::runtime_error("N must be power of 2");
+    const uint sigma_per_round = K + 2;
+
+    std::vector<FrTensor> Xs;
+    Xs.reserve(K);
+    for (uint k = 0; k < K; k++) Xs.push_back(FrTensor::random(N));
+
+    FrTensor u_t = FrTensor::random(n);
+    FrTensor v_t = FrTensor::random(n);
+    FrTensor sigmas = FrTensor::random(n * sigma_per_round);
+    std::vector<Fr_t> u, v, sg;
+    for (uint i = 0; i < n;                  i++) u.push_back(u_t(i));
+    for (uint i = 0; i < n;                  i++) v.push_back(v_t(i));
+    for (uint i = 0; i < n * sigma_per_round; i++) sg.push_back(sigmas(i));
+
+    Fr_t S = multi_hadamard_claim(Xs, u);
+
+    std::vector<Fr_t> final_Xs;
+    ZKSumcheckProverHandoff handoff;
+    auto proof = prove_zk_multi_hadamard(U, H, S, Xs, u, v, sg,
+                                         final_Xs, handoff);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "mhp N=%u K=%u: prover emits n=%u rounds", N, K, n);
+    check(proof.rounds.size() == n, buf);
+
+    for (uint j = 0; j < proof.rounds.size(); j++) {
+        snprintf(buf, sizeof(buf),
+                 "mhp N=%u K=%u: round %u has K+1=%u commitments+openings",
+                 N, K, j, K + 1);
+        check(proof.rounds[j].T.size() == K + 1 &&
+              proof.rounds[j].T_open.size() == K + 1, buf);
+    }
+
+    snprintf(buf, sizeof(buf),
+             "mhp N=%u K=%u: honest verifier accepts", N, K);
+    check(verify_zk_multi_hadamard(U, H, S, proof, K, u, v, sg), buf);
+
+    // T_final commits to Π_k X_k(v) with blinding rho_final.  The
+    // final_Xs returned by the prover are the contracted scalars
+    // X_k(v) — Phase 2 discharge folds these via proof-of-product.
+    check(final_Xs.size() == K, "mhp: final_Xs.size() == K");
+    Fr_t prod = final_Xs[0];
+    for (uint k = 1; k < K; k++) prod = prod * final_Xs[k];
+    G1Jacobian_t expected = commit_mU_rH(U, H, prod, handoff.rho_final);
+    snprintf(buf, sizeof(buf),
+             "mhp N=%u K=%u: T_final == Com(Π_k X_k(v); rho_final)", N, K);
+    check(g1_pt_eq(proof.T_final, expected), buf);
+}
+
+static void negatives_multi_hadamard(uint N, uint K,
+                                     G1Jacobian_t U, G1Jacobian_t H) {
+    uint n = ceil_log2(N);
+    if (n < 1) return;
+    const uint sigma_per_round = K + 2;
+
+    std::vector<FrTensor> Xs;
+    Xs.reserve(K);
+    for (uint k = 0; k < K; k++) Xs.push_back(FrTensor::random(N));
+
+    FrTensor u_t = FrTensor::random(n);
+    FrTensor v_t = FrTensor::random(n);
+    FrTensor sigmas = FrTensor::random(n * sigma_per_round);
+    std::vector<Fr_t> u, v, sg;
+    for (uint i = 0; i < n;                  i++) u.push_back(u_t(i));
+    for (uint i = 0; i < n;                  i++) v.push_back(v_t(i));
+    for (uint i = 0; i < n * sigma_per_round; i++) sg.push_back(sigmas(i));
+
+    Fr_t S = multi_hadamard_claim(Xs, u);
+
+    std::vector<Fr_t> final_Xs;
+    ZKSumcheckProverHandoff handoff;
+    auto good = prove_zk_multi_hadamard(U, H, S, Xs, u, v, sg,
+                                        final_Xs, handoff);
+
+    char buf[128];
+    // Tamper a coefficient commitment → per-coef opening rejects.
+    {
+        auto bad = good;
+        uint j = bad.rounds.size() / 2;
+        bad.rounds[j].T[1] = U;
+        snprintf(buf, sizeof(buf),
+                 "mhp N=%u K=%u neg: tampered T_j[1] rejected at opening",
+                 N, K);
+        check(verifier_throws([&]() {
+            return verify_zk_multi_hadamard(U, H, S, bad, K, u, v, sg);
+        }, "proof-of-opening rejected"), buf);
+    }
+    // Tamper an eq-proof response → round-to-round equality rejects.
+    {
+        auto bad = good;
+        uint j = bad.rounds.size() / 2;
+        Fr_t one = {1,0,0,0,0,0,0,0};
+        bad.rounds[j].eq_proof.z = bad.rounds[j].eq_proof.z + one;
+        snprintf(buf, sizeof(buf),
+                 "mhp N=%u K=%u neg: tampered eq_proof.z rejected", N, K);
+        check(verifier_throws([&]() {
+            return verify_zk_multi_hadamard(U, H, S, bad, K, u, v, sg);
+        }, "proof-of-equality rejected"), buf);
+    }
+    // Wrong claimed_S → round 0 ties Σα·T to S·U; any S' ≠ S fails.
+    {
+        Fr_t one = {1,0,0,0,0,0,0,0};
+        Fr_t S_wrong = S + one;
+        snprintf(buf, sizeof(buf),
+                 "mhp N=%u K=%u neg: wrong claimed_S rejected at round-0",
+                 N, K);
+        check(verifier_throws([&]() {
+            return verify_zk_multi_hadamard(U, H, S_wrong, good, K, u, v, sg);
+        }, "proof-of-equality rejected"), buf);
+    }
+    // Wrong K at verify → sigma-size precondition triggers.
+    {
+        snprintf(buf, sizeof(buf),
+                 "mhp N=%u K=%u neg: wrong K at verify rejected", N, K);
+        check(verifier_throws([&]() {
+            return verify_zk_multi_hadamard(U, H, S, good, K + 1, u, v, sg);
+        }, "sigma_challenges must have size"), buf);
+    }
+}
+
 int main() {
     Commitment pp = Commitment::hiding_random(1);
     G1Jacobian_t U = pp.u_generator;
@@ -369,9 +508,19 @@ int main() {
         positive_hadamard(N, U, H);
     }
 
+    // ── multi-HP positives at K ∈ {2, 3, 4} ──
+    for (uint K : {2u, 3u, 4u}) {
+        for (uint N : {4u, 16u, 64u}) {
+            positive_multi_hadamard(N, K, U, H);
+        }
+    }
+
     // ── negatives at one representative size ──
     negatives_inner_product(64u, U, H);
     negatives_hadamard(64u, U, H);
+    for (uint K : {2u, 3u, 4u}) {
+        negatives_multi_hadamard(64u, K, U, H);
+    }
 
     // ── composition ──
     {

@@ -24,6 +24,11 @@
 // land in incompatible forms — no per-element transform fixes both.  We
 // re-implement the binary step here with mont wraps inside the kernel.
 
+// Forward declarations of plain multi-HP kernels defined in
+// src/proof/proof.cu; reused verbatim for the ZK multi-HP driver.
+KERNEL void hadamard_split_kernel(const Fr_t* in_ptr, Fr_t* out0, Fr_t* out1, uint N_out);
+KERNEL void hadamard_reduce_kernel(const Fr_t* in_ptr, Fr_t v, Fr_t* out, uint N_out);
+
 KERNEL void Fr_bin_sc_step_zk(GLOBAL Fr_t *a,
                               GLOBAL Fr_t *out0,
                               GLOBAL Fr_t *out1,
@@ -657,5 +662,220 @@ bool verify_zk_hadamard_product(
     }
 
     assert_T_final_matches(T_prev, proof.T_final, "verify_zk_hadamard_product");
+    return true;
+}
+
+// ── Multi-Hadamard-product driver (eq-factored, degree K) ──
+//
+// Mirrors `multi_hadamard_sumchecks` in src/proof/proof.cu:220: the
+// plain driver consumes u and v back-to-front, so this ZK driver does
+// the same to keep the softmax call-site swap mechanical.
+//
+// Per round, the prover commits the K+1 coefficients of h_j(X) (degree
+// K in X), emits per-coefficient proof-of-openings, and proves the
+// round identity at commitment level:
+//   Σ α_k · T_j[k] = T_{j-1}(v_prev)
+// with α = (1, u_last, u_last, …, u_last) of length K+1 — the Libra/
+// Xie 2019 eq-factored coefficient-form identity
+//   c_0 + u_last · (c_1 + c_2 + … + c_K) = h_{j-1}(v_prev).
+//
+// Sigma-challenge layout: per round consumes K+2 challenges (K+1
+// openings + 1 equality).
+
+// α = (1, u_j, u_j, …, u_j) of length `d_plus_one` = K+1.
+static std::vector<Fr_t> multi_hp_alphas(uint d_plus_one, Fr_t u_j) {
+    std::vector<Fr_t> a(d_plus_one, u_j);
+    a[0] = Fr_t{1,0,0,0,0,0,0,0};
+    return a;
+}
+
+static void zk_multi_hp_sc_recurse(
+    G1Jacobian_t U,
+    G1Jacobian_t H,
+    const std::vector<FrTensor>& Xs,
+    std::vector<Fr_t>::const_iterator u_begin,
+    std::vector<Fr_t>::const_iterator u_end,
+    std::vector<Fr_t>::const_iterator v_begin,
+    std::vector<Fr_t>::const_iterator v_end,
+    std::vector<Fr_t>::const_iterator sigma_begin,
+    uint                                sigma_per_round,   // = K+2
+    G1Jacobian_t T_prev_eval,
+    Fr_t         rho_prev_eval,
+    std::vector<ZKSumcheckRound>& rounds_out,
+    G1Jacobian_t& T_final_out,
+    Fr_t&         rho_final_out,
+    std::vector<Fr_t>& final_Xs_out)
+{
+    if ((u_end - u_begin) != (v_end - v_begin))
+        throw std::runtime_error("zk_multi_hp_sc_recurse: |u| != |v|");
+
+    if (v_begin >= v_end) {
+        // Bottom of recursion — each X has collapsed to a singleton
+        // X_k(v_reversed).  T_prev_eval commits to the final round's
+        // h(v_last) = Π_k X_k(v_reversed) (the last round's eq factor is
+        // trivially 1 when v is unused past the last variable).
+        T_final_out   = T_prev_eval;
+        rho_final_out = rho_prev_eval;
+        final_Xs_out.clear();
+        for (auto& X : Xs) final_Xs_out.push_back(X(0));
+        return;
+    }
+
+    auto N     = Xs[0].size;
+    auto N_out = N >> 1;
+    const uint K = Xs.size();
+
+    // Split each X_k into (X0_k, X1_k) where X0_k is the low half and
+    // X1_k = high - low — matches plain `multi_hadamard_sumchecks`
+    // line 230, so the subsequent running-product loop has the same
+    // convention.
+    std::vector<FrTensor> splits0, splits1;
+    splits0.reserve(K);
+    splits1.reserve(K);
+    for (uint k = 0; k < K; k++) {
+        if (Xs[k].size != N)
+            throw std::runtime_error(
+                "zk_multi_hp_sc_recurse: Xs tensors must all have size N");
+        FrTensor X0(N_out), X1(N_out);
+        hadamard_split_kernel<<<(N_out + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+            Xs[k].gpu_data, X0.gpu_data, X1.gpu_data, N_out);
+        splits0.push_back(X0);
+        splits1.push_back(X1);
+    }
+
+    // Running-product build of `out[j]` = coefficient of X^j in
+    // Π_k ((1-X)·X_k(x', 0) + X·X_k(x', 1))
+    //   = Π_k (X0_k(x') + X · X1_k(x'))
+    // (identical to proof.cu:227-247).
+    std::vector<FrTensor> out;
+    out.reserve(K + 1);
+    out.push_back(splits0[0]);
+    out.push_back(splits1[0]);
+
+    for (uint i = 1; i < K; i++) {
+        out.push_back(out.back() * splits1[i]);
+        for (int j = (int)i; j >= 1; j--) {
+            out[j] *= splits0[i];
+            out[j] += out[j - 1] * splits1[i];
+        }
+        out[0] *= splits0[i];
+    }
+
+    // coeffs[j] = out[j](u_), where u_ = u[0..n-1) — matches the plain
+    // driver's `Polynomial(coefs)` construction for h_j.
+    std::vector<Fr_t> u_(u_begin, u_end - 1);
+    std::vector<Fr_t> coeffs;
+    coeffs.reserve(K + 1);
+    for (auto& x : out) coeffs.push_back(x(u_));
+
+    Fr_t u_last = *(u_end - 1);
+    Fr_t v_last = *(v_end - 1);
+
+    ZKRoundOutput ro = emit_zk_round(
+        U, H, coeffs,
+        multi_hp_alphas(coeffs.size(), u_last),
+        sigma_begin,
+        T_prev_eval, rho_prev_eval,
+        v_last);
+    rounds_out.push_back(ro.round);
+
+    // Fold each X_k with v_last (plain driver lines 259-266).
+    std::vector<FrTensor> Xs_new;
+    Xs_new.reserve(K);
+    for (uint k = 0; k < K; k++) {
+        FrTensor X_new(N_out);
+        hadamard_reduce_kernel<<<(N_out + FrNumThread - 1) / FrNumThread, FrNumThread>>>(
+            Xs[k].gpu_data, v_last, X_new.gpu_data, N_out);
+        Xs_new.push_back(X_new);
+    }
+
+    zk_multi_hp_sc_recurse(
+        U, H, Xs_new,
+        u_begin, u_end - 1,
+        v_begin, v_end - 1,
+        sigma_begin + sigma_per_round,
+        sigma_per_round,
+        ro.T_eval, ro.rho_eval,
+        rounds_out,
+        T_final_out, rho_final_out, final_Xs_out);
+}
+
+ZKSumcheckProof prove_zk_multi_hadamard(
+    G1Jacobian_t U,
+    G1Jacobian_t H,
+    Fr_t         claimed_S,
+    const std::vector<FrTensor>& Xs,
+    const std::vector<Fr_t>& u_challenges,
+    const std::vector<Fr_t>& v_challenges,
+    const std::vector<Fr_t>& sigma_challenges,
+    std::vector<Fr_t>&       final_Xs_out,
+    ZKSumcheckProverHandoff& handoff_out)
+{
+    if (Xs.empty())
+        throw std::runtime_error("prove_zk_multi_hadamard: Xs is empty");
+    if (u_challenges.size() != v_challenges.size())
+        throw std::runtime_error(
+            "prove_zk_multi_hadamard: |u| != |v|");
+    const uint K               = Xs.size();
+    const uint sigma_per_round = K + 2;  // K+1 openings + 1 equality
+    if (sigma_challenges.size() != u_challenges.size() * sigma_per_round)
+        throw std::runtime_error(
+            "prove_zk_multi_hadamard: sigma_challenges must have size n·(K+2)");
+
+    ZKSumcheckProof proof;
+    G1Jacobian_t T_prev   = top_level_commitment(U, claimed_S);
+    Fr_t         rho_prev = {0,0,0,0,0,0,0,0};
+
+    zk_multi_hp_sc_recurse(
+        U, H, Xs,
+        u_challenges.begin(), u_challenges.end(),
+        v_challenges.begin(), v_challenges.end(),
+        sigma_challenges.begin(),
+        sigma_per_round,
+        T_prev, rho_prev,
+        proof.rounds,
+        proof.T_final, handoff_out.rho_final, final_Xs_out);
+    return proof;
+}
+
+bool verify_zk_multi_hadamard(
+    G1Jacobian_t U,
+    G1Jacobian_t H,
+    Fr_t         claimed_S,
+    const ZKSumcheckProof& proof,
+    uint         K,
+    const std::vector<Fr_t>& u_challenges,
+    const std::vector<Fr_t>& v_challenges,
+    const std::vector<Fr_t>& sigma_challenges)
+{
+    if (K == 0)
+        throw std::runtime_error("verify_zk_multi_hadamard: K must be > 0");
+    if (u_challenges.size() != v_challenges.size())
+        throw std::runtime_error(
+            "verify_zk_multi_hadamard: |u| != |v|");
+    const uint sigma_per_round = K + 2;
+    if (sigma_challenges.size() != u_challenges.size() * sigma_per_round)
+        throw std::runtime_error(
+            "verify_zk_multi_hadamard: sigma_challenges must have size n·(K+2)");
+    if (proof.rounds.size() != u_challenges.size())
+        throw std::runtime_error(
+            "verify_zk_multi_hadamard: proof has wrong number of rounds");
+
+    G1Jacobian_t T_prev = top_level_commitment(U, claimed_S);
+
+    // u and v are consumed back-to-front, matching the prover.
+    const uint n = proof.rounds.size();
+    for (uint j = 0; j < n; j++) {
+        const uint idx = n - 1 - j;
+        T_prev = verify_zk_round(
+            U, H,
+            proof.rounds[j],
+            multi_hp_alphas(K + 1, u_challenges[idx]),
+            sigma_challenges.begin() + j * sigma_per_round,
+            T_prev,
+            v_challenges[idx]);
+    }
+
+    assert_T_final_matches(T_prev, proof.T_final, "verify_zk_multi_hadamard");
     return true;
 }

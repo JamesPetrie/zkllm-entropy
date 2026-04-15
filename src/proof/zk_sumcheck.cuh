@@ -232,4 +232,52 @@ bool verify_zk_binary(
     const std::vector<Fr_t>& eval_challenges,
     const std::vector<Fr_t>& sigma_challenges);
 
+// Multi-Hadamard sumcheck — degree-K eq-factored variant.  Proves
+// S = Σ_x eq(x, u) · Π_k X_k(x) for K multilinear tensors.
+// Mirrors `multi_hadamard_sumchecks` (src/proof/proof.cu:220) which
+// consumes u and v back-to-front; this driver does the same so the
+// swap at call sites (softmax) is mechanical.
+//
+// Round polynomial factors as g_j(X) = eq(X, u_last) · h_j(X), where
+// h_j(X) = Π_k ((1-X)·X_k(x', 0) + X·X_k(x', 1)) contracted at u_ =
+// u[0..n-1).  h_j has degree K, so the prover commits K+1
+// coefficients (c_0, …, c_K).
+//
+// Round identity (Libra/Xie et al. 2019 Appendix A):
+//   (1 - u_last) · h_j(0) + u_last · h_j(1) = h_{j-1}(v_{prev})
+// In coefficient form:
+//   c_0 + u_last · (c_1 + c_2 + … + c_K) = h_{j-1}(v_{prev})
+// At commitment level: proof-of-equality between
+//   Σ α_k · T_j[k]  with α = (1, u_last, u_last, …, u_last)
+// of length K+1, and T_{j-1}(v_{prev}).
+//
+// Per-round sigma challenges consumed: K+2 (K+1 openings + 1 equality).
+//
+// Final claim: after n rounds of folding each X_k with v.back() (plain
+// `hadamard_reduce_kernel`), each X_k collapses to a scalar X_k(v_reversed);
+// T_final commits to the last round's h(v_last), which equals
+// Π_k X_k(v_reversed) · (last round's trivial eq factor).  `final_Xs_out`
+// exposes these scalars for the caller's Phase 2 discharge via
+// proof-of-product or K-ary chaining of `verifyWeightClaimZK`.
+ZKSumcheckProof prove_zk_multi_hadamard(
+    G1Jacobian_t U,
+    G1Jacobian_t H,
+    Fr_t         claimed_S,
+    const std::vector<FrTensor>& Xs,
+    const std::vector<Fr_t>& u_challenges,      // size n — consumed back-to-front
+    const std::vector<Fr_t>& v_challenges,      // size n — consumed back-to-front
+    const std::vector<Fr_t>& sigma_challenges,  // size n·(K+2), K = Xs.size()
+    std::vector<Fr_t>&       final_Xs_out,      // size K (one per tensor)
+    ZKSumcheckProverHandoff& handoff_out);
+
+bool verify_zk_multi_hadamard(
+    G1Jacobian_t U,
+    G1Jacobian_t H,
+    Fr_t         claimed_S,
+    const ZKSumcheckProof& proof,
+    uint         K,
+    const std::vector<Fr_t>& u_challenges,
+    const std::vector<Fr_t>& v_challenges,
+    const std::vector<Fr_t>& sigma_challenges);
+
 #endif
