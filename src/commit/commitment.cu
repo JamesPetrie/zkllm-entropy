@@ -1,10 +1,98 @@
 #include "commit/commitment.cuh"
+#include "util/ioutils.cuh"
 
 Commitment Commitment::random(uint size)
 {
     Commitment out(size, G1Jacobian_generator);
     out *= FrTensor::random(size);
-    return out; 
+    return out;
+}
+
+// Pedersen hiding pp: G_i = s_i * G for i = 0..size-1, plus H = s_H * G.
+// All scalars sampled locally via FrTensor::random.
+//
+// Reference: Hyrax §3.1 (Wahby et al. 2018, eprint 2017/1132, p. 4):
+//   "Informally, a commitment scheme allows a sender to produce a message
+//    C = Com(m) that hides m from a receiver but binds the sender to the
+//    value m."
+//
+// Trust model: whoever runs this function knows every scalar {s_i, s_H}.
+// Hiding against the verifier holds regardless — the verifier never sees
+// the scalars.  Binding against an equivocating prover requires that the
+// prover not know the cross-dlogs among {G_i, H}; in this codebase that's
+// deferred to the same trusted-setup assumption that the non-hiding
+// pp already makes (zkLLM §3.4).
+Commitment Commitment::hiding_random(uint size)
+{
+    Commitment out(size, G1Jacobian_generator);
+    out *= FrTensor::random(size);
+
+    Commitment h_tmp(1, G1Jacobian_generator);
+    h_tmp *= FrTensor::random(1);
+    out.hiding_generator = h_tmp(0);
+
+    if (!out.is_hiding()) {
+        throw std::runtime_error(
+            "Commitment::hiding_random: sampled H is the G1 identity; "
+            "RNG bug or catastrophic coincidence");
+    }
+    return out;
+}
+
+bool Commitment::is_hiding() const
+{
+    // In Jacobian coordinates (X, Y, Z), Z = 0 represents the identity.
+    // Both identity conventions in this codebase (G1Jacobian_ZERO with
+    // Y=0 and blstrs__g1__G1Affine_ZERO with Y=1) share Z = 0.
+    // Fp has blstrs__fp__Fp_LIMBS = 12 u32 limbs; check every one.
+    for (uint i = 0; i < blstrs__fp__Fp_LIMBS; i++) {
+        if (hiding_generator.z.val[i] != 0) return true;
+    }
+    return false;
+}
+
+void Commitment::save_hiding(const string& pp_file) const
+{
+    // Write the G_i vector with the inherited serializer — the legacy pp
+    // file format is unchanged.
+    this->save(pp_file);
+
+    // Write H to a sidecar file.  One G1Jacobian_t on disk.
+    G1Jacobian_t* d_h;
+    cudaMalloc(&d_h, sizeof(G1Jacobian_t));
+    cudaMemcpy(d_h, &hiding_generator, sizeof(G1Jacobian_t), cudaMemcpyHostToDevice);
+    savebin(pp_file + ".h", d_h, sizeof(G1Jacobian_t));
+    cudaFree(d_h);
+}
+
+Commitment Commitment::load_hiding(const string& pp_file)
+{
+    // Load G_i via inherited ctor.  `Commitment` inherits G1TensorJacobian's
+    // string ctor, which gives a non-hiding Commitment with
+    // hiding_generator == identity.
+    Commitment out(pp_file);
+
+    string h_file = pp_file + ".h";
+    FILE* probe = fopen(h_file.c_str(), "rb");
+    if (!probe) {
+        // Legacy pp without H sidecar.  Stays non-hiding.  Upstream callers
+        // that need hiding should check is_hiding() and error out.
+        return out;
+    }
+    fclose(probe);
+
+    if (findsize(h_file) != sizeof(G1Jacobian_t)) {
+        throw std::runtime_error(
+            "Commitment::load_hiding: H sidecar file has unexpected size: " + h_file);
+    }
+
+    G1Jacobian_t* d_h;
+    cudaMalloc(&d_h, sizeof(G1Jacobian_t));
+    loadbin(h_file, d_h, sizeof(G1Jacobian_t));
+    cudaMemcpy(&out.hiding_generator, d_h, sizeof(G1Jacobian_t), cudaMemcpyDeviceToHost);
+    cudaFree(d_h);
+
+    return out;
 }
 
 // KERNEL void com_sum_row_kernel(const G1Jacobian_t* arr, G1Jacobian_t* arr_out, uint m, uint n) {
