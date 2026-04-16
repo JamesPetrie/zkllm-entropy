@@ -1859,6 +1859,118 @@ The tLookup ZK round overhead (Phase 3 Step 5) is included above.  ⚠ The commi
 final evaluations (Phase 4) would add additional ZK opening proofs per tLookup
 invocation.
 
+### 12.6 Claims
+
+The §12 pipeline composes seven sub-protocols. Stage claims (2a–2g) are
+not each promoted to a named ID — per the "claim-worthiness rule", only
+sub-protocols with unique algebraic identities that don't already have a
+primitive claim get their own ID. That means:
+
+- **2a / 2f** delegate to `C-NORMCDF-*` / `C-LOG-*` (no new IDs).
+- **2c / 2d / 2g** delegate to `C-SC-ZK-*` via `prove_ip_zk` (no new IDs).
+- **2b (diffs-to-logits linking)** introduces a unique SZ identity — new
+  IDs `C-LINK-COMPLETE/SOUND/ZK`.
+- **2e (quotient-remainder division)** introduces a unique division
+  relation + ranges composition — new IDs `C-DIV-COMPLETE/SOUND/ZK`.
+
+The two raw-evaluation gaps (2b linking evals, 2e division evals) land as
+separate UNJUSTIFIED leaves so they're visible by ID in the walker's
+blocked-upstream report, but they're not F1 or F2 — they're Phase-4 work
+items distinct from those two gaps. The composed claims `C-ENTROPY-{COMPLETE,
+SOUND, ZK}` then AND_OF over the per-stage claims; walker propagation does
+the rest.
+
+```claim
+id: C-LINK-COMPLETE
+statement: Stage 2b (diffs-to-logits linking) is complete — the multilinear identity d̃(u) + ℓ̃(u) = ṽ*(u_T) · 1̃_V(u_V) holds by construction for any honest prover, so Schwartz-Zippel at random u accepts with probability 1.
+justifiedBy:
+  - CODE(src/entropy/zkentropy.cu + test/test_entropy_zk_pipeline.cu)
+status: justified
+```
+
+```claim
+id: C-LINK-SOUND
+statement: Stage 2b soundness error ≤ log(TV)/|F| — Schwartz-Zippel on the multilinear identity d + ℓ = v* · 1_V; if any of (d, ℓ, v*) is inconsistent with the others the identity fails as a polynomial and is missed only at ≤ log(TV) points out of |F|.
+justifiedBy:
+  - CODE(src/entropy/zkentropy.cu + test/test_entropy_zk_pipeline.cu)
+status: justified
+```
+
+```claim
+id: C-LINK-ZK
+statement: Stage 2b linking transcript reveals nothing about (diffs, logits, v*) beyond what the public H and the committed tensors imply — i.e. diffs and v* are committed and the linking identity is discharged via a Σ-protocol on the committed sum rather than by sending raw MLE evaluations.
+justifiedBy:
+  - UNJUSTIFIED(Stage 2b currently sends d̃(u), ℓ̃(u), ṽ*(u_T) as raw scalars (§12.1 Stage 2b ⚠ "Sends d̃(u), ℓ̃(u), ṽ*(u_T) in the clear. The logits evaluation ℓ̃(u) leaks one scalar about the weight matrix." §12.4 row 2b: "Not ZK"). This is a Phase-4 gap distinct from F1/F2: closure commits to diffs and v* and replaces raw evals with a Σ-protocol on the committed zero-claim d + ℓ - v*·1_V = 0 at u.)
+status: open
+```
+
+```claim
+id: C-DIV-COMPLETE
+statement: Stage 2e (quotient-remainder division) is complete — the division relation q·tw + r = w_sel · 2^p holds identically for an honest prover who computes q, r via integer floor division, and the three range proofs (q, r, tw-r-1) succeed when all range conditions hold.
+combinator: AND_OF
+justifiedBy:
+  - C-SC-ZK-COMPLETE
+status: justified
+```
+
+```claim
+id: C-DIV-SOUND
+statement: Stage 2e soundness — division relation SZ error ≤ 1/|F|, plus 66 binary-range ZK IP sumchecks (p+1 bits for q, B bits for r, B bits for tw-r-1) each bounded by C-SC-ZK-SOUND. Total ≤ (1 + 66 · 2n_T)/|F|.
+combinator: AND_OF
+justifiedBy:
+  - C-SC-ZK-SOUND
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-DIV-ZK
+statement: Stage 2e division transcript reveals nothing beyond public inputs — q, r, tw, and bit planes are committed; division relation SZ check and bit-reconstruction checks are discharged as committed relations via ZK openings rather than raw scalars.
+justifiedBy:
+  - UNJUSTIFIED(Stage 2e currently sends q̃·tw̃(u), r̃(u), w̃_p(u), and bit-plane evaluations bit_b ̃(u) as raw scalars (§12.1 Stage 2e ⚠ "q̃·tw̃(u), r̃(u), w̃_p(u) are sent as raw evaluations. The bit-plane evaluations bit_b ̃(u) are also sent in the clear." §12.4 row 2e: "Binary checks ZK; division relation + bit evals not ZK"). The binary-range ZK IP sumchecks themselves are ZK (✓) via prove_ip_zk; only the final-evaluation discharge is missing. This is a Phase-4 gap distinct from F1/F2; closure commits to q, r, tw, bit planes and replaces raw evals with ZK openings + committed-relation checks.)
+status: open
+```
+
+```claim
+id: C-ENTROPY-COMPLETE
+statement: The composed entropy pipeline (§12, stages 2a–2g) is complete — each sub-protocol accepts honest transcripts, and the claim chaining between stages is identity-preserving (row-sum tw, token extraction w_sel, division q, log lookup surprise, summation H are all computed identically by the prover and checked at random challenge points).
+combinator: AND_OF
+justifiedBy:
+  - C-NORMCDF-COMPLETE
+  - C-LINK-COMPLETE
+  - C-SC-ZK-COMPLETE
+  - C-DIV-COMPLETE
+  - C-LOG-COMPLETE
+status: justified
+```
+
+```claim
+id: C-ENTROPY-SOUND
+statement: The composed entropy pipeline soundness error ≤ 2^26/|F| ≈ 2^-229 at T=1024, V=32000 — union bound over stages 2a–2g (§12.2 table), dominated by the CDF tLookup's D+N = 2^25 term.
+combinator: SEQUENTIAL_COMPOSITION
+justifiedBy:
+  - C-NORMCDF-SOUND
+  - C-LINK-SOUND
+  - C-SC-ZK-SOUND
+  - C-DIV-SOUND
+  - C-LOG-SOUND
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-ENTROPY-ZK
+statement: The composed entropy pipeline transcript is informally zero-knowledge — every stage's transcript is either ZK-wrapped by the primitives it uses (2c/2d/2g via prove_ip_zk, 2a/2f via C-TLOOKUP-ZK-INFORMAL, 2e binary checks via prove_ip_zk) or discharged via Σ-protocol/ZK opening (2b, 2e finals, 2a/2f finals).
+combinator: AND_OF
+justifiedBy:
+  - C-NORMCDF-ZK-INFORMAL
+  - C-LINK-ZK
+  - C-SC-ZK-INFORMAL
+  - C-DIV-ZK
+  - C-LOG-ZK-INFORMAL
+status: open
+```
+
 ---
 
 ## 13. Upstream Layers (zkFC + Rescaling for lm_head)
@@ -1903,6 +2015,102 @@ layer contributes $\leq 2^{-229}$; with ~5 layers, total error $\leq 5 \times 2^
 - RMSNorm HP: ✓ uses `prove_zk_hadamard_product` (Phase 3 Step 2)
 - Entropy pipeline: ⚠ partial (see §12.4) — IP/HP sumchecks and tLookup rounds ZK;
   linking evals, division evals, and tLookup finals still in clear
+
+### 13.1 Claims
+
+The two headline claims live here. `C-END2END-SOUND` bottoms out at
+PAPER + ASSUMPTION leaves only (no UNJUSTIFIED) — this is deliberate and
+matches the plan's acceptance criterion that soundness is claimed
+cleanly. `C-END2END-ZK` decomposes into three sub-trees:
+
+1. **`C-ENTROPY-ZK`** (§12.6) — blocked by 2b linking, 2e division, and
+   tLookup-finals Phase-4 items.
+2. **`C-LMHEAD-ZK`** — blocked by **F1** (`C-ZKFC-ZK` UNJUSTIFIED leaf,
+   `src/zknn/zkfc.cu:142-152` plain `zkip`).
+3. **`C-SC-TO-OPEN-COMPOSITION`** — blocked by **F2** (sumcheck driver
+   doesn't discharge terminal ⟨L, R⟩ claim via Figure 6 opening).
+
+So the walker's blocked-upstream report on `C-END2END-ZK` lists
+`C-ZKFC-ZK` (carrying F1), `C-SC-TO-OPEN-COMPOSITION` (carrying F2), plus
+the Phase-4 + Phase-5 gaps — satisfying the M4 exit criterion: every
+unjustified cell traces to F1, F2, or a named Phase-5 follow-up.
+
+```claim
+id: C-SC-TO-OPEN-COMPOSITION
+statement: For every ZK sumcheck terminal reduction, the final ⟨L, R⟩ claim (or equivalent dot-product) is discharged via Hyrax §A.2 Figure 6 ZK opening against the committed witness vectors, so the sumcheck transcript never reveals terminal evaluations in the clear.
+justifiedBy:
+  - UNJUSTIFIED(This is gap F2 from plans/zkllm-entropy/phase-3-zk-sumcheck.md: the §A.2 Figure 6 primitive was shipped in Phase 2 (C-OPEN-COMPLETE / C-OPEN-SOUND / C-OPEN-HVZK all justified), but src/proof/zk_sumcheck.cu's driver does not invoke it at the end of each round chain — terminal sumcheck values are currently emitted as raw scalars (or as a plain dot-product check) rather than discharged via a ZK opening. Closure wires the existing Figure 6 primitive into the sumcheck driver's final reduction and threads the terminal claim through a committed opening. This is distinct from F1 (which is about zkFC's choice of plain zkip vs prove_ip_zk, not the terminal reduction) and from the tLookup Phase-4 final-eval gap (which is about tLookup's internal A(u)/S(u)/m(v), not the sumcheck ⟨L,R⟩ claim).)
+status: open
+```
+
+```claim
+id: C-LMHEAD-COMPLETE
+statement: The lm_head sub-pipeline is complete — RMSNorm Rescaling proof and lm_head zkFC proof both accept honest transcripts, and the weight-claim chain (zkFC → Figure 6 ZK opening against committed W_lm) completes with probability 1 for honest provers.
+combinator: AND_OF
+justifiedBy:
+  - C-ZKFC-COMPLETE
+  - C-RESCALE-COMPLETE
+  - C-OPEN-COMPLETE
+  - C-PED-COMPLETE
+status: justified
+```
+
+```claim
+id: C-LMHEAD-SOUND
+statement: The lm_head sub-pipeline soundness composes zkFC, Rescaling (RMSNorm), Figure 6 opening, and Pedersen binding on weight commitments — Hyrax Theorem 2 covers the layered composition under the Pedersen / proof-of-opening / proof-of-equality assumptions already discharged by C-PED-BIND and C-OPEN-SOUND.
+combinator: THEOREM(Hyrax Theorem 2)
+justifiedBy:
+  - C-ZKFC-SOUND
+  - C-RESCALE-SOUND
+  - C-OPEN-SOUND
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-LMHEAD-ZK
+statement: The lm_head sub-pipeline transcript is zero-knowledge — zkFC sumcheck is ZK-wrapped (C-ZKFC-ZK), Rescaling is ZK (C-RESCALE-ZK), and the weight claim is discharged via Figure 6 ZK opening (C-OPEN-HVZK) against the perfectly-hiding weight commitment (C-PED-HIDE).
+combinator: AND_OF
+justifiedBy:
+  - C-ZKFC-ZK
+  - C-RESCALE-ZK
+  - C-OPEN-HVZK
+  - C-PED-HIDE
+status: open
+```
+
+```claim
+id: C-END2END-COMPLETE
+statement: The end-to-end zkllm-entropy proof is complete — weight commitments, lm_head (RMSNorm + zkFC + ZK opening), and the §12 entropy pipeline all accept honest transcripts, with claim chaining (logits from lm_head into stage 2b) identity-preserving.
+combinator: AND_OF
+justifiedBy:
+  - C-LMHEAD-COMPLETE
+  - C-ENTROPY-COMPLETE
+status: justified
+```
+
+```claim
+id: C-END2END-SOUND
+statement: The end-to-end zkllm-entropy proof is sound — total soundness error ≤ 5 · 2^-229 ≈ 2^-227 via union bound over lm_head and entropy-pipeline layers (§13), under the assumption that discrete logarithm is hard in BLS12-381 G1 at λ ≈ 128.
+combinator: THEOREM(Hyrax Theorem 2)
+justifiedBy:
+  - C-LMHEAD-SOUND
+  - C-ENTROPY-SOUND
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-END2END-ZK
+statement: The end-to-end zkllm-entropy proof is zero-knowledge (informal) — the transcript leaks nothing beyond the public H, weight commitments, and challenge points, under the composition of per-layer ZK claims plus the sumcheck-to-opening discharge that closes each sumcheck's terminal reduction into a Figure 6 ZK opening.
+combinator: AND_OF
+justifiedBy:
+  - C-LMHEAD-ZK
+  - C-ENTROPY-ZK
+  - C-SC-TO-OPEN-COMPOSITION
+  - C-SC-ZK-FORMAL
+status: open
+```
 
 ---
 
