@@ -3,6 +3,8 @@
 
 #include "zknn/tlookup.cuh"
 #include "zknn/zkfc.cuh"
+#include "proof/zk_sumcheck.cuh"
+#include "commit/commitment.cuh"
 
 class zkSoftmax {
     public:
@@ -13,8 +15,10 @@ class zkSoftmax {
     Fr_t prove(const FrTensor& Y, const FrTensor& X, const FrTensor& shift, const FrTensor& X_shifted,
         const vector<FrTensor>& X_segments, const vector<FrTensor>& Y_segments, const vector<FrTensor>& m_segments,
         const vector<Fr_t>& u_Y, const vector<Fr_t>& v_Y,
-        const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
-        vector<Polynomial>& proof);
+        const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
+        const Commitment& sc_pp,
+        vector<Polynomial>& proof,
+        vector<ZKSumcheckProof>& zk_sumchecks);
 
     protected:
     const vector<uint> bs;
@@ -40,14 +44,17 @@ class zkAttn : public zkSoftmax {
     Fr_t prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
         const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
-        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out, 
-        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
+        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out,
+        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
         const vector<Fr_t>& v_matmul_in,
-        vector<Polynomial>& proof);
+        const Commitment& sc_pp,
+        vector<Polynomial>& proof,
+        vector<ZKSumcheckProof>& zk_sumchecks);
 
     vector<Claim> prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
-        const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments);
+        const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
+        const Commitment& sc_pp);
 };
 
 class zkAttnStacked : public zkAttn {
@@ -58,14 +65,17 @@ class zkAttnStacked : public zkAttn {
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
         const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
         const vector<Fr_t>& u_matmul_out_num, const vector<Fr_t>& v_matmul_out_num,
-        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out, 
-        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
+        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out,
+        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
         const vector<Fr_t>& v_matmul_in_num, const vector<Fr_t>& v_matmul_in,
-        vector<Polynomial>& proof );
+        const Commitment& sc_pp,
+        vector<Polynomial>& proof,
+        vector<ZKSumcheckProof>& zk_sumchecks);
 
     vector<Claim> prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
-        const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments);
+        const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
+        const Commitment& sc_pp);
 
     protected:
     const uint num;

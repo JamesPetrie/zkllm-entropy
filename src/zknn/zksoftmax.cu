@@ -173,14 +173,33 @@ Fr_t zkSoftmax::prove(const FrTensor& Y, const FrTensor& X, const FrTensor& shif
     const vector<FrTensor>& X_segments, const vector<FrTensor>& Y_segments, const vector<FrTensor>& m_segments,
     const vector<Fr_t>& u_Y, const vector<Fr_t>& v_Y,
     const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
-    vector<Polynomial>& proof)
+    const Commitment& sc_pp,
+    vector<Polynomial>& proof,
+    vector<ZKSumcheckProof>& zk_sumchecks)
 {
     uint N = Y.size;
     if (X.size != N) throw std::invalid_argument("X and Y must have the same size "+to_string(X.size)+" "+to_string(Y.size));
-    
-    // Y and Y_segments 
+
+    // Y and Y_segments: Hadamard product of K = Y_segments.size() tensors.
+    // Hyrax §4 Protocol 3 (Wahby et al. 2018) commit-bound multi-HP sumcheck
+    // with K+2 sigma challenges per round (K+1 openings + 1 equality); the
+    // σ-protocol challenges are appended to `proof` via the ZK driver's
+    // Fiat-Shamir. `final_Xs_out` exposes the K per-tensor scalars for
+    // downstream proof-of-product discharge (Phase 4+).
     auto claim_Y = Y(u_Y);
-    auto claim_Y_segs = multi_hadamard_sumchecks(claim_Y, Y_segments, u_Y, v_Y, proof);
+    {
+        uint n_round = u_Y.size();
+        uint K_hp = (uint)Y_segments.size();
+        auto sigma_hp = random_vec(n_round * (K_hp + 2));
+        vector<Fr_t> final_Xs_out;
+        ZKSumcheckProverHandoff handoff_hp;
+        ZKSumcheckProof p_hp = prove_zk_multi_hadamard(
+            sc_pp.u_generator, sc_pp.hiding_generator,
+            claim_Y, Y_segments, u_Y, v_Y, sigma_hp,
+            final_Xs_out, handoff_hp);
+        zk_sumchecks.push_back(std::move(p_hp));
+        for (const Fr_t& fx : final_Xs_out) proof.push_back(Polynomial(fx));
+    }
     vector<Fr_t> claim_lus;
     
 
@@ -235,7 +254,8 @@ FrTensor zkAttn::compute(const FrTensor& Q, const FrTensor& K, const FrTensor& V
 
 vector<Claim> zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
-        const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments)
+        const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
+        const Commitment& sc_pp)
 {
     auto u_matmul_out = random_vec(ceilLog2(m));
     auto v_matmul_out = random_vec(ceilLog2(n));
@@ -246,8 +266,9 @@ vector<Claim> zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor
     auto &r_seg = temp_rand[0], &alpha_seg = temp_rand[1], &beta_seg = temp_rand[2];
     auto v_matmul_in = random_vec(ceilLog2(d));
     vector<Polynomial> proof;
-    this -> prove(Q, K, V, out, sm_out, sm_in, sm_shift, sm_in_shifted, sm_in_segments, sm_out_segments, sm_m_segments, 
-        u_matmul_out, v_matmul_out, w_matmul_out, v_sm, r_seg, alpha_seg, beta_seg, v_matmul_in, proof);
+    vector<ZKSumcheckProof> zk_sumchecks;
+    this -> prove(Q, K, V, out, sm_out, sm_in, sm_shift, sm_in_shifted, sm_in_segments, sm_out_segments, sm_m_segments,
+        u_matmul_out, v_matmul_out, w_matmul_out, v_sm, r_seg, alpha_seg, beta_seg, v_matmul_in, sc_pp, proof, zk_sumchecks);
     cout << "zkAttn proof complete." << endl;
     return {};
 }
@@ -255,10 +276,12 @@ vector<Claim> zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor
 Fr_t zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, const FrTensor& out,
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
         const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
-        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out, 
-        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
+        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out,
+        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
         const vector<Fr_t>& v_matmul_in,
-        vector<Polynomial>& proof)
+        const Commitment& sc_pp,
+        vector<Polynomial>& proof,
+        vector<ZKSumcheckProof>& zk_sumchecks)
 {
     auto out_claim = out.multi_dim_me({u_matmul_out, w_matmul_out}, {m, d});
     auto out_vec0 = sm_out.partial_me(u_matmul_out, m, n);
@@ -273,7 +296,7 @@ Fr_t zkAttn::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& V, cons
     if (out_matmul_claim != V_claim * sm_out_claim) throw std::runtime_error("out_matmul_claim is not correct");
 
     auto sm_in_claim = zkSoftmax::prove(sm_out, sm_in, sm_shift, sm_in_shifted, sm_in_segments, sm_out_segments, sm_m_segments,
-        concatenate<Fr_t>({v_matmul_out, u_matmul_out}), v_sm, r_seg, alpha_seg, beta_seg, proof);
+        concatenate<Fr_t>({v_matmul_out, u_matmul_out}), v_sm, r_seg, alpha_seg, beta_seg, sc_pp, proof, zk_sumchecks);
 
     vector<Fr_t> u_matmul_in (v_sm.end() - ceilLog2(m), v_sm.end());
     vector<Fr_t> w_matmul_in (v_sm.begin(), v_sm.end() - ceilLog2(m)); 
@@ -289,10 +312,12 @@ Fr_t zkAttnStacked::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& 
         const FrTensor& sm_out, const FrTensor& sm_in, const FrTensor& sm_shift, const FrTensor& sm_in_shifted,
         const vector<FrTensor>& sm_in_segments, const vector<FrTensor>& sm_out_segments, const vector<FrTensor>& sm_m_segments,
         const vector<Fr_t>& u_matmul_out_num, const vector<Fr_t>& v_matmul_out_num,
-        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out, 
-        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg, 
+        const vector<Fr_t>& u_matmul_out, const vector<Fr_t>& v_matmul_out, const vector<Fr_t>& w_matmul_out,
+        const vector<Fr_t>& v_sm, const Fr_t& r_seg, const Fr_t& alpha_seg, const Fr_t& beta_seg,
         const vector<Fr_t>& v_matmul_in_num, const vector<Fr_t>& v_matmul_in,
-        vector<Polynomial>& proof )
+        const Commitment& sc_pp,
+        vector<Polynomial>& proof,
+        vector<ZKSumcheckProof>& zk_sumchecks)
 {
     auto out_claim = out.multi_dim_me({u_matmul_out_num, u_matmul_out, w_matmul_out}, {num, m, d});
     
@@ -306,7 +331,7 @@ Fr_t zkAttnStacked::prove(const FrTensor& Q, const FrTensor& K, const FrTensor& 
     if (out_matmul_claim != V_claim * sm_out_claim) throw std::runtime_error("out_matmul_claim is not correct");
 
     auto sm_in_claim = zkSoftmax::prove(sm_out, sm_in, sm_shift, sm_in_shifted, sm_in_segments, sm_out_segments, sm_m_segments,
-        concatenate<Fr_t>({v_matmul_out, u_matmul_out, v_matmul_out_num}), v_sm, r_seg, alpha_seg, beta_seg, proof);
+        concatenate<Fr_t>({v_matmul_out, u_matmul_out, v_matmul_out_num}), v_sm, r_seg, alpha_seg, beta_seg, sc_pp, proof, zk_sumchecks);
 
     vector<Fr_t> u_matmul_in_num (v_sm.end() - ceilLog2(num), v_sm.end());
     vector<Fr_t> u_matmul_in (v_sm.end() - ceilLog2(num) - ceilLog2(m), v_sm.end() - ceilLog2(num));

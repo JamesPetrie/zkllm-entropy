@@ -104,8 +104,14 @@ int main(int argc, char *argv[])
         auto claim = out.multi_dim_me({u1, u2}, {seq_len, d});
         auto final_claim = zkip(claim, Y.partial_me(u1, seq_len, seq_len), V.partial_me(u2, d, 1), ud, proof);
 
-        softmax.prove(Y, X, shift, X_shifted, X_segments, Y_segments, m_segments, 
-        random_vec(ceilLog2(Y.size)), random_vec(ceilLog2(Y.size)), temp_rand[0], temp_rand[1], temp_rand[2], proof);
+        // Throwaway hiding Pedersen pp for ZK sumchecks (self-attn is a demo
+        // driver with no upstream Weight for the softmax step).  Hyrax §3.1:
+        // (U, H) are independent random generators.
+        Commitment sm_pp = Commitment::hiding_random(1);
+        vector<ZKSumcheckProof> sm_zk_sumchecks;
+        softmax.prove(Y, X, shift, X_shifted, X_segments, Y_segments, m_segments,
+        random_vec(ceilLog2(Y.size)), random_vec(ceilLog2(Y.size)), temp_rand[0], temp_rand[1], temp_rand[2],
+        sm_pp, proof, sm_zk_sumchecks);
         auto u1_ = random_vec(ceilLog2(seq_len));
         auto u2_ = random_vec(ceilLog2(seq_len));
         auto ud_ = random_vec(ceilLog2(d));
