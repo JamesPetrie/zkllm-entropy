@@ -61,7 +61,25 @@ FrTensor zkFC::operator()(const FrTensor& X) const { // X.size is batch_size * i
 }
 
 
-vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y) const
+// Phase 3 F1 closure (Hyrax §4 Protocol 3).  Replaces the plain
+// `zkip` call with `prove_zk_inner_product`: the per-round sumcheck
+// polynomial coefficients are Pedersen-committed and tied to the
+// previous round's evaluation commitment via Hyrax §A.1 Σ-protocols
+// instead of being transmitted in the clear.  Sigma challenges (4 per
+// round for degree-2 IP: 3 openings + 1 eq) are sampled here and
+// appended to `challenges` alongside (u_batch, u_input, u_output) so
+// the Fiat-Shamir-style transcript continuity matches the rest of
+// src/entropy/zkentropy.cu (see `prove_ip_zk`, zkentropy.cu:127-153).
+//
+// The committed transcript lands in `zk_sumchecks`; the final
+// contracted scalars a(u_input), b(u_input) are still recomputed on
+// the prover side and cross-checked against `final_a * final_b` from
+// the driver, which preserves the pre-existing invariant
+// `claim_X * claim_W == final_claim`.
+vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y,
+                          G1Jacobian_t U, G1Jacobian_t H,
+                          vector<ZKSumcheckProof>& zk_sumchecks,
+                          vector<Fr_t>& challenges) const
 {
     if (has_bias) throw std::runtime_error("Cleaned-up version not implemented for zkFC with bias. Use zkFCStacked instead.");
     uint batchSize = X.size / inputSize;
@@ -69,24 +87,45 @@ vector<Claim> zkFC::prove(const FrTensor& X, const FrTensor& Y) const
     auto u_input = random_vec(ceilLog2(inputSize));
     auto u_output = random_vec(ceilLog2(outputSize));
 
-    
-
     auto claim = Y.multi_dim_me({u_batch, u_output}, {batchSize, outputSize});
 
     auto X_reduced = X.partial_me(u_batch, batchSize, inputSize);
-    auto W_reduced = weights.partial_me(u_output, outputSize, 1); // Y_reduced: num * inputSize
-    vector<Polynomial> proof;
-    auto final_claim = zkip(claim, X_reduced, W_reduced, u_input, proof);
+    auto W_reduced = weights.partial_me(u_output, outputSize, 1);
+
+    // ZK inner-product sumcheck in place of the plain `zkip`.
+    uint n = u_input.size();
+    vector<Fr_t> sigma = random_vec(n * 4);  // degree-2 IP: 3 openings + 1 eq per round
+
+    Fr_t final_a, final_b;
+    ZKSumcheckProverHandoff handoff;
+    ZKSumcheckProof p = prove_zk_inner_product(
+        U, H, claim, X_reduced, W_reduced,
+        u_input, sigma, final_a, final_b, handoff);
+    zk_sumchecks.push_back(std::move(p));
+
+    // Transcript continuity — append all fresh challenges sampled inside
+    // this prove call.  Mirrors src/llm/rmsnorm.cu's hadamard-product
+    // pattern (u_hp, v_hp, sg_hp all appended).
+    challenges.insert(challenges.end(), u_batch.begin(), u_batch.end());
+    challenges.insert(challenges.end(), u_input.begin(), u_input.end());
+    challenges.insert(challenges.end(), u_output.begin(), u_output.end());
+    challenges.insert(challenges.end(), sigma.begin(), sigma.end());
+
     auto claim_X = X.multi_dim_me({u_batch, u_input}, {batchSize, inputSize});
     auto claim_W = weights.multi_dim_me({u_input, u_output}, {inputSize, outputSize});
-    if (claim_X * claim_W != final_claim) {
+
+    // Sanity: driver's contracted finals must match the direct
+    // multilinear evaluations.  Preserves the original invariant
+    // `claim_X * claim_W == final_claim` pre-migration.
+    if (final_a != claim_X)   throw std::runtime_error("zkFC::prove: final_a != claim_X");
+    if (final_b != claim_W)   throw std::runtime_error("zkFC::prove: final_b != claim_W");
+    if (claim_X * claim_W != final_a * final_b) {
         throw std::runtime_error("Claim does not match");
     }
+
     vector<Claim> claims;
-    //Claim output_claim = {claim_W, &weights, vector<vector<Fr_t>>({u_input, u_output}), vector<uint>({inputSize, outputSize})};
     claims.push_back({claim_W, vector<vector<Fr_t>>({u_input, u_output}), vector<uint>({inputSize, outputSize})});
     return claims;
-
 }
 
 

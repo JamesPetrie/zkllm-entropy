@@ -78,18 +78,28 @@ int main(int argc, char *argv[])
     // Throwaway hiding Pedersen pp for ZK rescaling/lookup proofs.
     Commitment ffn_pp = Commitment::hiding_random(1);
     vector<ZKSumcheckProof> ffn_zk_sumchecks;
+    vector<Fr_t> ffn_challenges;
 
     down_rescale.prove(down_out, down_out_, ffn_pp, ffn_zk_sumchecks);
-    verifyWeightClaimZK(down_proj, down_layer.prove(down_in_, down_out)[0]);
+    verifyWeightClaimZK(down_proj, down_layer.prove(
+        down_in_, down_out,
+        down_proj.generator.u_generator, down_proj.generator.hiding_generator,
+        ffn_zk_sumchecks, ffn_challenges)[0]);
 
     hidden_rescale.prove(down_in, down_in_, ffn_pp, ffn_zk_sumchecks);
     swiglu.prove(gate_out_, swiglu_out, swiglu_m, temp_rand[0], temp_rand[1], temp_rand[2], swiglu_u, swiglu_v, ffn_pp, swiglu_proof, ffn_zk_sumchecks);
     cout << "SwiGLU proof complete." << endl;
     gate_rescale.prove(gate_out, gate_out_, ffn_pp, ffn_zk_sumchecks);
-    verifyWeightClaimZK(gate_proj, gate_layer.prove(input, gate_out)[0]);
+    verifyWeightClaimZK(gate_proj, gate_layer.prove(
+        input, gate_out,
+        gate_proj.generator.u_generator, gate_proj.generator.hiding_generator,
+        ffn_zk_sumchecks, ffn_challenges)[0]);
 
     up_rescale.prove(up_out, up_out_, ffn_pp, ffn_zk_sumchecks);
-    verifyWeightClaimZK(up_proj, up_layer.prove(input, up_out)[0]);
+    verifyWeightClaimZK(up_proj, up_layer.prove(
+        input, up_out,
+        up_proj.generator.u_generator, up_proj.generator.hiding_generator,
+        ffn_zk_sumchecks, ffn_challenges)[0]);
 
     
 
