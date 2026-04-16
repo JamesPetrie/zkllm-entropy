@@ -1047,6 +1047,81 @@ equivalent (0.07% of the $3.6 \times 10^9$ field cost).
 `src/zknn/tlookup.cu`: `tLookup::prove`, `tLookup_phase1`, `tLookup_phase2`,
 `tLookupRange`, `tLookupRangeMapping::prove`.
 
+### 6.5 Claims
+
+The tLookup ZK story splits three ways, mirroring §5.8 but with an extra
+gap for the still-clear final evaluations. `C-TLOOKUP-ZK-ROUND-POLYS`
+captures what Phase 3 Step 5 shipped (round polynomials Pedersen-committed
+via `emit_zk_round`). `C-TLOOKUP-ZK-FINAL-EVALS` is the ⚠ in §6.2: the
+final scalars $A(u), S(u), m(v)$ still leak, which is a Phase 4 item.
+`C-TLOOKUP-ZK-INFORMAL` conjoins the two, so the walker surfaces the
+Phase-4 gap as an UNJUSTIFIED leaf blocking anything that claims tLookup
+is informally ZK. `C-TLOOKUP-ZK-FORMAL` is the Phase-5 formal-simulator
+gap (same milestone as `C-SC-ZK-FORMAL`).
+
+```claim
+id: C-TLOOKUP-COMPLETE
+statement: tLookup (LogUp-based lookup, zkLLM §4.2) is complete — if S ⊂ T with stated multiplicities m, both phases of the sumcheck pass, with completeness error O(N/|F|) arising from Schwartz-Zippel checks at random evaluation points.
+justifiedBy:
+  - PAPER(zkLLM Theorem 7.2, Sun et al. 2024: "Assuming the verifier V is semi-honest, Protocol 1 incurs a completeness error of O(N/|F|).")
+  - CODE(src/zknn/tlookup.cu + test/test_zknormalcdf.cu)
+status: justified
+```
+
+```claim
+id: C-LOGUP-IDENTITY
+statement: The LogUp rational-function identity reduces S ⊂ T to an equality of degree-(D+N) rational functions in β, false with probability ≤ (D+N)/|F| at a random β when the lookup relation fails.
+justifiedBy:
+  - PAPER(zkLLM Lemma 4.1, Sun et al. 2024: "S ⊂ T as sets if and only if there exists m ∈ F^N such that Σ_{i ∈ [D]} 1/(X+S_i) = Σ_{i ∈ [N]} m_i/(X+T_i)" — originally LogUp (Haböck 2022 ePrint 2022/1530))
+status: justified
+```
+
+```claim
+id: C-TLOOKUP-SOUND
+statement: tLookup soundness — a prover who commits to S ⊄ T fails except with probability negligible in λ. Concretely ≤ (D + N + 3 log(D/N) + 4 log N)/|F|; for D=2^25, N=2^15 on BLS12-381 this is ≈2^-230.
+combinator: THEOREM(zkLLM Theorem 7.3)
+justifiedBy:
+  - C-LOGUP-IDENTITY
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-TLOOKUP-ZK-ROUND-POLYS
+statement: tLookup Phase 1 and Phase 2 round polynomials are Pedersen-committed via emit_zk_round (Hyrax §4 Protocol 3 wrapper, standard-sumcheck weights α=(2,1,1,1), 5 Σ-challenges per round); the round transcripts leak no information beyond what the ZK sumcheck driver leaks.
+combinator: AND_OF
+justifiedBy:
+  - C-SC-ZK-INFORMAL
+  - C-PED-HIDE
+status: justified
+```
+
+```claim
+id: C-TLOOKUP-ZK-FINAL-EVALS
+statement: tLookup final evaluations A(u), S(u), m(v) are discharged via ZK openings against committed tensors rather than sent as raw scalars.
+justifiedBy:
+  - UNJUSTIFIED(src/zknn/tlookup.cu emits A(u), S(u), m(v), B(v), T(v) as raw scalars after the last sumcheck round — §6.2 ⚠ "Final evaluations still leak." T(v) can remain public, but S(u), m(v), and A(u)=1/(S(u)+β) carry witness information and need ZK openings against the underlying commitments. Closure is a Phase 4 task.)
+status: open
+```
+
+```claim
+id: C-TLOOKUP-ZK-INFORMAL
+statement: tLookup transcript is informally zero-knowledge — round polys hidden under Pedersen perfect hiding, final evaluations discharged via ZK opening, so a semi-honest verifier sees nothing beyond public inputs and commitments.
+combinator: AND_OF
+justifiedBy:
+  - C-TLOOKUP-ZK-ROUND-POLYS
+  - C-TLOOKUP-ZK-FINAL-EVALS
+status: open
+```
+
+```claim
+id: C-TLOOKUP-ZK-FORMAL
+statement: A written formal simulator exists for tLookup (Protocol 1), producing a transcript distribution computationally indistinguishable from the real protocol — the Real-vs-Ideal structure of zkLLM Theorem 7.4 instantiated for this protocol.
+justifiedBy:
+  - UNJUSTIFIED(Phase 5 formal simulator not yet written. zkLLM Theorem 7.4 states the ZK result for Protocol 1, but the explicit written simulator has not been authored in this repo. Closure is the same Phase 5 milestone that closes C-SC-ZK-FORMAL.)
+status: open
+```
+
 ---
 
 ## 7. zkFC (Matrix Multiplication)
@@ -1150,6 +1225,44 @@ The partial MLE and ZK opening dominate.
 
 `src/zknn/zkfc.cu`: `zkFC::prove`, `zkip`, `zkip_stacked`.
 
+### 7.5 Claims
+
+`C-ZKFC-ZK` is the landing site for gap **F1** (zkFC still uses the plain
+`zkip` sumcheck, not the ZK wrapper). The UNJUSTIFIED leaf names the
+specific line range in `src/zknn/zkfc.cu` so the walker's blocked-upstream
+report can point at it by file:line. When Phase 3 finishes the mechanical
+migration to `prove_ip_zk`, the UNJUSTIFIED leaf is replaced by a pair of
+sub-claims referencing `C-SC-ZK-INFORMAL` and `C-OPEN-HVZK`, and the
+walker flips `C-ZKFC-ZK` to justified.
+
+```claim
+id: C-ZKFC-COMPLETE
+statement: zkFC matrix-multiplication proof (Y = X·W) is complete — the multilinear-extension identity Ỹ(u_B, u_O) = Σ_s X̃(u_B, s) · W̃(s, u_O) (zkLLM §6.1 Eq. 28) holds whenever Y = XW, so the inner-product sumcheck accepts honest transcripts.
+justifiedBy:
+  - PAPER(zkLLM §6.1 Eq. 28, Sun et al. 2024: "C̃(u,v) = Σ_{s ∈ {0,1}^k} Ã(u,s) · B̃(s,v)" — the MLE identity that reduces matrix multiplication to a sumcheck over the input dimension)
+  - CODE(src/zknn/zkfc.cu + test/test_verify_weight_zk.cu)
+status: justified
+```
+
+```claim
+id: C-ZKFC-SOUND
+statement: zkFC soundness error ≤ 2n/|F| + (log B + log O + log I)/|F| where n = log I — composition of inner-product sumcheck Schwartz-Zippel (§5.3) and random-point evaluation checks on the claim ỹ(u_B, u_O). The weight claim W̃(u_I, u_O) is discharged via §4 ZK opening against the committed weight matrix.
+combinator: AND_OF
+justifiedBy:
+  - C-SC-ZK-SOUND
+  - C-OPEN-SOUND
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-ZKFC-ZK
+statement: zkFC prover transcript reveals nothing beyond public inputs (claim c, challenge points u_B, u_O, u_I) and the ZK-opened weight-claim value — inner-product sumcheck round polynomials are Pedersen-committed (Hyrax §4 Protocol 3, i.e. prove_ip_zk), and the final weight claim W̃(u_I, u_O) is discharged via §4 ZK opening rather than sent as a raw scalar.
+justifiedBy:
+  - UNJUSTIFIED(src/zknn/zkfc.cu:142-152 still calls the plain `zkip` sumcheck, which emits round polynomials as raw coefficients. Phase 3 Step 2 migrated the entropy pipeline's inner-product sumchecks to `prove_ip_zk` but left zkFC's default path on the plain variant. §7.2 ⚠ flags this verbatim: "zkFC still uses the *plain* sumcheck (`zkip` in `zkfc.cu`), not the ZK-wrapped version. … The migration is straightforward (the API matches)." This is gap F1 in `plans/zkllm-entropy/phase-3-zk-sumcheck.md`; closure migrates `zkip` → `prove_ip_zk` and replaces this UNJUSTIFIED leaf with AND_OF(C-SC-ZK-INFORMAL, C-OPEN-HVZK).)
+status: open
+```
+
 ---
 
 ## 8. Rescaling
@@ -1209,6 +1322,52 @@ Per §6.3: $\sim 107N + 120\gamma$ $\mathsf{F{\cdot}}$ equivalent.
 
 ⚠ **`Rescaling::prove` returns an empty Claims vector** — the weight claim linkage
 is not wired up in the current code.
+
+### 8.5 Claims
+
+Rescaling's ZK story folds into the same Phase-4 gap as tLookup's final
+evaluations. The division-relation check currently sends raw MLE
+evaluations in the clear (§8.2 ⚠), and the remainder range lookup
+inherits tLookup's final-eval gap. Both are tracked via the single
+`C-RESCALE-ZK` UNJUSTIFIED leaf rather than being split further, because
+they close in the same Phase-4 work item.
+
+```claim
+id: C-RESCALE-DIV-RELATION-COMPLETE
+statement: The division-relation identity X = X'·γ + r, once true as an integer equation, holds as an equation of multilinear extensions; Schwartz-Zippel at a random u accepts with probability 1 for honest provers.
+justifiedBy:
+  - PAPER(zkLLM §4.1 Rescaling, Sun et al. 2024: describes the quantized-integer division proof with remainder range check — the MLE identity is a direct consequence of the integer identity)
+  - CODE(src/zknn/rescaling.cu + test/test_entropy_zk_pipeline.cu)
+status: justified
+```
+
+```claim
+id: C-RESCALE-COMPLETE
+statement: Rescaling proof is complete — division-relation SZ accepts honest transcripts identically, and every in-range remainder is contained in the range table, so the tLookupRange lookup succeeds.
+combinator: AND_OF
+justifiedBy:
+  - C-RESCALE-DIV-RELATION-COMPLETE
+  - C-TLOOKUP-COMPLETE
+status: justified
+```
+
+```claim
+id: C-RESCALE-SOUND
+statement: Rescaling soundness — division-relation Schwartz-Zippel error ≤ 1/|F| plus tLookup soundness on the remainder range bound any cheating prover to negligible success probability.
+combinator: AND_OF
+justifiedBy:
+  - C-TLOOKUP-SOUND
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-RESCALE-ZK
+statement: Rescaling prover transcript reveals nothing beyond public inputs — division-relation check uses committed (not raw) MLE evaluations of X, X', r, and the remainder range lookup is ZK-wrapped tLookup.
+justifiedBy:
+  - UNJUSTIFIED(src/zknn/rescaling.cu currently sends raw MLE evaluations X̃(u), X̃'(u), r̃(u) in the clear for the division-relation check — §8.2 ⚠ "Currently not ZK. The division relation check sends raw MLE evaluations … in the clear. The tLookup is also not ZK-wrapped." Closure requires committing to X - X'γ - r and discharging the zero-claim via ZK opening, plus C-TLOOKUP-ZK-INFORMAL closure. Additionally Rescaling::prove returns an empty Claims vector (§8.4 ⚠), so the weight-claim linkage isn't wired — same Phase 4 work item.)
+status: open
+```
 
 ---
 
@@ -1318,6 +1477,39 @@ $\mathsf{G_smul}$ + $8N$ $\mathsf{F{\cdot}}$.
 
 `src/zknn/zkargmax.cu`: `zkArgmax::compute`, `zkArgmax::prove`.
 
+### 9.5 Claims
+
+`C-ARGMAX-ZK` is UNJUSTIFIED but, per §9.2, the standalone zkArgmax is
+**not used** by the entropy pipeline — the batched pipeline routes
+argmax correctness through the CDF tLookup's implicit check (negative
+diffs wrap to near $p$ and cannot match any table entry). The
+UNJUSTIFIED leaf records the gap for the standalone prover without
+propagating a block to `C-END2END-ZK`.
+
+```claim
+id: C-ARGMAX-COMPLETE
+statement: zkArgmax is complete — for the honest argmax v*, all diffs d_i ≥ 0 so a B-bit decomposition exists, the reconstruction identity d = Σ 2^b · bit_b holds, the indicator is binary with sum 1 and dot-product with d equal to 0, and the batched binary random-linear-combination check is identically 0. §9.2 itemises the four completeness arguments.
+justifiedBy:
+  - CODE(src/zknn/zkargmax.cu + test/test_zkargmax.cu)
+status: justified
+```
+
+```claim
+id: C-ARGMAX-SOUND
+statement: zkArgmax soundness error ≤ (3n + B + 1)/|F| — reconstruction Schwartz-Zippel (≤ n/|F|), batched binary check in x plus random r_k (≤ (2n + B + 1)/|F|), exact non-negativity via bit-count < 255 (error 0), and exact indicator constraints. §9.2 itemises the four soundness arguments.
+justifiedBy:
+  - CODE(src/zknn/zkargmax.cu + test/test_zkargmax.cu)
+status: justified
+```
+
+```claim
+id: C-ARGMAX-ZK
+statement: zkArgmax prover transcript reveals nothing about logits beyond the public argmax value v* — intermediate diffs, bit planes, and indicator are committed; MLE evaluations are discharged via ZK opening; the batched binary RLC check runs under the ZK sumcheck.
+justifiedBy:
+  - UNJUSTIFIED(src/zknn/zkargmax.cu standalone prover reveals v*, d̃(u), each bit_b ̃(u), and v* - d̃(u) as raw scalars — §9.2 ⚠ "The current zkArgmax is NOT zero-knowledge." §9.2 also notes: "In the entropy pipeline, zkArgmax is NOT used directly" — the batched pipeline routes argmax verification through the CDF tLookup's implicit check, so this gap does not propagate to C-END2END-ZK. The UNJUSTIFIED leaf remains for the standalone prover.)
+status: open
+```
+
 ---
 
 ## 10. zkNormalCDF
@@ -1357,6 +1549,40 @@ This is the **dominant cost** in the entire entropy proof pipeline.
 
 `src/zknn/zknormalcdf.cu`: `zkNormalCDF::compute`, `zkNormalCDF::prove`.
 
+### 10.5 Claims
+
+zkNormalCDF is a thin wrapper over tLookupRangeMapping, so its claims
+delegate directly to the tLookup claims. The ZK status therefore
+inherits the tLookup Phase-4 gap automatically: `C-NORMCDF-ZK-INFORMAL`
+is blocked because `C-TLOOKUP-ZK-INFORMAL` is blocked.
+
+```claim
+id: C-NORMCDF-COMPLETE
+statement: zkNormalCDF completeness — wrapper around tLookupRangeMapping with the CDF table; correctness follows from tLookup completeness applied to the (diffs → CDF values) mapping.
+combinator: AND_OF
+justifiedBy:
+  - C-TLOOKUP-COMPLETE
+status: justified
+```
+
+```claim
+id: C-NORMCDF-SOUND
+statement: zkNormalCDF soundness inherits from tLookup — any cheating (diffs, CDF values) pair fails the LogUp identity except with the composed tLookup soundness error.
+combinator: AND_OF
+justifiedBy:
+  - C-TLOOKUP-SOUND
+status: justified
+```
+
+```claim
+id: C-NORMCDF-ZK-INFORMAL
+statement: zkNormalCDF ZK (informal) inherits from tLookup — round polynomials hidden, final evaluations discharged via ZK opening, transcript computationally indistinguishable from a simulator that sees only public inputs and commitments.
+combinator: AND_OF
+justifiedBy:
+  - C-TLOOKUP-ZK-INFORMAL
+status: open
+```
+
 ---
 
 ## 11. zkLog
@@ -1387,6 +1613,38 @@ $\mathsf{F{\cdot}}$ equivalent.
 ### 11.4 Implementation
 
 `src/zknn/zklog.cu`: `zkLog::compute`, `zkLog::prove`.
+
+### 11.5 Claims
+
+Same wrapper pattern as zkNormalCDF — claims delegate to tLookup, and
+the ZK status inherits the Phase-4 final-eval gap.
+
+```claim
+id: C-LOG-COMPLETE
+statement: zkLog completeness — wrapper around tLookupRangeMapping with a (quantized probability index → -log₂) mapping; correctness follows from tLookup completeness.
+combinator: AND_OF
+justifiedBy:
+  - C-TLOOKUP-COMPLETE
+status: justified
+```
+
+```claim
+id: C-LOG-SOUND
+statement: zkLog soundness inherits from tLookup applied to the log-table mapping.
+combinator: AND_OF
+justifiedBy:
+  - C-TLOOKUP-SOUND
+status: justified
+```
+
+```claim
+id: C-LOG-ZK-INFORMAL
+statement: zkLog ZK (informal) inherits from tLookup — same round-polys-hidden + final-evals-still-open status.
+combinator: AND_OF
+justifiedBy:
+  - C-TLOOKUP-ZK-INFORMAL
+status: open
+```
 
 ---
 
