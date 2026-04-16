@@ -49,6 +49,7 @@ BLS_TARGETS := main ppgen commit-param self-attn ffn rmsnorm skip-connection \
                test_opening_distinguisher \
                test_hash_to_curve_rfc9380 test_htc_generators test_pp_format \
                test_hyrax_sigma test_zk_round_commit test_zk_sumcheck \
+               test_entropy_zk_pipeline \
                zkllm_entropy_timed bench_field_arith bench_commitment
 
 # Create build subdirectories
@@ -153,6 +154,9 @@ test_zk_round_commit: $(BUILD)/test/test_zk_round_commit.o $(CU_OBJS) $(CPP_OBJS
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 test_zk_sumcheck: $(BUILD)/test/test_zk_sumcheck.o $(CU_OBJS) $(CPP_OBJS)
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
+
+test_entropy_zk_pipeline: $(BUILD)/test/test_entropy_zk_pipeline.o $(CU_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
 # Bench targets (source in bench/)
