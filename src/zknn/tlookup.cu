@@ -1,5 +1,8 @@
 #include "zknn/tlookup.cuh"
 #include "proof/proof.cuh"
+#include "proof/zk_sumcheck.cuh"
+#include "proof/zk_round_commit.cuh"
+#include "commit/commitment.cuh"
 
 // Some utils
 
@@ -272,8 +275,24 @@ Polynomial tLookup_phase2_step_poly(const FrTensor& A, const FrTensor& S, const 
     return Polynomial::eq(u.back()) * p0 + p1 - p2 * inv_size_ratio;
 }
 
+// Sigma challenges per round for tLookup: degree-3 polynomial → 4 coefficients
+// → 4 openings + 1 equality = 5 challenges per round.
+static const uint kTLookupSigmaPerRound = 5;
+
+// Standard-sumcheck weights for degree-3 round polynomial: α = (2, 1, 1, 1).
+static std::vector<Fr_t> tl_standard_alphas(uint d_plus_one) {
+    std::vector<Fr_t> a(d_plus_one, Fr_t{1,0,0,0,0,0,0,0});
+    a[0] = Fr_t{2,0,0,0,0,0,0,0};
+    return a;
+}
+
 Fr_t tLookup_phase2(const Fr_t& claim, const FrTensor& A, const FrTensor& S, const FrTensor& B, const FrTensor& T, const FrTensor& m,
     const Fr_t& alpha_, const Fr_t& beta, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq, const vector<Fr_t>& u, const vector<Fr_t>& v2,
+    G1Jacobian_t U, G1Jacobian_t H,
+    std::vector<Fr_t>::const_iterator sigma_begin,
+    G1Jacobian_t T_prev_eval, Fr_t rho_prev_eval,
+    std::vector<ZKSumcheckRound>& rounds_out,
+    G1Jacobian_t& T_final_out, Fr_t& rho_final_out,
     vector<Polynomial>& proof)
 {
     if (!v2.size()) {
@@ -283,13 +302,26 @@ Fr_t tLookup_phase2(const Fr_t& claim, const FrTensor& A, const FrTensor& S, con
         proof.push_back(Polynomial(B(0)));  // B(v) = 1/(T(v)+beta)
         proof.push_back(Polynomial(T(0)));  // T(v)
         proof.push_back(Polynomial(m(0)));  // m(v)
+        T_final_out  = T_prev_eval;
+        rho_final_out = rho_prev_eval;
         return claim;
     }
     auto p = tLookup_phase2_step_poly(A, S, B, T, m, alpha_, beta, inv_size_ratio, alpha_sq, u);
     FrTensor new_A(A.size >> 1), new_S(S.size >> 1), new_B(B.size >> 1), new_T(T.size >> 1), new_m(m.size >> 1);
 
-    if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1))) throw std::runtime_error("tLookup_phase2: claim != p(0) + p(1)");
-    proof.push_back(p);
+    // Extract coefficients and commit via ZK round (Hyrax §4 Protocol 3).
+    // tLookup round polynomials are degree 3 → 4 coefficients.
+    // Standard sumcheck identity: claim == p(0) + p(1), α = (2,1,1,1).
+    auto coeffs = p.getCoefficients();
+    static const uint kTLookupSigmaPerRound = 5;  // 4 openings + 1 equality
+
+    Fr_t r_j = v2.back();
+    ZKRoundOutput ro = emit_zk_round(U, H, coeffs,
+                                     tl_standard_alphas(coeffs.size()),
+                                     sigma_begin,
+                                     T_prev_eval, rho_prev_eval,
+                                     r_j);
+    rounds_out.push_back(ro.round);
 
     tLookup_phase2_reduce_kernel<<<((A.size >> 1)+FrNumThread-1)/FrNumThread,FrNumThread>>>(
         A.gpu_data, S.gpu_data, B.gpu_data, T.gpu_data, m.gpu_data,
@@ -297,35 +329,67 @@ Fr_t tLookup_phase2(const Fr_t& claim, const FrTensor& A, const FrTensor& S, con
         v2.back(), A.size >> 1
     );
 
-    return tLookup_phase2(p(v2.back()), new_A, new_S, new_B, new_T, new_m, alpha_ * Polynomial::eq(u.back(), v2.back()), beta, inv_size_ratio, alpha_sq * Polynomial::eq(u.back(), v2.back()), {u.begin(), u.end() - 1}, {v2.begin(), v2.end() - 1}, proof);
+    return tLookup_phase2(p(v2.back()), new_A, new_S, new_B, new_T, new_m, alpha_ * Polynomial::eq(u.back(), v2.back()), beta, inv_size_ratio, alpha_sq * Polynomial::eq(u.back(), v2.back()), {u.begin(), u.end() - 1}, {v2.begin(), v2.end() - 1},
+        U, H, sigma_begin + kTLookupSigmaPerRound,
+        ro.T_eval, ro.rho_eval,
+        rounds_out, T_final_out, rho_final_out,
+        proof);
 }
 
 Fr_t tLookup_phase1(const Fr_t& claim, const FrTensor& A, const FrTensor& S, const FrTensor& B, const FrTensor& T, const FrTensor& m,
     const Fr_t& alpha, const Fr_t& beta, const Fr_t& C, const Fr_t& inv_size_ratio, const Fr_t& alpha_sq,
     const vector<Fr_t>& u, const vector<Fr_t>& v1, const vector<Fr_t>& v2,
+    G1Jacobian_t U, G1Jacobian_t H,
+    std::vector<Fr_t>::const_iterator sigma_begin,
+    G1Jacobian_t T_prev_eval, Fr_t rho_prev_eval,
+    std::vector<ZKSumcheckRound>& rounds_out,
+    G1Jacobian_t& T_final_out, Fr_t& rho_final_out,
     vector<Polynomial>& proof)
 {
     if (!v1.size())
     {
-        return tLookup_phase2(claim, A, S, B, T, m, alpha, beta, inv_size_ratio, alpha_sq, u, v2, proof);
+        return tLookup_phase2(claim, A, S, B, T, m, alpha, beta, inv_size_ratio, alpha_sq, u, v2,
+            U, H, sigma_begin, T_prev_eval, rho_prev_eval,
+            rounds_out, T_final_out, rho_final_out, proof);
     }
     else{
         auto p = tLookup_phase1_step_poly(A, S, alpha, beta, C, u);
         FrTensor new_A(A.size >> 1), new_S(S.size >> 1);
 
-        if (claim != p(FR_FROM_INT(0)) + p(FR_FROM_INT(1))) throw std::runtime_error("tLookup_phase1: claim != p(0) + p(1)");
-        proof.push_back(p);
+        // Extract coefficients and commit via ZK round (Hyrax §4 Protocol 3).
+        auto coeffs = p.getCoefficients();
+        Fr_t r_j = v1.back();
+
+        ZKRoundOutput ro = emit_zk_round(U, H, coeffs,
+                                         tl_standard_alphas(coeffs.size()),
+                                         sigma_begin,
+                                         T_prev_eval, rho_prev_eval,
+                                         r_j);
+        rounds_out.push_back(ro.round);
 
         tLookup_phase1_reduce_kernel<<<(A.size+FrNumThread-1)/FrNumThread,FrNumThread>>>(
             A.gpu_data, S.gpu_data, new_A.gpu_data, new_S.gpu_data, v1.back(), A.size >> 1
         );
-        return tLookup_phase1(p(v1.back()), new_A, new_S, B, T, m, alpha * Polynomial::eq(u.back(), v1.back()), beta, C * TWO_INV, inv_size_ratio, alpha_sq, {u.begin(), u.end() - 1}, {v1.begin(), v1.end() - 1}, v2, proof);
+        return tLookup_phase1(p(v1.back()), new_A, new_S, B, T, m, alpha * Polynomial::eq(u.back(), v1.back()), beta, C * TWO_INV, inv_size_ratio, alpha_sq, {u.begin(), u.end() - 1}, {v1.begin(), v1.end() - 1}, v2,
+            U, H, sigma_begin + kTLookupSigmaPerRound,
+            ro.T_eval, ro.rho_eval,
+            rounds_out, T_final_out, rho_final_out, proof);
     }
 }
 
 
 
-Fr_t tLookup::prove(const FrTensor& S, const FrTensor& m, const Fr_t& alpha, const Fr_t& beta, const vector<Fr_t>& u, const vector<Fr_t>& v, vector<Polynomial>& proof)
+// Top-level commitment: C_0 = S·U (Hyrax §4 Step 1, blinding 0).
+static G1Jacobian_t tl_top_level_commitment(G1Jacobian_t U, Fr_t S) {
+    Commitment pp1(1, U);
+    FrTensor Sv(1, &S);
+    return pp1.commit(Sv)(0);
+}
+
+Fr_t tLookup::prove(const FrTensor& S, const FrTensor& m, const Fr_t& alpha, const Fr_t& beta,
+    const vector<Fr_t>& u, const vector<Fr_t>& v,
+    const Commitment& sc_pp,
+    vector<Polynomial>& proof, vector<ZKSumcheckProof>& zk_sumchecks)
 {
     const uint D = S.size;
     if (m.size != table.size) {
@@ -366,9 +430,27 @@ Fr_t tLookup::prove(const FrTensor& S, const FrTensor& m, const Fr_t& alpha, con
     Fr_t N_Fr = FR_FROM_INT(N);
     Fr_t D_Fr = FR_FROM_INT(D);
 
-    return tLookup_phase1(claim, A, S, B, table, m,
+    // ZK setup: total rounds = v1.size() + v2.size() = v.size() = ceilLog2(D).
+    // Sigma challenges: 5 per round (4 openings for degree-3 + 1 equality).
+    G1Jacobian_t U_gen = sc_pp.u_generator;
+    G1Jacobian_t H_gen = sc_pp.hiding_generator;
+    uint total_rounds = v.size();
+    auto sigma_tl = random_vec(total_rounds * kTLookupSigmaPerRound);
+
+    // Hyrax §4 Step 1: C_0 = claim·U, blinding 0.
+    G1Jacobian_t T_prev = tl_top_level_commitment(U_gen, claim);
+    Fr_t rho_prev = {0,0,0,0,0,0,0,0};
+
+    ZKSumcheckProof zk_proof;
+    Fr_t result = tLookup_phase1(claim, A, S, B, table, m,
         alpha, beta, C, N_Fr / D_Fr, alpha_sq,
-        u, v1, v2, proof);
+        u, v1, v2,
+        U_gen, H_gen, sigma_tl.begin(),
+        T_prev, rho_prev,
+        zk_proof.rounds, zk_proof.T_final, rho_prev,
+        proof);
+    zk_sumchecks.push_back(std::move(zk_proof));
+    return result;
 }
 
 KERNEL void tlookuprange_init_kernel(Fr_t* table_ptr, int low, uint len, uint table_size)
@@ -498,7 +580,9 @@ KERNEL void tlookuprange_pad_m(Fr_t* m_ptr, uint index_padded, uint num_added)
 
 Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, const FrTensor& m,
         const Fr_t& r, const Fr_t& alpha, const Fr_t& beta,
-        const vector<Fr_t>& u, const vector<Fr_t>& v, vector<Polynomial>& proof)
+        const vector<Fr_t>& u, const vector<Fr_t>& v,
+        const Commitment& sc_pp,
+        vector<Polynomial>& proof, vector<ZKSumcheckProof>& zk_sumchecks)
 {
     const uint D = S_in.size;
     if (m.size != table.size) throw std::runtime_error("m.size != table.size");
@@ -510,7 +594,7 @@ Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, con
         auto S_out_ = S_out.pad({D}, mapped_vals(0));
         FrTensor m_(m);
         tlookuprange_pad_m<<<1,1>>>(m_.gpu_data, 0, (1 << ceilLog2(D)) - D);
-        return prove(S_in_, S_out_, m_, r, alpha, beta, u, v, proof);
+        return prove(S_in_, S_out_, m_, r, alpha, beta, u, v, sc_pp, proof, zk_sumchecks);
     }
 
     if (N != 1 << ceilLog2(N) || D % N != 0) {
@@ -547,7 +631,23 @@ Fr_t tLookupRangeMapping::prove(const FrTensor& S_in, const FrTensor& S_out, con
     Fr_t N_Fr = FR_FROM_INT(N);
     Fr_t D_Fr = FR_FROM_INT(D);
 
-    return tLookup_phase1(claim, A, S_com, B, T_com, m,
+    // ZK setup (same as tLookup::prove).
+    G1Jacobian_t U_gen = sc_pp.u_generator;
+    G1Jacobian_t H_gen = sc_pp.hiding_generator;
+    uint total_rounds = v.size();
+    auto sigma_tl = random_vec(total_rounds * kTLookupSigmaPerRound);
+
+    G1Jacobian_t T_prev = tl_top_level_commitment(U_gen, claim);
+    Fr_t rho_prev = {0,0,0,0,0,0,0,0};
+
+    ZKSumcheckProof zk_proof;
+    Fr_t result = tLookup_phase1(claim, A, S_com, B, T_com, m,
         alpha, beta, C, N_Fr / D_Fr, alpha_sq,
-        u, v1, v2, proof);
+        u, v1, v2,
+        U_gen, H_gen, sigma_tl.begin(),
+        T_prev, rho_prev,
+        zk_proof.rounds, zk_proof.T_final, rho_prev,
+        proof);
+    zk_sumchecks.push_back(std::move(zk_proof));
+    return result;
 }

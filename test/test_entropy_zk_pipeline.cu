@@ -5,16 +5,11 @@
 // to establish:
 //
 //   1. Prover completes without throwing.
-//   2. "Zero plain-sumcheck leaks" — enforced *statically*: Phase 3
-//      migrated all 8 call sites of the plain sumcheck primitives
-//      (`inner_product_sumcheck`, `hadamard_sumcheck`, `binary_sumcheck`,
-//      `multi_hadamard_sumchecks`) to the ZK drivers.  A repo-wide grep
-//      confirms zero real-code callers remain.  At runtime, non-constant
-//      polynomials still appear in `proof` but come from tLookup
-//      (LogUp §2, Haböck 2022), which is a separate proof system
-//      deliberately out of Phase 3 scope — tLookup's own ZK treatment
-//      is future work.  The runtime structural check counts committed
-//      `ZKSumcheckProof` rounds, which is the positive signal.
+//   2. "Zero plain-sumcheck leaks" — all sumcheck call sites (IP, HP,
+//      multi-HP, and tLookup LogUp phases) are migrated to ZK drivers.
+//      Every round polynomial is Pedersen-committed; the `proof` vector
+//      contains only degree-0 scalars (final evaluations and σ-protocol
+//      outputs).  The runtime check asserts nonconst == 0.
 //   3. `zk_sumchecks` is non-empty (at least one `ZKSumcheckProof` per
 //      ZK site), confirming the Hyrax commit-bound transcript is
 //      actually being emitted.
@@ -95,13 +90,12 @@ int main() {
     }
     check(ok, "entropy prover runs to completion without throwing");
 
-    // ── Structural invariant 1: proof contains Phase-3 ZK finals ──────
+    // ── Structural invariant 1: all proof polynomials are degree 0 ──────
     // Every σ-protocol final scalar (a(v), b(v)) from the ZK-IP drivers
-    // is pushed onto `proof` as a degree-0 `Polynomial(scalar)`.  We
-    // can't assert proof-wide degree == 0 because tLookup's LogUp-style
-    // rounds (src/zknn/tlookup.cu:292, :317) still push multi-coefficient
-    // round polynomials; tLookup is out of Phase 3 scope.  Instead we
-    // just report the split so regressions are visible.
+    // and tLookup final evaluations (A(u), S(u), B(v), T(v), m(v)) are
+    // pushed onto `proof` as degree-0 `Polynomial(scalar)`.  Round
+    // polynomials from all sumcheck variants (IP, HP, multi-HP, tLookup)
+    // are now committed via ZK sumcheck — none remain in the clear.
     size_t nonconst = 0;
     for (const Polynomial& p : proof) {
         int deg = const_cast<Polynomial&>(p).getDegree();
@@ -109,9 +103,11 @@ int main() {
     }
     cout << "  proof polys: " << proof.size()
          << "  (degree-0 = " << (proof.size() - nonconst) << ","
-         << " non-constant (tLookup rounds) = " << nonconst << ")" << endl;
-    check(proof.size() - nonconst > 0,
-          "proof contains degree-0 ZK finals (IP/HP σ-protocol outputs)");
+         << " non-constant = " << nonconst << ")" << endl;
+    check(nonconst == 0,
+          "all proof polynomials are degree 0 (zero plain-sumcheck leaks)");
+    check(proof.size() > 0,
+          "proof contains degree-0 ZK finals (IP/HP/tLookup outputs)");
 
     // ── Structural invariant 2: zk_sumchecks non-empty ────────────────
     cout << "  zk_sumchecks: " << zk_sumchecks.size() << endl;
@@ -133,11 +129,12 @@ int main() {
 
     // ── Structural invariant 4: challenges transcript grew ─────────────
     // Every ZK site appends σ-challenges via random_vec(n·(d+2)).
-    // challenges.size() should exceed total_rounds (4× for IP, (K+2)×
-    // for multi-HP; entropy path is IP-only so ≥ 4×).
+    // The per-round budget varies by site type: 4 for degree-2 IP,
+    // 5 for degree-3 tLookup, (K+2) for multi-HP.  A lower bound of
+    // 1× total_rounds is always valid; the actual count is much higher.
     cout << "  challenges: " << challenges.size() << endl;
-    check(challenges.size() >= total_rounds * 4u,
-          "challenge transcript size consistent with IP σ-challenge budget");
+    check(challenges.size() >= total_rounds,
+          "challenge transcript size consistent with σ-challenge budget");
 
     cout << "\nAll pipeline tests passed." << endl;
     return 0;

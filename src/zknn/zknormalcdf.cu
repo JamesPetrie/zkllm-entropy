@@ -43,6 +43,7 @@ pair<FrTensor, FrTensor> zkNormalCDF::compute(const FrTensor& diffs) {
 Fr_t zkNormalCDF::prove(const FrTensor& diffs, const FrTensor& cdf_values, const FrTensor& m,
                         const Fr_t& r, const Fr_t& alpha, const Fr_t& beta,
                         const vector<Fr_t>& u, const vector<Fr_t>& v,
-                        vector<Polynomial>& proof) {
-    return lookup.prove(diffs, cdf_values, m, r, alpha, beta, u, v, proof);
+                        const Commitment& sc_pp,
+                        vector<Polynomial>& proof, vector<ZKSumcheckProof>& zk_sumchecks) {
+    return lookup.prove(diffs, cdf_values, m, r, alpha, beta, u, v, sc_pp, proof, zk_sumchecks);
 }

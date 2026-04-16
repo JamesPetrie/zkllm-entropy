@@ -44,7 +44,10 @@ int main(int argc, char *argv[])
     auto v0 = ceilLog2(seq_len);
     auto v1 = ceilLog2(embed_dim);
 
-    rs2.prove(Y, Y_);
+    // Throwaway hiding Pedersen pp for ZK rescaling lookups.
+    Commitment rm_pp = Commitment::hiding_random(1);
+    vector<ZKSumcheckProof> rm_zk_sumchecks;
+    rs2.prove(Y, Y_, rm_pp, rm_zk_sumchecks);
     Y_.save_int(output_file_name);
     {
         uint n_hp = ceilLog2(Y.size);
@@ -61,7 +64,7 @@ int main(int argc, char *argv[])
             u_hp, v_hp, sg_hp,
             fa, fb, handoff_hp);
     }
-    rs1.prove(g_inv_rms, g_inv_rms_);
+    rs1.prove(g_inv_rms, g_inv_rms_, rm_pp, rm_zk_sumchecks);
     verifyWeightClaimZK(rmsnorm_weight, g.prove(rms_inv_temp, g_inv_rms)[0]);
     return 0;
     

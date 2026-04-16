@@ -37,7 +37,9 @@ Rescaling::~Rescaling()
     if (rem_tensor_ptr) delete rem_tensor_ptr;
 }
 
-vector<Claim> Rescaling::prove(const FrTensor& X, const FrTensor& X_)
+vector<Claim> Rescaling::prove(const FrTensor& X, const FrTensor& X_,
+                               const Commitment& sc_pp,
+                               vector<ZKSumcheckProof>& zk_sumchecks)
 {
     if (X.size != X_.size)
     {
@@ -69,7 +71,7 @@ vector<Claim> Rescaling::prove(const FrTensor& X, const FrTensor& X_)
     // cout << tl_rem.table << endl;
     // cout << m*tl_rem.table << endl;
     // cout << (m*tl_rem.table).sum() << endl;
-    tl_rem.prove(rem, m, rand_temp[0], rand_temp[1], u, v, proof);
+    tl_rem.prove(rem, m, rand_temp[0], rand_temp[1], u, v, sc_pp, proof, zk_sumchecks);
 
     
     

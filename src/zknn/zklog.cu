@@ -42,6 +42,7 @@ pair<FrTensor, FrTensor> zkLog::compute(const FrTensor& probs) {
 Fr_t zkLog::prove(const FrTensor& probs, const FrTensor& log_probs, const FrTensor& m,
                   const Fr_t& r, const Fr_t& alpha, const Fr_t& beta,
                   const vector<Fr_t>& u, const vector<Fr_t>& v,
-                  vector<Polynomial>& proof) {
-    return lookup.prove(probs, log_probs, m, r, alpha, beta, u, v, proof);
+                  const Commitment& sc_pp,
+                  vector<Polynomial>& proof, vector<ZKSumcheckProof>& zk_sumchecks) {
+    return lookup.prove(probs, log_probs, m, r, alpha, beta, u, v, sc_pp, proof, zk_sumchecks);
 }

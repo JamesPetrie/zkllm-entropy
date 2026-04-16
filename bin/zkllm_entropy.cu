@@ -186,12 +186,14 @@ int main(int argc, char* argv[]) {
 
     // ── Step 6: Prove lm_head — links logits to committed W_lm ───────────────
     cout << "Proving lm_head (zkFC)..." << endl;
-    rs_lm.prove(logits_batch, logits_batch_);
+    // Throwaway hiding Pedersen pp for ZK rescaling lookups.
+    Commitment rs_pp = Commitment::hiding_random(1);
+    rs_lm.prove(logits_batch, logits_batch_, rs_pp, zk_sumchecks);
     verifyWeightClaimZK(lm_head_w, lm_fc.prove(normed_, logits_batch)[0]);
 
     // ── Step 7: Prove final RMSNorm — links normed_hidden to committed W_norm ─
     cout << "Proving final RMSNorm..." << endl;
-    rs_norm2.prove(normed, normed_);
+    rs_norm2.prove(normed, normed_, rs_pp, zk_sumchecks);
     {
         uint n_hp = ceilLog2(normed.size);
         auto u_hp = random_vec(n_hp);
@@ -216,7 +218,7 @@ int main(int argc, char* argv[]) {
         proof.push_back(Polynomial(fa));
         proof.push_back(Polynomial(fb));
     }
-    rs_norm1.prove(g_inv_rms, g_inv_rms_);
+    rs_norm1.prove(g_inv_rms, g_inv_rms_, rs_pp, zk_sumchecks);
     verifyWeightClaimZK(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
 
     // ── Serialise proof ───────────────────────────────────────────────────────

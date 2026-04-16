@@ -53,9 +53,12 @@ int main(int argc, char *argv[])
         auto V = v_layer(input);
         auto V_ = v_rescale(V);
         
-        q_rescale.prove(Q, Q_);
-        k_rescale.prove(K, K_);
-        v_rescale.prove(V, V_);
+        // Throwaway hiding Pedersen pp for ZK rescaling lookups.
+        Commitment rs_pp = Commitment::hiding_random(1);
+        vector<ZKSumcheckProof> rs_zk_sumchecks;
+        q_rescale.prove(Q, Q_, rs_pp, rs_zk_sumchecks);
+        k_rescale.prove(K, K_, rs_pp, rs_zk_sumchecks);
+        v_rescale.prove(V, V_, rs_pp, rs_zk_sumchecks);
 
         verifyWeightClaimZK(k_proj, k_layer.prove(input, K)[0]);
         verifyWeightClaimZK(q_proj, q_layer.prove(input, Q)[0]);
@@ -94,8 +97,11 @@ int main(int argc, char *argv[])
 
         out__.save_int("temp_head_out.bin");
 
-        rs1.prove(out_, out__);
-        rs2.prove(out, out_);
+        // Throwaway hiding Pedersen pp for ZK rescaling/softmax lookups.
+        Commitment sm_pp = Commitment::hiding_random(1);
+        vector<ZKSumcheckProof> sm_zk_sumchecks;
+        rs1.prove(out_, out__, sm_pp, sm_zk_sumchecks);
+        rs2.prove(out, out_, sm_pp, sm_zk_sumchecks);
         auto temp_rand = random_vec(3);
         vector<Polynomial> proof;
         auto u1 = random_vec(ceilLog2(seq_len));
@@ -104,11 +110,6 @@ int main(int argc, char *argv[])
         auto claim = out.multi_dim_me({u1, u2}, {seq_len, d});
         auto final_claim = zkip(claim, Y.partial_me(u1, seq_len, seq_len), V.partial_me(u2, d, 1), ud, proof);
 
-        // Throwaway hiding Pedersen pp for ZK sumchecks (self-attn is a demo
-        // driver with no upstream Weight for the softmax step).  Hyrax §3.1:
-        // (U, H) are independent random generators.
-        Commitment sm_pp = Commitment::hiding_random(1);
-        vector<ZKSumcheckProof> sm_zk_sumchecks;
         softmax.prove(Y, X, shift, X_shifted, X_segments, Y_segments, m_segments,
         random_vec(ceilLog2(Y.size)), random_vec(ceilLog2(Y.size)), temp_rand[0], temp_rand[1], temp_rand[2],
         sm_pp, proof, sm_zk_sumchecks);

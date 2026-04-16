@@ -31,12 +31,11 @@ public:
     pair<FrTensor, FrTensor> compute(const FrTensor& probs);
 
     // Prove the lookup. Delegates to tLookupRangeMapping::prove.
-    // Caller supplies random scalars r, alpha, beta and challenge vectors u, v
-    // (each of length ceilLog2(probs.size)).
     Fr_t prove(const FrTensor& probs, const FrTensor& log_probs, const FrTensor& m,
                const Fr_t& r, const Fr_t& alpha, const Fr_t& beta,
                const vector<Fr_t>& u, const vector<Fr_t>& v,
-               vector<Polynomial>& proof);
+               const Commitment& sc_pp,
+               vector<Polynomial>& proof, vector<ZKSumcheckProof>& zk_sumchecks);
 };
 
 #endif

@@ -35,6 +35,7 @@ public:
     Fr_t operator()(const Fr_t& x);
 
     int getDegree() const;
+    std::vector<Fr_t> getCoefficients() const;
     void setCoefficients(int degree, Fr_t* coefficients);
 
     static Polynomial eq(const Fr_t& u);

@@ -206,14 +206,14 @@ Fr_t zkSoftmax::prove(const FrTensor& Y, const FrTensor& X, const FrTensor& shif
     for (uint i = 0; i < L; ++ i)
     {
         // cout << "======== Proving segment "<< i << "========" << endl;
-        claim_lus.push_back(least_significant_segments[i].prove(X_segments[i], m_segments[i], alpha_seg, beta_seg, u_Y, v_Y, proof));
+        claim_lus.push_back(least_significant_segments[i].prove(X_segments[i], m_segments[i], alpha_seg, beta_seg, u_Y, v_Y, sc_pp, proof, zk_sumchecks));
     }
 
     for (uint i = L; i < K; ++ i)
     {
         // cout << "======== Proving segment "<< i << "========" << endl;
-        claim_lus.push_back(other_segments[i-L].prove(X_segments[i], Y_segments[i - L], m_segments[i], 
-            r_seg, alpha_seg, beta_seg, u_Y, v_Y, proof));
+        claim_lus.push_back(other_segments[i-L].prove(X_segments[i], Y_segments[i - L], m_segments[i],
+            r_seg, alpha_seg, beta_seg, u_Y, v_Y, sc_pp, proof, zk_sumchecks));
     }
 
     vector<Fr_t> Y_seg_claims, X_seg_claims;

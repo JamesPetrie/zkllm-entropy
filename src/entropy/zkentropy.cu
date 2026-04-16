@@ -453,7 +453,8 @@ Fr_t zkConditionalEntropy::prove(
         challenges.insert(challenges.end(), u_cdf.begin(), u_cdf.end());
         challenges.insert(challenges.end(), v_cdf.begin(), v_cdf.end());
         cdf_prover.prove(diffs_padded, cdf_padded, m_cdf_padded,
-                         r_cdf, alpha, beta, u_cdf, v_cdf, proof);
+                         r_cdf, alpha, beta, u_cdf, v_cdf,
+                         sc_pp, proof, zk_sumchecks);
     }
 
     // ── 2b. Diffs-to-logits linking ───────────────────────────────────────
@@ -608,7 +609,8 @@ Fr_t zkConditionalEntropy::prove(
         challenges.insert(challenges.end(), u_log.begin(), u_log.end());
         challenges.insert(challenges.end(), v_log.begin(), v_log.end());
         log_prover.prove(q_padded, surprise_padded, m_surprise,
-                         r_log, alpha, beta, u_log, v_log, proof);
+                         r_log, alpha, beta, u_log, v_log,
+                         sc_pp, proof, zk_sumchecks);
     }
 
     // ── 2g. Entropy summation proof ─────────────────────────────────────────

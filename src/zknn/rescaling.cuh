@@ -16,7 +16,9 @@ public:
 
     Rescaling(uint scaling_factor);
     FrTensor operator()(const FrTensor& X);
-    vector<Claim> prove(const FrTensor& X, const FrTensor& X_);
+    vector<Claim> prove(const FrTensor& X, const FrTensor& X_,
+                        const Commitment& sc_pp,
+                        vector<ZKSumcheckProof>& zk_sumchecks);
     ~Rescaling();
 };
 

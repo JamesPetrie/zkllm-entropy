@@ -310,6 +310,13 @@ int Polynomial::getDegree() const {
     return degree_;
 }
 
+std::vector<Fr_t> Polynomial::getCoefficients() const {
+    std::vector<Fr_t> out(degree_ + 1);
+    cudaMemcpy(out.data(), coefficients_,
+               (degree_ + 1) * sizeof(Fr_t), cudaMemcpyDeviceToHost);
+    return out;
+}
+
 void Polynomial::setCoefficients(int degree, Fr_t* coefficients){
     if (coefficients_ != nullptr) {
         cudaFree(coefficients_);
