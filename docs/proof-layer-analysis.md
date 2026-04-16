@@ -327,6 +327,62 @@ single witness coordinate.  Soundness error $1/|\mathbb{F}|$.  Perfect HVZK.
 `src/proof/hyrax_sigma.cu`: `prove_opening`, `verify_opening`, `prove_equality`,
 `verify_equality`.
 
+### 3.4 Claims
+
+```claim
+id: C-SIGMA-OPEN-COMPLETE
+statement: Hyrax §A.1 Figure 5 proof-of-opening is complete — honest prover passes verification.
+justifiedBy:
+  - PAPER(Hyrax Theorem 8, Wahby et al. 2018 Appendix A: "proof-of-opening is complete, honest-verifier perfect ZK, and special sound under the discrete log assumption.")
+  - CODE(src/proof/hyrax_sigma.cu + test/test_hyrax_sigma.cu)
+status: justified
+```
+
+```claim
+id: C-SIGMA-OPEN-SOUND
+statement: Hyrax §A.1 proof-of-opening is special-sound — two accepting transcripts with distinct challenges extract the witness.
+combinator: THEOREM(Hyrax Theorem 8)
+justifiedBy:
+  - C-CRY-DL-G1
+status: justified
+```
+
+```claim
+id: C-SIGMA-OPEN-HVZK
+statement: Hyrax §A.1 proof-of-opening is perfect honest-verifier zero-knowledge — the simulator outputs a transcript identically distributed to the real one.
+justifiedBy:
+  - PAPER(Hyrax Theorem 8, Wahby et al. 2018 Appendix A; §3.1 above gives the explicit simulator: sample z_m, z_rho uniformly, set A = z_m U + z_rho H - e C)
+  - CODE(src/proof/hyrax_sigma.cu + test/test_hyrax_sigma.cu)
+status: justified
+```
+
+```claim
+id: C-SIGMA-EQ-COMPLETE
+statement: Hyrax §A.1 proof-of-equality is complete.
+justifiedBy:
+  - PAPER(Hyrax Theorem 9, Wahby et al. 2018 Appendix A: "proof-of-equality is complete, honest-verifier perfect zero-knowledge, and special sound under the discrete log assumption.")
+  - CODE(src/proof/hyrax_sigma.cu + test/test_hyrax_sigma.cu)
+status: justified
+```
+
+```claim
+id: C-SIGMA-EQ-SOUND
+statement: Hyrax §A.1 proof-of-equality is special-sound.
+combinator: THEOREM(Hyrax Theorem 9)
+justifiedBy:
+  - C-CRY-DL-G1
+status: justified
+```
+
+```claim
+id: C-SIGMA-EQ-HVZK
+statement: Hyrax §A.1 proof-of-equality is perfect honest-verifier zero-knowledge.
+justifiedBy:
+  - PAPER(Hyrax Theorem 9, Wahby et al. 2018 Appendix A; the Schnorr-style simulator extends directly to the single-witness-coordinate case)
+  - CODE(src/proof/hyrax_sigma.cu + test/test_hyrax_sigma.cu)
+status: justified
+```
+
 ---
 
 ## 4. ZK Opening (Hyrax §A.2 Figure 6)
@@ -449,6 +505,36 @@ $O(\log L)$ rounds of interaction.
 `src/commit/commitment.cuh`: `Commitment::open_zk`, `Commitment::verify_zk`.
 `src/proof/proof.cu`: `verifyWeightClaimZK` (wrapper that samples challenge, calls
 `open_zk` then `verify_zk`).
+
+### 4.5 Claims
+
+```claim
+id: C-OPEN-COMPLETE
+statement: Hyrax §A.2 Figure 6 opening protocol is complete — honest prover's four verification checks all pass.
+justifiedBy:
+  - PAPER(Hyrax Theorem 11, Wahby et al. 2018 Appendix A.2: "The protocol of Figure 6 is complete, honest-verifier perfect zero-knowledge, and special sound under the discrete log assumption.")
+  - CODE(src/commit/commitment.cuh + test/test_open_zk.cu)
+status: justified
+```
+
+```claim
+id: C-OPEN-SOUND
+statement: Hyrax §A.2 Figure 6 opening is special-sound — from two accepting transcripts with c ≠ c', the extractor recovers the witness vector, blinding, and the committed evaluation.
+combinator: THEOREM(Hyrax Theorem 11)
+justifiedBy:
+  - C-CRY-DL-G1
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-OPEN-HVZK
+statement: Hyrax §A.2 Figure 6 opening is perfect honest-verifier zero-knowledge — the simulator picks z, z_δ, z_β uniformly and computes δ, β from the verification equations; the distribution matches a real transcript because d is a uniform mask.
+justifiedBy:
+  - PAPER(Hyrax Theorem 11, Wahby et al. 2018 Appendix A.2; §4.2 above gives the explicit simulator)
+  - CODE(src/commit/commitment.cuh + test/test_open_zk.cu)
+status: justified
+```
 
 ---
 
@@ -736,6 +822,55 @@ For softmax with $K = 3$, $n = 10$: $25 \cdot 10 = 250$ $\mathsf{G_smul}$ per su
 `prove_zk_binary`, `prove_zk_multi_hadamard`, and corresponding `verify_*` functions.
 `src/proof/zk_round_commit.cu`: `commit_round_poly`, `fold_commitments_at`,
 `sumcheck_identity_lhs`, `combine_commitments_weighted`.
+
+### 5.8 Claims
+
+The ZK property is split intentionally. `C-SC-ZK-INFORMAL` captures what
+the current informal argument in §5.2 plus Hyrax Lemma 4 give us.
+`C-SC-ZK-FORMAL` is the stronger property — a written formal
+simulator proving indistinguishability — which is a Phase 5 follow-up
+and is therefore `UNJUSTIFIED` today. Downstream composition claims
+(e.g. `C-END2END-ZK`, to be introduced in M4) reference the formal
+variant; the walker then propagates the UNJUSTIFIED upstream so that
+anything claiming "the entropy pipeline is formally ZK" is blocked
+until Phase 5 closes.
+
+```claim
+id: C-SC-ZK-COMPLETE
+statement: ZK sumcheck (Hyrax §4 Protocol 3) is complete — honest commitments satisfy the round-to-round identity check by Pedersen homomorphism.
+justifiedBy:
+  - PAPER(Hyrax Lemma 4, Wahby et al. 2018 §5: "The protocol of Figure 1 is a complete, honest-verifier perfect ZK argument, with witness-extended emulation under the discrete log assumption.")
+  - CODE(src/proof/zk_sumcheck.cu + test/test_zk_sumcheck.cu)
+status: justified
+```
+
+```claim
+id: C-SC-ZK-SOUND
+statement: ZK sumcheck has total soundness error ≤ n(2d+2)/|F| — composition of per-coefficient opening soundness (Σ-protocol), round-to-round equality soundness (Σ-protocol), and extracted-coefficient sumcheck soundness (Schwartz-Zippel).
+combinator: AND_OF
+justifiedBy:
+  - C-SIGMA-OPEN-SOUND
+  - C-SIGMA-EQ-SOUND
+  - C-PED-BIND
+status: justified
+```
+
+```claim
+id: C-SC-ZK-INFORMAL
+statement: ZK sumcheck hides the round polynomials under Pedersen perfect hiding, and the Σ-protocol responses are HVZK — so the transcript informally reveals nothing beyond the public claim S and the verifier's challenges. This is the claim supported by Hyrax Lemma 4 plus the §5.2 informal argument; a full formal simulator is tracked separately as C-SC-ZK-FORMAL.
+justifiedBy:
+  - PAPER(Hyrax Lemma 4, Wahby et al. 2018 §5: the "honest-verifier perfect ZK argument" stated result, combined with Pedersen perfect hiding (Definition 4) applied to each round commitment)
+  - CODE(src/proof/zk_sumcheck.cu + test/test_zk_distinguisher.cu)
+status: justified
+```
+
+```claim
+id: C-SC-ZK-FORMAL
+statement: A written formal simulator exists that, given only public inputs and the commitment oracle, produces a transcript distribution computationally indistinguishable from the real protocol — following the Real-vs-Ideal structure of zkLLM Theorem 7.4.
+justifiedBy:
+  - UNJUSTIFIED(Phase 5 formal simulator not yet written; §5.2 flags this with ⚠ "Formal simulation proof (Phase 5) is not yet written." The informal argument via Hyrax Lemma 4 is captured by C-SC-ZK-INFORMAL; this claim upgrades to justified once the simulator is authored, verified against the Real game, and regression-tested.)
+status: open
+```
 
 ---
 
