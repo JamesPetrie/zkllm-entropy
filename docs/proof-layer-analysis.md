@@ -178,6 +178,63 @@ an opening.
 `commit_hiding()`, `save_hiding()`, `load_hiding()`.  Hash-to-curve in
 `src/field/hash_to_curve.cu`.
 
+### 2.5 Claims
+
+```claim
+id: C-PED-COMPLETE
+statement: Pedersen commitment scheme is complete — honest Commit produces a valid commitment for every message and blinding.
+justifiedBy:
+  - PAPER(Hyrax Definition 4 (completeness), Wahby et al. 2018 p.4; construction of §3.1 is an evaluation of a well-defined formula in G1)
+  - CODE(src/commit/commitment.cuh + test/test_hiding_pedersen.cu)
+status: justified
+```
+
+```claim
+id: C-CRY-DL-G1
+statement: Discrete logarithm is hard in BLS12-381 G1 at the λ ≈ 128 security level.
+justifiedBy:
+  - ASSUMPTION(Discrete logarithm problem is hard in BLS12-381 G1 at λ ≈ 128 (Barbulescu–Duquesne 2019 estimate of ~128 bits for BLS12-381 under NFS))
+status: justified
+```
+
+```claim
+id: C-PED-BIND
+statement: Pedersen commitment is computationally binding in the random-oracle model.
+combinator: THEOREM(Hyrax Theorem 7)
+justifiedBy:
+  - C-CRY-DL-G1
+  - C-PED-SETUP-NO-DLOG
+status: justified
+```
+
+```claim
+id: C-PED-HIDE
+statement: Pedersen commitment is perfectly hiding — the commitment distribution is identical under any message, taken over the blinding.
+justifiedBy:
+  - PAPER(Hyrax Definition 4 (perfect hiding), Wahby et al. 2018 p.4: "For any pp and m0, m1 of equal length, the ensembles {Com_pp(m0)} and {Com_pp(m1)} are identically distributed.")
+  - CODE(src/commit/commitment.cuh + test/test_hiding_pedersen.cu)
+status: justified
+```
+
+```claim
+id: C-PED-HOMO
+statement: Pedersen commitment is additively homomorphic — C(t1;ρ1) + C(t2;ρ2) = C(t1+t2; ρ1+ρ2).
+justifiedBy:
+  - PAPER(Hyrax Definition 5 (additive homomorphism), Wahby et al. 2018 p.4)
+  - CODE(src/commit/commitment.cuh + test/test_hiding_pedersen.cu)
+status: justified
+```
+
+```claim
+id: C-PED-SETUP-NO-DLOG
+statement: Generators {G_i}, H, U are derived by RFC 9380 hash-to-curve, so no party knows any pairwise discrete log.
+justifiedBy:
+  - PAPER(RFC 9380 §6.6.2 BLS12381G1_XMD:SHA-256_SSWU_RO_: output is indifferentiable from a random oracle to G1)
+  - CODE(src/field/hash_to_curve.cu + test/test_hash_to_curve_rfc9380.cu)
+  - ASSUMPTION(SHA-256 behaves as a random oracle)
+status: justified
+```
+
 ---
 
 ## 3. Hyrax §A.1 Σ-Protocols

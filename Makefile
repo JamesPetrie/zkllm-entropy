@@ -169,6 +169,20 @@ bench_field_arith: $(BUILD)/bench/bench_field_arith.o $(CU_OBJS) $(CPP_OBJS)
 bench_commitment: $(BUILD)/bench/bench_commitment.o $(CU_OBJS) $(CPP_OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $^ $(EXTRA_LIBS) -o $@
 
+# ── Claims walker ────────────────────────────────────────────────────────────
+# See docs/spec/claims-convention.md for the claim-graph format and walker
+# semantics. `make check-claims` fails CI if any `justified` claim is
+# transitively blocked by an UNJUSTIFIED leaf, if referenced IDs don't
+# resolve, or if CODE leaves point at missing files.
+check-claims:
+	python3 tools/check_claims.py
+
+test-check-claims:
+	python3 tools/test_check_claims.py
+
+emit-claims-md:
+	python3 tools/check_claims.py --emit-claims-md
+
 # ── Clean rule ───────────────────────────────────────────────────────────────
 clean:
 	rm -rf $(BUILD)
@@ -177,4 +191,4 @@ clean:
 # Default rule
 all: $(BLS_TARGETS)
 
-.PHONY: all clean
+.PHONY: all clean check-claims test-check-claims emit-claims-md
