@@ -47,6 +47,7 @@ int main(int argc, char *argv[])
     // Throwaway hiding Pedersen pp for ZK rescaling lookups.
     Commitment rm_pp = Commitment::hiding_random(1);
     vector<ZKSumcheckProof> rm_zk_sumchecks;
+    vector<Fr_t> rm_challenges;
     rs2.prove(Y, Y_, rm_pp, rm_zk_sumchecks);
     Y_.save_int(output_file_name);
     {
@@ -65,7 +66,10 @@ int main(int argc, char *argv[])
             fa, fb, handoff_hp);
     }
     rs1.prove(g_inv_rms, g_inv_rms_, rm_pp, rm_zk_sumchecks);
-    verifyWeightClaimZK(rmsnorm_weight, g.prove(rms_inv_temp, g_inv_rms)[0]);
+    verifyWeightClaimZK(rmsnorm_weight, g.prove(
+        rms_inv_temp, g_inv_rms,
+        rmsnorm_weight.generator.u_generator, rmsnorm_weight.generator.hiding_generator,
+        rm_zk_sumchecks, rm_challenges)[0]);
     return 0;
     
 }

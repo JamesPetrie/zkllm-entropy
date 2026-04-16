@@ -189,7 +189,10 @@ int main(int argc, char* argv[]) {
     // Throwaway hiding Pedersen pp for ZK rescaling lookups.
     Commitment rs_pp = Commitment::hiding_random(1);
     rs_lm.prove(logits_batch, logits_batch_, rs_pp, zk_sumchecks);
-    verifyWeightClaimZK(lm_head_w, lm_fc.prove(normed_, logits_batch)[0]);
+    verifyWeightClaimZK(lm_head_w, lm_fc.prove(
+        normed_, logits_batch,
+        lm_head_w.generator.u_generator, lm_head_w.generator.hiding_generator,
+        zk_sumchecks, challenges)[0]);
 
     // ── Step 7: Prove final RMSNorm — links normed_hidden to committed W_norm ─
     cout << "Proving final RMSNorm..." << endl;
@@ -219,7 +222,10 @@ int main(int argc, char* argv[]) {
         proof.push_back(Polynomial(fb));
     }
     rs_norm1.prove(g_inv_rms, g_inv_rms_, rs_pp, zk_sumchecks);
-    verifyWeightClaimZK(final_norm_w, norm_fc.prove(rms_inv, g_inv_rms)[0]);
+    verifyWeightClaimZK(final_norm_w, norm_fc.prove(
+        rms_inv, g_inv_rms,
+        final_norm_w.generator.u_generator, final_norm_w.generator.hiding_generator,
+        zk_sumchecks, challenges)[0]);
 
     // ── Serialise proof ───────────────────────────────────────────────────────
     // Format v3 — batched entropy proof with MLE evaluations.

@@ -1258,10 +1258,26 @@ status: justified
 ```claim
 id: C-ZKFC-ZK
 statement: zkFC prover transcript reveals nothing beyond public inputs (claim c, challenge points u_B, u_O, u_I) and the ZK-opened weight-claim value — inner-product sumcheck round polynomials are Pedersen-committed (Hyrax §4 Protocol 3, i.e. prove_ip_zk), and the final weight claim W̃(u_I, u_O) is discharged via §4 ZK opening rather than sent as a raw scalar.
+combinator: AND_OF
 justifiedBy:
-  - UNJUSTIFIED(src/zknn/zkfc.cu:142-152 still calls the plain `zkip` sumcheck, which emits round polynomials as raw coefficients. Phase 3 Step 2 migrated the entropy pipeline's inner-product sumchecks to `prove_ip_zk` but left zkFC's default path on the plain variant. §7.2 ⚠ flags this verbatim: "zkFC still uses the *plain* sumcheck (`zkip` in `zkfc.cu`), not the ZK-wrapped version. … The migration is straightforward (the API matches)." This is gap F1 in `plans/zkllm-entropy/phase-3-zk-sumcheck.md`; closure migrates `zkip` → `prove_ip_zk` and replaces this UNJUSTIFIED leaf with AND_OF(C-SC-ZK-INFORMAL, C-OPEN-HVZK).)
-status: open
+  - C-SC-ZK-INFORMAL
+  - C-OPEN-HVZK
+status: justified
 ```
+
+> **Closure (F1, 2026-04-16):** `zkFC::prove` (src/zknn/zkfc.cu:64-129) now
+> calls `prove_zk_inner_product` with per-round (σ_openings, σ_equality)
+> challenges sampled from `random_vec`; the resulting `ZKSumcheckProof`
+> is pushed onto the caller's `zk_sumchecks`, and the Σ-challenges are
+> appended to the transcript's `challenges` vector for Fiat-Shamir
+> continuity.  All 11 caller sites (bin/zkllm_entropy.cu,
+> bin/zkllm_entropy_timed.cu, src/llm/rmsnorm.cu, src/llm/self-attn.cu
+> ×3, src/llm/ffn.cu ×3) feed the enclosing Weight's `generator`
+> (`u_generator`, `hiding_generator`) into the new prove signature;
+> the attention-only `zkip` in src/llm/self-attn.cu:111,120 is out of
+> F1 scope and intentionally left in place.  The final weight-claim
+> opening is the pre-existing `verifyWeightClaimZK(w, prove(...)[0])`
+> call, unchanged.
 
 ---
 
